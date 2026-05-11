@@ -1,0 +1,17 @@
+version: '3.9'
+
+services:
+  geo-backend:
+    build: .
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - '8000:8000'
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+
+  chroma:
+    image: chromadb/chroma
+    ports:
+      - '8001:8000'

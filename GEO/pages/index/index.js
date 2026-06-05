@@ -10,6 +10,7 @@ const {
   confirmPublication,
   retryPublication,
   verifyPublication,
+  schedulePublicationVerify,
   saveFeedback,
   retestTask,
   scheduleRetest,
@@ -1135,6 +1136,29 @@ Page({
       wx.showToast({ title: "上线校验完成", icon: "success" })
     } catch (error) {
       this.setData({ verifyingPublication: false, error: error.message || "上线校验失败" })
+    }
+  },
+
+  async scheduleCmsVerification() {
+    const publication = this.data.selectedPublication
+    if (!publication || !["published", "verification_failed", "verified_live"].includes(publication.status)) {
+      wx.showToast({ title: "暂无可安排校验的发布", icon: "none" })
+      return
+    }
+    const expectedTerms = this.data.verifyTerms
+      .split(/\n|,|，/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+    try {
+      await schedulePublicationVerify({
+        publication_id: publication.publication_id,
+        expected_terms: expectedTerms.length ? expectedTerms : undefined,
+        max_attempts: 5
+      })
+      await this.reloadCurrentTask()
+      wx.showToast({ title: "已安排上线校验", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "安排上线校验失败" })
     }
   },
 

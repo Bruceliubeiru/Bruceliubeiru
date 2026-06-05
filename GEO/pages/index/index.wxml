@@ -316,6 +316,7 @@
           <view class="review-bar">
             <button class="approve" loading="{{publishing}}" disabled="{{publishing}}" bindtap="confirmCmsPublish">确认发布</button>
             <button loading="{{verifyingPublication}}" disabled="{{verifyingPublication}}" bindtap="verifyCmsPublication">上线校验</button>
+            <button bindtap="scheduleCmsVerification">安排自动校验</button>
           </view>
         </view>
         <view wx:if="{{publications.length}}" class="delivery-config">
@@ -349,7 +350,7 @@
         </view>
         <view wx:else class="status-note">内容分析模式仅提供诊断与草稿预览；请使用 URL 分析进入版本、审核、交付与复测闭环。</view>
         <view wx:if="{{version}}" class="status-note">版本 {{version.version_id}} · {{version.status}}</view>
-        <view wx:if="{{version && version.quality_report}}" class="status-note">质量门禁 {{version.quality_report.status}} · {{version.quality_report.score}} 分 · {{version.quality_report.issues.length}} 项需关注</view>
+        <view wx:if="{{version && version.quality_report}}" class="status-note">质量门禁 {{version.quality_report.status}} · {{version.quality_report.score}} 分 · {{version.quality_report.issues.length}} 项需关注 · 知识引用覆盖 {{version.quality_report.citation_coverage.percent}}%</view>
         <view wx:if="{{injection}}" class="status-note">交付 {{injection.injection_id}} · {{injection.status}} · {{injection.target}}</view>
         <view wx:if="{{retest}}" class="status-note">复测 {{retest.previous_score}} → {{retest.current_score}} · {{retest.score_delta}} 分</view>
         <view wx:if="{{selectedPublication}}" class="status-note">发布 {{selectedPublication.publication_id}} · {{selectedPublication.status}} · 上线校验 {{selectedPublication.live_status || 'pending'}}</view>

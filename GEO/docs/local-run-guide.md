@@ -102,6 +102,8 @@ http://127.0.0.1:8000/admin
 | POST /cms/targets | Configure a CMS target using an environment-variable credential reference |
 | POST /cms/publications/preview | Create an approved, quality-gated publishing preview |
 | POST /cms/publications/confirm | Explicitly confirm and execute a CMS publication |
+| POST /cms/publications/verify | Verify that expected published content is visible on the live URL |
+| POST /cms/publications/verify/schedule | Persist an automatic live publication verification job |
 | POST /cms/publications/{publication_id}/retry | Return a failed publication to the confirmation queue |
 | GET /geo/history | Persistent task, version, injection, and retest history |
 | GET /geo/tasks/{task_id} | Restore a complete task workflow |
@@ -205,6 +207,15 @@ never persisted or returned by the API. Publishing requires an approved version,
 a passed quality report, a preview record, and explicit `PUBLISH` confirmation.
 Failed publications remain visible in the operations console and can be returned
 to the confirmation queue after configuration or credential fixes.
+
+Published records can be verified immediately or scheduled through the durable
+job queue. Automatic verification retries transient page-fetch failures and
+records matched and missing expected terms before the project advances to
+post-publication retesting.
+
+AI-generated improvement modules include the approved knowledge item IDs used
+in their prompt context. Version quality reports expose knowledge citation
+coverage and warn when available brand knowledge is not traceable from a module.
 
 Run the automated closed-loop checks with:
 

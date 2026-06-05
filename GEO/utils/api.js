@@ -97,6 +97,10 @@ function verifyPublication(payload) {
   return request("/cms/publications/verify", payload)
 }
 
+function schedulePublicationVerify(payload) {
+  return request("/cms/publications/verify/schedule", payload)
+}
+
 function saveFeedback(payload) {
   return request("/geo/feedback", payload)
 }
@@ -126,6 +130,7 @@ module.exports = {
   confirmPublication,
   retryPublication,
   verifyPublication,
+  schedulePublicationVerify,
   saveFeedback,
   retestTask,
   scheduleRetest,

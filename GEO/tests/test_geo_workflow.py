@@ -444,8 +444,39 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("verified_live", verified["live_status"])
         self.assertIn("GEO Growth OS", verified["live_summary"]["matched_terms"])
 
+    def test_published_cms_publication_can_schedule_automatic_verification(self):
+        result, approved = self._approved_version()
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="Auto Verify CMS", webhook_url="https://cms.example.com/publish")
+        )
+        preview = main.cms_publication_preview(
+            main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
+        )
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, *_): return b'{"published":true}'
+
+        with patch.object(main, "urlopen", return_value=Response()):
+            published = main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
+            )
+        expected_terms = [item["title"] for item in preview["preview"]["modules"]]
+        with patch.object(main, "_fetch_page_text", return_value=("Live page", " ".join(expected_terms))):
+            job = main.cms_publication_verify_schedule(
+                main.CMSPublicationVerifyScheduleRequest(publication_id=published["publication_id"]),
+                BackgroundTasks(),
+            )
+            completed = main.admin_run_due_jobs(limit=10)["items"][0]
+
+        self.assertEqual("publication_verify", job["job_type"])
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual("verified_live", completed["result"]["status"])
+
     def test_knowledge_and_feedback_are_persisted_in_task_context(self):
-        main.geo_knowledge_save(
+        knowledge = main.geo_knowledge_save(
             main.GEOKnowledgeItemRequest(
                 brand="example",
                 category="facts",
@@ -469,6 +500,23 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertIn("knowledge_snapshot", workflow)
         self.assertEqual("needs_edit", feedback["verdict"])
         self.assertEqual(1, len(detail["feedback"]))
+
+        fake_output = """{"improved_modules":[{"module_type":"ai_summary","title":"Brand summary","body":"Use precise product language supported by the approved brand knowledge entry.","target_position":"below hero","priority":"high","change_reason":"clarity","acceptance_check":"reviewed"}]}"""
+        with patch("backend.main.MultiLLMClient") as client_cls:
+            client_cls.return_value.generate_text.return_value = fake_output
+            ai_workflow = main.geo_improve(
+                main.GEOImproveRequest(result=result, use_ai=True, provider="openai")
+            )
+        version = main.geo_version_save(
+            main.GEOVersionSaveRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                modules=ai_workflow["improved_modules"],
+                workflow=ai_workflow,
+            )
+        )
+        self.assertEqual([knowledge["knowledge_id"]], ai_workflow["improved_modules"][0]["knowledge_citations"])
+        self.assertEqual(100, version["quality_report"]["citation_coverage"]["percent"])
 
     def test_llm_logs_are_saved_for_ai_calls(self):
         fake_output = """{"page_summary":{},"geo_assets":{},"content_gaps":[],"injection_modules":[],"faq_items":[],"schema_suggestions":[],"conversion_tips":[]}"""

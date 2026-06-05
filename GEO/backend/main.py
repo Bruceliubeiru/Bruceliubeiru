@@ -1439,9 +1439,12 @@ def _run_job(job_id: str) -> dict:
         return _db_get_job(job_id) or job
     job = _db_get_job(job_id) or job
     try:
-        if job["job_type"] != "retest":
+        if job["job_type"] == "retest":
+            job["result"] = geo_retest(GEORetestRequest(**job["payload"]))
+        elif job["job_type"] == "publication_verify":
+            job["result"] = cms_publication_verify(CMSPublicationVerifyRequest(**job["payload"]))
+        else:
             raise ValueError(f"Unsupported job type: {job['job_type']}")
-        job["result"] = geo_retest(GEORetestRequest(**job["payload"]))
         job["status"] = "completed"
         job["last_error"] = None
         job["completed_at"] = _now_iso()
@@ -2039,6 +2042,7 @@ def _build_improvement_workflow(result: dict) -> dict:
                     "body": module.get("body"),
                     "target_position": module.get("target_position"),
                     "priority": module.get("priority"),
+                    "knowledge_citations": module.get("knowledge_citations") or [],
                 }
                 for module in improved_modules
             ],
@@ -2065,6 +2069,7 @@ def _build_injection_payload(task_id: str, url: str, modules: list[dict], versio
                 "body": module.get("body"),
                 "target_position": module.get("target_position"),
                 "priority": module.get("priority"),
+                "knowledge_citations": module.get("knowledge_citations") or [],
             }
             for module in modules
         ],
@@ -2368,6 +2373,10 @@ Recent operator feedback:
                         "injection_field": module.get("injection_field") or f"cms.{module_type}",
                     }
                 )
+            normalized_modules = _attach_knowledge_citations(
+                normalized_modules,
+                workflow.get("knowledge_snapshot") or [],
+            )
             workflow["improved_modules"] = normalized_modules
             workflow["injection_payload"] = _build_injection_payload(
                 request.result.get("task_id", ""),
@@ -3045,6 +3054,53 @@ def cms_publication_verify(request: CMSPublicationVerifyRequest):
         detail=summary,
     )
     return publication
+
+
+@app.post("/cms/publications/verify/schedule", status_code=202)
+def cms_publication_verify_schedule(
+    request: CMSPublicationVerifyScheduleRequest,
+    background_tasks: BackgroundTasks,
+):
+    publication = _db_get_publication(request.publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    if publication["status"] not in {"published", "verification_failed", "verified_live"}:
+        raise HTTPException(status_code=409, detail="Publication must be published before verification can be scheduled.")
+    max_attempts = max(1, min(request.max_attempts, 10))
+    run_at = request.run_at or _now_iso()
+    try:
+        normalized_run_at = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
+        if normalized_run_at.tzinfo is None:
+            normalized_run_at = normalized_run_at.replace(tzinfo=timezone.utc)
+        run_at = normalized_run_at.astimezone(timezone.utc).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="run_at must be a valid ISO datetime.") from exc
+    job = {
+        "job_id": f"job_{uuid.uuid4().hex[:16]}",
+        "job_type": "publication_verify",
+        "status": "queued",
+        "payload": request.dict(exclude={"run_at", "max_attempts"}),
+        "result": None,
+        "attempts": 0,
+        "max_attempts": max_attempts,
+        "run_at": run_at,
+        "last_error": None,
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "completed_at": None,
+    }
+    _db_save_job(job)
+    _db_add_audit(
+        _current_actor(),
+        "schedule_publish_verify",
+        "job",
+        job["job_id"],
+        publication["task_id"],
+        detail={"publication_id": request.publication_id, "run_at": run_at},
+    )
+    if run_at <= _now_iso():
+        background_tasks.add_task(_run_job, job["job_id"])
+    return job
 
 
 @app.post("/cms/publications/{publication_id}/retry")

@@ -30,6 +30,7 @@ URL analysis
 | Operations | Web admin console shows task metrics, attention queues, and task timelines |
 | Audit | SQLite operation log records analysis, version, approval, injection, and retest actions |
 | Access control | Optional API Key authentication enforces viewer/operator/reviewer/admin roles and records trusted actors |
+| Async operations | SQLite job queue persists immediate/scheduled retests, attempts, backoff, failures, and manual retries |
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
 
@@ -41,7 +42,7 @@ The application-side loop is complete. A production rollout still requires:
 - a real CMS webhook contract and credentials;
 - production secret storage, API key rotation, and audit retention;
 - a release process that confirms the CMS draft was published before retest;
-- monitoring for webhook failures and scheduled retest jobs.
+- an external cron/cloud scheduler calling the durable due-job runner;
 
 Until a real CMS webhook is configured, `json_file` is a tracked delivery handoff,
 not proof that the public page itself changed.

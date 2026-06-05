@@ -4,14 +4,15 @@ import ipaddress
 import re
 import socket
 import sqlite3
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, HTTPException, Request as FastAPIRequest
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -177,6 +178,11 @@ class GEORetestRequest(BaseModel):
     injection_id: str | None = None
 
 
+class GEORetestScheduleRequest(GEORetestRequest):
+    run_at: str | None = None
+    max_attempts: int = 3
+
+
 class GEOInjectRequest(BaseModel):
     version_id: str
     target: str = "json_file"
@@ -322,6 +328,24 @@ def _init_db() -> None:
                 outcome TEXT NOT NULL,
                 detail TEXT,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                job_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                result TEXT,
+                attempts INTEGER NOT NULL,
+                max_attempts INTEGER NOT NULL,
+                run_at TEXT NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
             )
             """
         )
@@ -628,6 +652,139 @@ def _db_audit_logs(
         }
         for row in rows
     ]
+
+
+def _job_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "job_id": row["job_id"],
+        "job_type": row["job_type"],
+        "status": row["status"],
+        "payload": _json_loads(row["payload"], {}),
+        "result": _json_loads(row["result"], None),
+        "attempts": row["attempts"],
+        "max_attempts": row["max_attempts"],
+        "run_at": row["run_at"],
+        "last_error": row["last_error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "completed_at": row["completed_at"],
+    }
+
+
+def _db_save_job(job: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                job_id, job_type, status, payload, result, attempts, max_attempts,
+                run_at, last_error, created_at, updated_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                status=excluded.status,
+                result=excluded.result,
+                attempts=excluded.attempts,
+                max_attempts=excluded.max_attempts,
+                run_at=excluded.run_at,
+                last_error=excluded.last_error,
+                updated_at=excluded.updated_at,
+                completed_at=excluded.completed_at
+            """,
+            (
+                job["job_id"],
+                job["job_type"],
+                job["status"],
+                _json_dumps(job["payload"]),
+                _json_dumps(job.get("result")) if job.get("result") is not None else None,
+                job["attempts"],
+                job["max_attempts"],
+                job["run_at"],
+                job.get("last_error"),
+                job["created_at"],
+                job["updated_at"],
+                job.get("completed_at"),
+            ),
+        )
+
+
+def _db_get_job(job_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+    return _job_from_row(row) if row else None
+
+
+def _db_jobs(status: str | None = None, limit: int = 50, due_only: bool = False) -> list[dict]:
+    query = "SELECT * FROM jobs"
+    filters: list[str] = []
+    params: list = []
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if due_only:
+        filters.append("status IN ('queued', 'retry_wait')")
+        filters.append("run_at <= ?")
+        params.append(_now_iso())
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_job_from_row(row) for row in rows]
+
+
+def _run_job(job_id: str) -> dict:
+    job = _db_get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job["status"] not in {"queued", "retry_wait"}:
+        return job
+    if job["run_at"] > _now_iso():
+        raise HTTPException(status_code=409, detail="Job is not due yet.")
+
+    claimed_at = _now_iso()
+    with _db() as conn:
+        claimed = conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'running', attempts = attempts + 1, updated_at = ?
+            WHERE job_id = ?
+              AND status IN ('queued', 'retry_wait')
+              AND run_at <= ?
+            """,
+            (claimed_at, job_id, claimed_at),
+        ).rowcount
+    if not claimed:
+        return _db_get_job(job_id) or job
+    job = _db_get_job(job_id) or job
+    try:
+        if job["job_type"] != "retest":
+            raise ValueError(f"Unsupported job type: {job['job_type']}")
+        job["result"] = geo_retest(GEORetestRequest(**job["payload"]))
+        job["status"] = "completed"
+        job["last_error"] = None
+        job["completed_at"] = _now_iso()
+    except Exception as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        job["last_error"] = str(detail)
+        if job["attempts"] < job["max_attempts"]:
+            job["status"] = "retry_wait"
+            job["run_at"] = (datetime.now(timezone.utc) + timedelta(minutes=5 * job["attempts"])).isoformat()
+        else:
+            job["status"] = "failed"
+            job["completed_at"] = _now_iso()
+    job["updated_at"] = _now_iso()
+    _db_save_job(job)
+    _db_add_audit(
+        _current_actor(),
+        "run_job",
+        "job",
+        job_id,
+        job["payload"].get("task_id"),
+        outcome=job["status"],
+        detail={"job_type": job["job_type"], "attempts": job["attempts"], "error": job.get("last_error")},
+    )
+    return job
 
 
 def _db_history() -> dict:
@@ -1287,6 +1444,42 @@ def admin_audit_logs(
     }
 
 
+@app.get("/admin/api/jobs")
+def admin_jobs(status: str | None = None, limit: int = 50):
+    return {"items": _db_jobs(status=status, limit=limit)}
+
+
+@app.post("/admin/api/jobs/run-due")
+def admin_run_due_jobs(limit: int = 20):
+    jobs = _db_jobs(limit=limit, due_only=True)
+    return {"items": [_run_job(job["job_id"]) for job in reversed(jobs)]}
+
+
+@app.post("/admin/api/jobs/{job_id}/retry")
+def admin_retry_job(job_id: str, background_tasks: BackgroundTasks):
+    job = _db_get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job["status"] not in {"failed", "retry_wait"}:
+        raise HTTPException(status_code=409, detail="Only failed or waiting jobs can be retried.")
+    job["status"] = "queued"
+    job["attempts"] = 0
+    job["run_at"] = _now_iso()
+    job["last_error"] = None
+    job["updated_at"] = _now_iso()
+    _db_save_job(job)
+    background_tasks.add_task(_run_job, job_id)
+    _db_add_audit(
+        _current_actor(),
+        "retry_job",
+        "job",
+        job_id,
+        job["payload"].get("task_id"),
+        detail={"max_attempts": job["max_attempts"], "attempts_reset": True},
+    )
+    return job
+
+
 @app.post("/geo/audit")
 def geo_audit(request: GEOAuditRequest):
     return score_content(request.content)
@@ -1705,6 +1898,46 @@ def geo_retest(request: GEORetestRequest):
     )
 
     return retest
+
+
+@app.post("/geo/retest/schedule", status_code=202)
+def geo_schedule_retest(request: GEORetestScheduleRequest, background_tasks: BackgroundTasks):
+    max_attempts = max(1, min(request.max_attempts, 10))
+    run_at = request.run_at or _now_iso()
+    try:
+        normalized_run_at = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
+        if normalized_run_at.tzinfo is None:
+            normalized_run_at = normalized_run_at.replace(tzinfo=timezone.utc)
+        run_at = normalized_run_at.astimezone(timezone.utc).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="run_at must be a valid ISO datetime.") from exc
+
+    job = {
+        "job_id": f"job_{uuid.uuid4().hex[:16]}",
+        "job_type": "retest",
+        "status": "queued",
+        "payload": request.dict(exclude={"run_at", "max_attempts"}),
+        "result": None,
+        "attempts": 0,
+        "max_attempts": max_attempts,
+        "run_at": run_at,
+        "last_error": None,
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "completed_at": None,
+    }
+    _db_save_job(job)
+    _db_add_audit(
+        _current_actor(),
+        "schedule_retest",
+        "job",
+        job["job_id"],
+        request.task_id,
+        detail={"run_at": run_at, "max_attempts": max_attempts},
+    )
+    if run_at <= _now_iso():
+        background_tasks.add_task(_run_job, job["job_id"])
+    return job
 
 
 @app.get("/geo/history")

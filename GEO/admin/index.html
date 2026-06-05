@@ -40,6 +40,7 @@
     .top-actions { display: flex; gap: 8px; align-items: center; }
     .key-input { width: 190px; height: 36px; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0 10px; color: var(--text); }
     .identity { color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .action { height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #34414a; font-size: 11px; font-weight: 800; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
     .metric, .panel { border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
     .metric { padding: 16px; }
@@ -139,6 +140,10 @@
         <div class="panel-head"><div><div class="panel-title">最近操作审计</div><div class="panel-meta">关键业务动作与执行结果</div></div><div class="audit-filters"><input id="auditActor" placeholder="筛选执行者"><select id="auditAction"><option value="">全部动作</option></select><select id="auditOutcome"><option value="">全部结果</option><option value="success">success</option><option value="completed">completed</option><option value="failed">failed</option><option value="approved">approved</option><option value="rejected">rejected</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>时间</th><th>执行者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead><tbody id="auditRows"></tbody></table></div>
       </section>
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head"><div><div class="panel-title">异步任务</div><div class="panel-meta">定时复测、失败重试与执行状态</div></div><div class="filters"><select id="jobStatus"><option value="">全部状态</option><option>queued</option><option>running</option><option>retry_wait</option><option>completed</option><option>failed</option></select><button class="refresh" id="runDue">运行到期任务</button></div></div>
+        <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>计划时间</th><th>尝试</th><th>错误</th><th>操作</th></tr></thead><tbody id="jobRows"></tbody></table></div>
+      </section>
     </main>
   </div>
   <dialog id="detailDialog">
@@ -149,13 +154,14 @@
     const $ = (id) => document.getElementById(id);
     let overview = null;
     let audit = null;
+    let jobs = null;
     let apiKey = sessionStorage.getItem("geoApiKey") || "";
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
     const formatTime = (value) => value ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "-";
-    async function api(path) {
+    async function api(path, options = {}) {
       const headers = apiKey ? {"Authorization": `Bearer ${apiKey}`} : {};
-      const response = await fetch(path, {headers});
+      const response = await fetch(path, {...options, headers: {...headers, ...(options.headers || {})}});
       const actor = response.headers.get("X-GEO-Actor");
       const role = response.headers.get("X-GEO-Role");
       if (actor && role) $("identity").textContent = `${actor} · ${role}`;
@@ -194,6 +200,23 @@
       $("auditAction").innerHTML = `<option value="">全部动作</option>` + actions.map((action) => `<option value="${escapeHtml(action)}">${escapeHtml(action)}</option>`).join("");
       $("auditAction").value = actions.includes(current) ? current : "";
     }
+    function renderJobs(items) {
+      $("jobRows").innerHTML = items.length ? items.map((item) => `<tr><td><div class="task-title">${escapeHtml(item.job_type)}</div><div class="task-url">${escapeHtml(item.job_id)}</div></td><td>${badge(item.status)}</td><td>${formatTime(item.run_at)}</td><td>${item.attempts}/${item.max_attempts}</td><td><div class="task-url">${escapeHtml(item.last_error || "-")}</div></td><td>${["failed","retry_wait"].includes(item.status) ? `<button class="action" data-retry-job="${escapeHtml(item.job_id)}">重试</button>` : "-"}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">暂无异步任务</td></tr>`;
+      document.querySelectorAll("[data-retry-job]").forEach((button) => button.addEventListener("click", async () => {
+        try {
+          await api(`/admin/api/jobs/${encodeURIComponent(button.dataset.retryJob)}/retry`, {method:"POST"});
+          await loadJobs();
+        } catch (error) {
+          $("error").textContent = error.message;
+          $("error").hidden = false;
+        }
+      }));
+    }
+    async function loadJobs() {
+      const status = $("jobStatus").value;
+      jobs = await api(`/admin/api/jobs?limit=50&status=${encodeURIComponent(status)}`);
+      renderJobs(jobs.items);
+    }
     async function loadAudit() {
       const params = new URLSearchParams({limit: "20"});
       const actor = $("auditActor").value.trim();
@@ -220,7 +243,7 @@
     async function load() {
       $("error").hidden = true;
       try {
-        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit()]);
+        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs()]);
         renderMetrics(overview.metrics);
         renderTasks(overview.recent_tasks);
         renderAttention(overview.attention);
@@ -266,6 +289,16 @@
     $("auditActor").addEventListener("input", loadAudit);
     $("auditAction").addEventListener("change", loadAudit);
     $("auditOutcome").addEventListener("change", loadAudit);
+    $("jobStatus").addEventListener("change", loadJobs);
+    $("runDue").addEventListener("click", async () => {
+      try {
+        await api("/admin/api/jobs/run-due", {method:"POST"});
+        await Promise.all([loadJobs(), loadAudit()]);
+      } catch (error) {
+        $("error").textContent = error.message;
+        $("error").hidden = false;
+      }
+    });
     $("closeDialog").addEventListener("click", () => $("detailDialog").close());
     document.querySelectorAll("nav button").forEach((button) => button.addEventListener("click", () => {
       document.querySelectorAll("nav button").forEach((item) => item.classList.toggle("active", item === button));

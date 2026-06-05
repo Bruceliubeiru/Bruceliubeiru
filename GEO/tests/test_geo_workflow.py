@@ -4,7 +4,7 @@ from os import environ
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 
 from backend import auth, main
 
@@ -218,6 +218,50 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("alice@example.com", logs["items"][0]["actor"])
         self.assertEqual("forged@example.com", logs["items"][0]["detail"]["claimed_editor"])
 
+    def test_scheduled_retest_job_completes_and_persists_result(self):
+        result, approved = self._approved_version()
+        injection = main.geo_inject(main.GEOInjectRequest(version_id=approved["version_id"]))
+        job = main.geo_schedule_retest(
+            main.GEORetestScheduleRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                previous_score=result["geo_score"],
+                injection_id=injection["injection_id"],
+            ),
+            BackgroundTasks(),
+        )
+
+        completed = main.admin_run_due_jobs(limit=10)["items"][0]
+        stored = main.admin_jobs(status="completed", limit=10)["items"][0]
+        claimed_again = main._run_job(job["job_id"])
+
+        self.assertEqual(job["job_id"], completed["job_id"])
+        self.assertEqual("completed", completed["status"])
+        self.assertEqual(completed["job_id"], stored["job_id"])
+        self.assertEqual(result["task_id"], stored["result"]["task_id"])
+        self.assertEqual(1, claimed_again["attempts"])
+
+    def test_failed_job_waits_then_can_be_retried(self):
+        result = self._analyze()
+        job = main.geo_schedule_retest(
+            main.GEORetestScheduleRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                previous_score=result["geo_score"],
+                injection_id="missing",
+                max_attempts=2,
+            ),
+            BackgroundTasks(),
+        )
+        failed_once = main._run_job(job["job_id"])
+
+        self.assertEqual("retry_wait", failed_once["status"])
+        self.assertEqual(1, failed_once["attempts"])
+        self.assertIn("not found", failed_once["last_error"])
+        retried = main.admin_retry_job(job["job_id"], BackgroundTasks())
+        self.assertEqual("queued", retried["status"])
+        self.assertEqual(0, retried["attempts"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (
@@ -245,6 +289,7 @@ class AuthTest(unittest.TestCase):
         reviewer = auth.AuthIdentity("review@example.com", "reviewer")
 
         self.assertEqual("viewer", auth.required_role("GET", "/admin/api/overview"))
+        self.assertEqual("operator", auth.required_role("POST", "/admin/api/jobs/run-due"))
         self.assertEqual("operator", auth.required_role("POST", "/geo/inject"))
         self.assertEqual("reviewer", auth.required_role("POST", "/geo/version/review"))
         self.assertFalse(auth.has_role(viewer, "reviewer"))

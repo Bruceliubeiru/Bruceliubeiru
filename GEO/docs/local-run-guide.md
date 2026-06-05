@@ -83,6 +83,9 @@ http://127.0.0.1:8000/admin
 | GET /admin/api/tasks | Search and filter task summaries |
 | GET /admin/api/tasks/{task_id} | Admin task detail |
 | GET /admin/api/audit-logs | Search recent critical operation audit records |
+| GET /admin/api/jobs | List persisted async and scheduled jobs |
+| POST /admin/api/jobs/run-due | Run scheduled jobs that are due |
+| POST /admin/api/jobs/{job_id}/retry | Retry a failed or waiting job |
 | POST /geo/audit | GEO scoring |
 | POST /geo/url-audit | URL page fetch + GEO scoring + growth plan |
 | POST /geo/analyze | URL page fetch + GEO content package |
@@ -91,6 +94,7 @@ http://127.0.0.1:8000/admin
 | POST /geo/version/review | Approve or reject a saved version |
 | POST /geo/inject | Deliver an approved version to JSON file or CMS webhook |
 | POST /geo/retest | Retest the URL after a completed delivery/injection |
+| POST /geo/retest/schedule | Persist an immediate or scheduled retest job |
 | GET /geo/history | Persistent task, version, injection, and retest history |
 | GET /geo/tasks/{task_id} | Restore a complete task workflow |
 | GET /geo/versions/{version_id} | Load one review version |
@@ -165,6 +169,20 @@ a completed injection record for the same task and URL.
 The `json_file` injection target creates a reviewable delivery artifact. The
 `webhook` target posts the approved payload to a public CMS endpoint and stores
 the response status. Private/local webhook addresses are blocked.
+
+## Async And Scheduled Retests
+
+`POST /geo/retest/schedule` persists a retest job in SQLite. Immediate jobs are
+dispatched after the HTTP response. Future jobs remain queued until an external
+scheduler calls:
+
+```bash
+curl -X POST -H "Authorization: Bearer $GEO_OPERATOR_TOKEN" \
+  http://127.0.0.1:8000/admin/api/jobs/run-due
+```
+
+Failed jobs wait five minutes per attempt and retry up to `max_attempts` (default
+3, maximum 10). Operators can inspect and retry jobs from the admin console.
 
 Run the automated closed-loop checks with:
 

@@ -65,7 +65,7 @@ def required_role(method: str, path: str) -> str | None:
     if path.startswith("/docs/") or path.startswith("/redoc/"):
         return None
     if path.startswith("/admin/api/"):
-        return "viewer"
+        return "viewer" if method.upper() == "GET" else "operator"
     if method.upper() == "GET" and (
         path == "/geo/history"
         or path.startswith("/geo/tasks/")

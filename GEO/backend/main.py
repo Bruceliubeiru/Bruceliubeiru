@@ -13,12 +13,18 @@ from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 try:
     from backend.geo_scoring import score_content
 except ImportError:
     from geo_scoring import score_content
+
+try:
+    from backend.admin_service import build_admin_overview, filter_admin_tasks
+except ImportError:
+    from admin_service import build_admin_overview, filter_admin_tasks
 
 try:
     from backend.llm_providers import MultiLLMClient, LLMProviderError
@@ -46,6 +52,7 @@ app.add_middleware(
 
 DB_PATH = Path(__file__).with_name("geo_growth.db")
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "exports"
+ADMIN_INDEX = Path(__file__).resolve().parent.parent / "admin" / "index.html"
 TASK_STORE: dict[str, dict] = {}
 VERSION_STORE: dict[str, dict] = {}
 RETEST_STORE: dict[str, list[dict]] = {}
@@ -1079,6 +1086,26 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "database": str(DB_PATH), "export_dir": str(EXPORT_DIR)}
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_console():
+    return FileResponse(ADMIN_INDEX)
+
+
+@app.get("/admin/api/overview")
+def admin_overview():
+    return build_admin_overview(_db_history())
+
+
+@app.get("/admin/api/tasks")
+def admin_tasks(status: str | None = None, q: str | None = None, limit: int = 50):
+    return {"items": filter_admin_tasks(_db_history(), status, q, limit)}
+
+
+@app.get("/admin/api/tasks/{task_id}")
+def admin_task_detail(task_id: str):
+    return geo_task_detail(task_id)
 
 
 @app.post("/geo/audit")

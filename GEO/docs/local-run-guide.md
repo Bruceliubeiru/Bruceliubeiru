@@ -53,12 +53,21 @@ uvicorn backend.main:app --reload
 http://127.0.0.1:8000/docs
 ```
 
+Open the operational admin console:
+
+```text
+http://127.0.0.1:8000/admin
+```
+
 ## Current APIs
 
 | Endpoint | Purpose |
 |---|---|
 | GET / | health check |
 | GET /health | Runtime health and persistence paths |
+| GET /admin/api/overview | Operational metrics and attention queues |
+| GET /admin/api/tasks | Search and filter task summaries |
+| GET /admin/api/tasks/{task_id} | Admin task detail |
 | POST /geo/audit | GEO scoring |
 | POST /geo/url-audit | URL page fetch + GEO scoring + growth plan |
 | POST /geo/analyze | URL page fetch + GEO content package |

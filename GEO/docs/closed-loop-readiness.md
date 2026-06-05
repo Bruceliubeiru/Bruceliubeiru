@@ -27,6 +27,7 @@ URL analysis
 | Retest | Requires a completed injection for the same task and URL |
 | Persistence | SQLite stores tasks, versions, injections, and retests |
 | Recovery | History page can restore a task into the workbench |
+| Operations | Web admin console shows task metrics, attention queues, and task timelines |
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
 

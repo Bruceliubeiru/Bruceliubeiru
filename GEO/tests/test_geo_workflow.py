@@ -149,6 +149,30 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("rules", result["analysis_source"])
         self.assertIn("fallback_rules_used", result["ai_status"])
 
+    def test_admin_overview_surfaces_operational_state(self):
+        result, approved = self._approved_version()
+        injection = main.geo_inject(
+            main.GEOInjectRequest(version_id=approved["version_id"], target="json_file")
+        )
+        main.geo_retest(
+            main.GEORetestRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                previous_score=result["geo_score"],
+                injection_id=injection["injection_id"],
+            )
+        )
+
+        overview = main.admin_overview()
+        tasks = main.admin_tasks(status="retested", q="Test GEO", limit=20)
+        detail = main.admin_task_detail(result["task_id"])
+
+        self.assertEqual(1, overview["metrics"]["tasks"])
+        self.assertEqual(1, overview["metrics"]["completed_injections"])
+        self.assertEqual(1, overview["metrics"]["retests"])
+        self.assertEqual(result["task_id"], tasks["items"][0]["task_id"])
+        self.assertEqual(1, len(detail["injections"]))
+
 
 if __name__ == "__main__":
     unittest.main()

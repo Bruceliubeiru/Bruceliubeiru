@@ -11,6 +11,8 @@ Page({
     displayInjections: [],
     publications: [],
     displayPublications: [],
+    feedbackEntries: [],
+    displayFeedbackEntries: [],
     retestGroups: [],
     displayRetestGroups: [],
     selectedTaskId: "",
@@ -41,7 +43,8 @@ Page({
       displayVersions: this.data.versions.filter((version) => version.task_id === taskId),
       displayInjections: this.data.injections.filter((injection) => injection.task_id === taskId),
       displayPublications: this.data.publications.filter((publication) => publication.task_id === taskId),
-      displayRetestGroups: this.data.retestGroups.filter((group) => group.task_id === taskId)
+      displayRetestGroups: this.data.retestGroups.filter((group) => group.task_id === taskId),
+      displayFeedbackEntries: this.data.feedbackEntries.filter((entry) => entry.task_id === taskId)
     })
   },
 
@@ -51,7 +54,8 @@ Page({
       displayVersions: this.data.versions,
       displayInjections: this.data.injections,
       displayPublications: this.data.publications,
-      displayRetestGroups: this.data.retestGroups
+      displayRetestGroups: this.data.retestGroups,
+      displayFeedbackEntries: this.data.feedbackEntries
     })
   },
 
@@ -68,6 +72,7 @@ Page({
         task_id: taskId,
         items: retests[taskId]
       }))
+      const feedbackEntries = history.feedback_entries || []
       this.setData({
         tasks: history.tasks || [],
         versions: history.versions || [],
@@ -76,6 +81,8 @@ Page({
         displayInjections: history.injections || [],
         publications: history.publications || [],
         displayPublications: history.publications || [],
+        feedbackEntries,
+        displayFeedbackEntries: feedbackEntries,
         retestGroups,
         displayRetestGroups: retestGroups,
         loading: false

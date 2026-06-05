@@ -884,6 +884,12 @@
   background: #f7f9fa;
 }
 
+.issue-list,
+.status-stack,
+.feedback-history {
+  margin-top: 10rpx;
+}
+
 .delivery-title {
   color: #68737c;
   font-size: 19rpx;

@@ -13,6 +13,7 @@
     <view class="stat"><text class="stat-value">{{versions.length}}</text><text class="stat-label">版本</text></view>
     <view class="stat"><text class="stat-value">{{injections.length}}</text><text class="stat-label">交付</text></view>
     <view class="stat"><text class="stat-value">{{retestGroups.length}}</text><text class="stat-label">复测</text></view>
+    <view class="stat"><text class="stat-value">{{feedbackEntries.length}}</text><text class="stat-label">反馈</text></view>
   </view>
 
   <view wx:if="{{selectedTaskId}}" class="filter-bar">
@@ -26,6 +27,7 @@
     <button class="tab {{activeTab === 'injections' ? 'active' : ''}}" data-tab="injections" bindtap="switchTab">交付</button>
     <button class="tab {{activeTab === 'publications' ? 'active' : ''}}" data-tab="publications" bindtap="switchTab">发布</button>
     <button class="tab {{activeTab === 'retests' ? 'active' : ''}}" data-tab="retests" bindtap="switchTab">复测</button>
+    <button class="tab {{activeTab === 'feedback' ? 'active' : ''}}" data-tab="feedback" bindtap="switchTab">反馈</button>
   </view>
 
   <text wx:if="{{error}}" class="error">{{error}}</text>
@@ -79,6 +81,7 @@
         <view><text class="meta-label">上线校验</text><text class="meta-value">{{publication.live_status || '-'}}</text></view>
         <view><text class="meta-label">结果</text><text class="meta-value">{{publication.response_summary || '-'}}</text></view>
       </view>
+      <view class="card-footer"><text>{{publication.preview.target_name || publication.target_id}}</text><text class="resume-link" catchtap="resumeTask" data-task-id="{{publication.task_id}}">继续任务 ›</text></view>
     </view>
     <text wx:if="{{!displayPublications.length && !loading}}" class="empty">暂无发布记录</text>
   </view>
@@ -112,9 +115,30 @@
           <text class="score-after">{{item.current_score}}</text>
           <text class="delta {{item.score_delta > 0 ? 'positive' : ''}}">{{item.score_delta > 0 ? '+' : ''}}{{item.score_delta}}</text>
         </view>
-        <view class="card-footer"><text>{{item.status}}</text><text>{{item.created_at}}</text></view>
+        <view class="card-footer"><text>{{item.status}}</text><text class="resume-link" catchtap="resumeTask" data-task-id="{{group.task_id}}">继续任务 ›</text></view>
+        <view class="card-footer"><text>{{item.created_at}}</text><text>{{item.effect_details.verdict || '-'}}</text></view>
       </view>
     </view>
     <text wx:if="{{!displayRetestGroups.length && !loading}}" class="empty">暂无复测记录</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'feedback'}}" class="list">
+    <view class="card" wx:for="{{displayFeedbackEntries}}" wx:key="feedback_id" wx:for-item="entry">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{entry.verdict}}</text>
+          <text class="url">{{entry.publication_id || entry.version_id || entry.task_id}}</text>
+        </view>
+        <text class="status">{{entry.source}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">提交人</text><text class="meta-value">{{entry.actor}}</text></view>
+        <view><text class="meta-label">任务</text><text class="meta-value">{{entry.task_id}}</text></view>
+        <view><text class="meta-label">时间</text><text class="meta-value date">{{entry.created_at}}</text></view>
+      </view>
+      <text class="url">{{entry.notes}}</text>
+      <view class="card-footer"><text>{{entry.feedback_id}}</text><text class="resume-link" catchtap="resumeTask" data-task-id="{{entry.task_id}}">继续任务 ›</text></view>
+    </view>
+    <text wx:if="{{!displayFeedbackEntries.length && !loading}}" class="empty">暂无人工反馈</text>
   </view>
 </view>

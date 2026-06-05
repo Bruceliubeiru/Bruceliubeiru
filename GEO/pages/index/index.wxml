@@ -279,6 +279,11 @@
         <view wx:if="{{project}}" class="status-note">
           当前阶段：{{project.current_stage || result.status}} · 下一步：{{project.next_action}} · 负责人：{{project.owner || '待分配'}} · 目标 {{project.target_score || 80}} 分
         </view>
+        <view wx:if="{{project && project.todos && project.todos.length}}" class="issue-list">
+          <view class="issue-row" wx:for="{{project.todos}}" wx:key="*this" wx:for-item="todo">
+            <view class="issue-mark">•</view><text>{{todo}}</text>
+          </view>
+        </view>
         <view class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
           <view class="module-head">
             <text class="module-type">{{module.module_type}}</text>
@@ -313,6 +318,22 @@
             <button loading="{{verifyingPublication}}" disabled="{{verifyingPublication}}" bindtap="verifyCmsPublication">上线校验</button>
           </view>
         </view>
+        <view wx:if="{{publications.length}}" class="delivery-config">
+          <text class="delivery-title">发布记录</text>
+          <picker mode="selector" range="{{publications}}" range-key="publication_id" value="{{selectedPublicationIndex}}" bindchange="changeSelectedPublication">
+            <view class="config-field">
+              <text class="config-label">当前记录</text>
+              <text class="config-value">{{selectedPublication.publication_id}} · {{selectedPublication.status}}</text>
+            </view>
+          </picker>
+          <view wx:if="{{selectedPublication}}" class="status-stack">
+            <view class="status-note">目标 {{selectedPublication.preview.target_name || selectedPublication.target_id}} · {{selectedPublication.preview.environment || '-'}}</view>
+            <view class="status-note">模块 {{selectedPublication.preview.module_count || 0}} 个 · 上线校验 {{selectedPublication.live_status || 'pending'}}</view>
+            <view wx:if="{{selectedPublication.response_summary}}" class="status-note">发布结果：{{selectedPublication.response_summary}}</view>
+            <view wx:if="{{selectedPublication.live_summary}}" class="status-note">校验命中 {{selectedPublication.live_summary.matched_terms.length}} 项，缺失 {{selectedPublication.live_summary.missing_terms.length}} 项</view>
+          </view>
+          <input class="webhook-input" value="{{verifyTerms}}" placeholder="可选：输入校验词，逗号或换行分隔" bindinput="onVerifyTermsInput" />
+        </view>
         <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="delivery-config">
           <text class="delivery-title">交付目标</text>
           <view class="delivery-switch">
@@ -331,7 +352,7 @@
         <view wx:if="{{version && version.quality_report}}" class="status-note">质量门禁 {{version.quality_report.status}} · {{version.quality_report.score}} 分 · {{version.quality_report.issues.length}} 项需关注</view>
         <view wx:if="{{injection}}" class="status-note">交付 {{injection.injection_id}} · {{injection.status}} · {{injection.target}}</view>
         <view wx:if="{{retest}}" class="status-note">复测 {{retest.previous_score}} → {{retest.current_score}} · {{retest.score_delta}} 分</view>
-        <view wx:if="{{publications.length}}" class="status-note">发布 {{publications[0].publication_id}} · {{publications[0].status}} · 上线校验 {{publications[0].live_status || 'pending'}}</view>
+        <view wx:if="{{selectedPublication}}" class="status-note">发布 {{selectedPublication.publication_id}} · {{selectedPublication.status}} · 上线校验 {{selectedPublication.live_status || 'pending'}}</view>
         <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="delivery-config">
           <text class="delivery-title">人工反馈学习</text>
           <view class="delivery-switch">
@@ -342,6 +363,11 @@
           <textarea class="module-body-input" value="{{feedbackNotes}}" placeholder="记录人工确认结果、CMS 异常、页面上线差异、后续修正建议" bindinput="onFeedbackNotesInput" />
           <view class="review-bar">
             <button loading="{{savingFeedback}}" disabled="{{savingFeedback}}" bindtap="submitFeedback">提交反馈</button>
+          </view>
+          <view wx:if="{{feedbackEntries.length}}" class="feedback-history">
+            <view class="status-note" wx:for="{{feedbackEntries}}" wx:key="feedback_id" wx:for-item="entry">
+              {{entry.verdict}} · {{entry.actor}} · {{entry.created_at}}
+            </view>
           </view>
         </view>
       </view>

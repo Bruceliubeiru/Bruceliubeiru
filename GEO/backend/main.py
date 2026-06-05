@@ -212,6 +212,10 @@ class CMSPublishTargetRequest(BaseModel):
     enabled: bool = True
 
 
+class CMSPublishTargetStatusRequest(BaseModel):
+    enabled: bool
+
+
 class CMSPublishPreviewRequest(BaseModel):
     version_id: str
     target_id: str
@@ -226,6 +230,11 @@ class CMSPublicationVerifyRequest(BaseModel):
     publication_id: str
     expected_terms: list[str] | None = None
     notes: str | None = None
+
+
+class CMSPublicationVerifyScheduleRequest(CMSPublicationVerifyRequest):
+    run_at: str | None = None
+    max_attempts: int = 3
 
 
 class LLMGenerateRequest(BaseModel):
@@ -907,6 +916,12 @@ def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
     blocking_claim = re.compile(r"\b(guarantee(?:d)?|always|never|number\s*one|#1|100%)\b", re.I)
     warning_claim = re.compile(r"\b(best|cheapest)\b", re.I)
     required_fields = ("module_type", "title", "body", "target_position")
+    knowledge_ids = {
+        item.get("knowledge_id")
+        for item in (workflow or {}).get("knowledge_snapshot") or []
+        if item.get("knowledge_id")
+    }
+    cited_knowledge_ids: set[str] = set()
     fact_checks: list[dict] = []
     for index, module in enumerate(modules):
         for field in required_fields:
@@ -919,12 +934,19 @@ def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
             issues.append({"severity": "blocking", "code": "unsupported_sensitive_claim", "module": index})
         elif warning_claim.search(body):
             issues.append({"severity": "warning", "code": "review_comparative_claim", "module": index})
+        module_citations = [
+            item for item in module.get("knowledge_citations") or [] if item in knowledge_ids
+        ]
+        cited_knowledge_ids.update(module_citations)
+        if knowledge_ids and not module_citations:
+            issues.append({"severity": "warning", "code": "missing_knowledge_citation", "module": index})
         fact_checks.append(
             {
                 "module": index,
                 "title_present": bool(str(module.get("title") or "").strip()),
                 "body_length": len(body.strip()),
                 "status": "review" if warning_claim.search(body) else "pass",
+                "knowledge_citations": module_citations,
             }
         )
 
@@ -955,6 +977,12 @@ def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
         },
         "fact_checks": fact_checks,
         "schema_checks": schema_checks,
+        "citation_coverage": {
+            "available": len(knowledge_ids),
+            "cited": len(cited_knowledge_ids),
+            "percent": round(len(cited_knowledge_ids) / len(knowledge_ids) * 100) if knowledge_ids else 100,
+            "uncited_knowledge_ids": sorted(knowledge_ids - cited_knowledge_ids),
+        },
         "issues": issues,
         "checked_at": _now_iso(),
     }
@@ -1000,13 +1028,56 @@ def _knowledge_context(url: str, title: str, limit: int = 4) -> list[dict]:
     return matches[:limit]
 
 
-def _project_view(task: dict, versions: list[dict] | None = None, injections: list[dict] | None = None, retests: list[dict] | None = None) -> dict:
+def _attach_knowledge_citations(modules: list[dict], knowledge_items: list[dict]) -> list[dict]:
+    citations = [item["knowledge_id"] for item in knowledge_items if item.get("knowledge_id")]
+    if not citations:
+        return modules
+    return [{**module, "knowledge_citations": citations} for module in modules]
+
+
+def _project_view(
+    task: dict,
+    versions: list[dict] | None = None,
+    injections: list[dict] | None = None,
+    retests: list[dict] | None = None,
+    publications: list[dict] | None = None,
+    jobs: list[dict] | None = None,
+) -> dict:
     versions = versions or []
     injections = injections or []
     retests = retests or []
+    publications = publications or []
+    jobs = jobs or []
     latest_version = versions[0] if versions else None
     latest_injection = injections[0] if injections else None
     latest_retest = retests[0] if retests else task.get("latest_retest")
+    latest_publication = publications[0] if publications else None
+    pending_publication = next((item for item in publications if item.get("status") == "pending_confirmation"), None)
+    failed_publication = next((item for item in publications if item.get("status") == "failed"), None)
+    verifiable_publication = next(
+        (item for item in publications if item.get("status") in {"published", "verification_failed"}),
+        None,
+    )
+    pending_retest_job = next(
+        (
+            item
+            for item in jobs
+            if item.get("job_type") == "retest"
+            and item.get("payload", {}).get("task_id") == task["task_id"]
+            and item.get("status") in {"queued", "retry_wait", "running"}
+        ),
+        None,
+    )
+    pending_verify_job = next(
+        (
+            item
+            for item in jobs
+            if item.get("job_type") == "publication_verify"
+            and item.get("payload", {}).get("publication_id") in {entry.get("publication_id") for entry in publications}
+            and item.get("status") in {"queued", "retry_wait", "running"}
+        ),
+        None,
+    )
     score = int((task.get("latest_result") or {}).get("geo_score") or 0)
     target_score = int(task.get("target_score") or 80)
     status = task.get("status") or "analyzed"
@@ -1021,6 +1092,18 @@ def _project_view(task: dict, versions: list[dict] | None = None, injections: li
     next_action, next_action_key = action_map.get(status, ("检查项目异常", "inspect"))
     if latest_version and (latest_version.get("quality_report") or {}).get("status") == "blocked":
         next_action, next_action_key = "修复内容质量问题", "fix_quality"
+    elif failed_publication:
+        next_action, next_action_key = "重试失败发布", "retry_publish"
+    elif pending_publication:
+        next_action, next_action_key = "人工确认正式发布", "confirm_publish"
+    elif pending_verify_job:
+        next_action, next_action_key = "等待线上发布自动校验", "wait_publish_verify"
+    elif verifiable_publication:
+        next_action, next_action_key = "校验线上结果", "verify_publish"
+    elif pending_retest_job:
+        next_action, next_action_key = "等待定时复测执行", "wait_retest_job"
+    elif latest_injection and latest_injection.get("status") == "completed" and not latest_retest:
+        next_action, next_action_key = "安排发布后复测", "schedule_retest"
     effect = "尚未复测"
     if latest_retest:
         delta = int(latest_retest.get("score_delta") or 0)
@@ -1043,6 +1126,8 @@ def _project_view(task: dict, versions: list[dict] | None = None, injections: li
         "latest_version": latest_version,
         "latest_injection": latest_injection,
         "latest_retest": latest_retest,
+        "latest_publication": latest_publication,
+        "pending_job": pending_verify_job or pending_retest_job,
     }
 
 
@@ -1068,6 +1153,18 @@ def _db_cms_targets() -> list[dict]:
 
 def _db_get_cms_target(target_id: str) -> dict | None:
     return next((item for item in _db_cms_targets() if item["target_id"] == target_id), None)
+
+
+def _db_set_cms_target_enabled(target_id: str, enabled: bool) -> dict | None:
+    now = _now_iso()
+    with _db() as conn:
+        updated = conn.execute(
+            "UPDATE cms_targets SET enabled = ?, updated_at = ? WHERE target_id = ?",
+            (int(enabled), now, target_id),
+        ).rowcount
+    if not updated:
+        return None
+    return _db_get_cms_target(target_id)
 
 
 def _db_save_knowledge_item(item: dict) -> None:
@@ -1243,7 +1340,7 @@ def _db_save_publication(publication: dict) -> None:
                 quality_report, injection_id, confirmed_by, confirmed_at,
                 response_summary, live_status, live_summary, live_confirmed_by,
                 live_confirmed_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(publication_id) DO UPDATE SET
                 status=excluded.status,
                 injection_id=excluded.injection_id,
@@ -2636,6 +2733,7 @@ def geo_schedule_retest(request: GEORetestScheduleRequest, background_tasks: Bac
 @app.get("/geo/projects")
 def geo_projects():
     history = _db_history()
+    jobs = _db_jobs(limit=200)
     return {
         "items": [
             _project_view(
@@ -2643,6 +2741,8 @@ def geo_projects():
                 [item for item in history["versions"] if item["task_id"] == task["task_id"]],
                 [item for item in history["injections"] if item["task_id"] == task["task_id"]],
                 history["retests"].get(task["task_id"], []),
+                [item for item in history["publications"] if item["task_id"] == task["task_id"]],
+                [item for item in jobs if item.get("payload", {}).get("task_id") == task["task_id"]],
             )
             for task in history["tasks"]
         ]
@@ -2652,8 +2752,14 @@ def geo_projects():
 @app.get("/geo/projects/{task_id}")
 def geo_project_detail(task_id: str):
     detail = geo_task_detail(task_id)
-    detail["project"] = _project_view(detail["task"], detail["versions"], detail["injections"], detail["retests"])
-    detail["publications"] = _db_publications(task_id)
+    detail["project"] = _project_view(
+        detail["task"],
+        detail["versions"],
+        detail["injections"],
+        detail["retests"],
+        detail["publications"],
+        detail.get("jobs"),
+    )
     return detail
 
 
@@ -2671,7 +2777,15 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
     task["updated_at"] = _now_iso()
     _db_upsert_task(task)
     _db_add_audit(_current_actor(), "update_project", "task", task_id, task_id)
-    return _project_view(task)
+    history = _db_history()
+    return _project_view(
+        task,
+        [item for item in history["versions"] if item["task_id"] == task_id],
+        [item for item in history["injections"] if item["task_id"] == task_id],
+        history["retests"].get(task_id, []),
+        _db_publications(task_id),
+        [item for item in _db_jobs(limit=100) if item.get("payload", {}).get("task_id") == task_id],
+    )
 
 
 @app.get("/geo/knowledge")
@@ -2781,6 +2895,21 @@ def cms_target_save(request: CMSPublishTargetRequest):
         )
     _db_add_audit(_current_actor(), "save_cms_target", "cms_target", target_id)
     return _db_get_cms_target(target_id)
+
+
+@app.patch("/cms/targets/{target_id}")
+def cms_target_update_status(target_id: str, request: CMSPublishTargetStatusRequest):
+    target = _db_set_cms_target_enabled(target_id, request.enabled)
+    if not target:
+        raise HTTPException(status_code=404, detail="CMS target not found.")
+    _db_add_audit(
+        _current_actor(),
+        "toggle_cms_target",
+        "cms_target",
+        target_id,
+        outcome="enabled" if request.enabled else "disabled",
+    )
+    return target
 
 
 @app.get("/cms/publications")
@@ -2950,21 +3079,34 @@ def geo_task_detail(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
     history = _db_history()
+    task_versions = [item for item in history["versions"] if item["task_id"] == task_id]
+    task_injections = [item for item in history["injections"] if item["task_id"] == task_id]
+    task_retests = history["retests"].get(task_id, [])
+    task_publications = _db_publications(task_id)
+    task_feedback = [item for item in history["feedback_entries"] if item["task_id"] == task_id]
+    task_jobs = [
+        item
+        for item in _db_jobs(limit=100)
+        if item.get("payload", {}).get("task_id") == task_id
+    ]
     return {
         "task": task,
-        "versions": [item for item in history["versions"] if item["task_id"] == task_id],
-        "injections": [item for item in history["injections"] if item["task_id"] == task_id],
-        "retests": history["retests"].get(task_id, []),
-        "feedback": [item for item in history["feedback_entries"] if item["task_id"] == task_id],
+        "versions": task_versions,
+        "injections": task_injections,
+        "retests": task_retests,
+        "feedback": task_feedback,
         "llm_logs": [item for item in history["llm_logs"] if item.get("task_id") == task_id],
         "knowledge_items": task.get("latest_result", {}).get("knowledge_snapshot", []),
         "project": _project_view(
             task,
-            [item for item in history["versions"] if item["task_id"] == task_id],
-            [item for item in history["injections"] if item["task_id"] == task_id],
-            history["retests"].get(task_id, []),
+            task_versions,
+            task_injections,
+            task_retests,
+            task_publications,
+            task_jobs,
         ),
-        "publications": _db_publications(task_id),
+        "publications": task_publications,
+        "jobs": task_jobs,
     }
 
 

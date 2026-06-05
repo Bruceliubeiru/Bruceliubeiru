@@ -277,6 +277,54 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual(["补充证据"], detail["project"]["todos"])
         self.assertEqual("improve", detail["project"]["next_action_key"])
 
+    def test_project_next_action_tracks_publication_and_retest_job_states(self):
+        result, approved = self._approved_version()
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="State CMS", webhook_url="https://cms.example.com/publish")
+        )
+        preview = main.cms_publication_preview(
+            main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
+        )
+        detail = main.geo_task_detail(result["task_id"])
+        self.assertEqual("confirm_publish", detail["project"]["next_action_key"])
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, *_): return b'{"published":true}'
+
+        with patch.object(main, "urlopen", return_value=Response()):
+            published = main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
+            )
+        detail = main.geo_task_detail(result["task_id"])
+        self.assertEqual("verify_publish", detail["project"]["next_action_key"])
+
+        preview_terms = [item["title"] for item in preview["preview"]["modules"]]
+        live_copy = " ".join(preview_terms)
+        with patch.object(main, "_fetch_page_text", return_value=("Live page", live_copy)):
+            verified = main.cms_publication_verify(
+                main.CMSPublicationVerifyRequest(publication_id=published["publication_id"])
+            )
+        self.assertEqual("verified_live", verified["status"])
+        detail = main.geo_task_detail(result["task_id"])
+        self.assertEqual("schedule_retest", detail["project"]["next_action_key"])
+
+        main.geo_schedule_retest(
+            main.GEORetestScheduleRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                previous_score=result["geo_score"],
+                version_id=approved["version_id"],
+                injection_id=published["injection_id"],
+                run_at="2999-01-01T00:00:00+00:00",
+            ),
+            BackgroundTasks(),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+        self.assertEqual("wait_retest_job", detail["project"]["next_action_key"])
+
     def test_quality_gate_blocks_unsafe_version_and_allows_normal_version(self):
         result = self._analyze()
         blocked = main.geo_version_save(
@@ -333,6 +381,22 @@ class GEOWorkflowTest(unittest.TestCase):
             )
         self.assertEqual("published", published["status"])
         self.assertTrue(published["injection_id"])
+
+    def test_cms_target_can_be_disabled_and_enabled(self):
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="Toggle CMS", webhook_url="https://cms.example.com/publish")
+        )
+        disabled = main.cms_target_update_status(
+            target["target_id"],
+            main.CMSPublishTargetStatusRequest(enabled=False),
+        )
+        enabled = main.cms_target_update_status(
+            target["target_id"],
+            main.CMSPublishTargetStatusRequest(enabled=True),
+        )
+
+        self.assertFalse(disabled["enabled"])
+        self.assertTrue(enabled["enabled"])
 
     def test_failed_cms_publication_can_return_to_confirmation(self):
         result, approved = self._approved_version()

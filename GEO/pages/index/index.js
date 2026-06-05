@@ -352,6 +352,22 @@ function buildExportJson(result) {
   }, null, 2)
 }
 
+function buildPublicationState(publications, preferredId) {
+  const items = Array.isArray(publications) ? publications : []
+  const preferred = preferredId
+    ? items.find((item) => item.publication_id === preferredId)
+    : (items.find((item) => item.status === "pending_confirmation")
+      || items.find((item) => item.status === "failed")
+      || items.find((item) => ["published", "verification_failed", "verified_live"].includes(item.status))
+      || items[0])
+  const selectedPublication = preferred || null
+  return {
+    selectedPublicationId: selectedPublication ? selectedPublication.publication_id : "",
+    selectedPublication,
+    selectedPublicationIndex: selectedPublication ? items.findIndex((item) => item.publication_id === selectedPublication.publication_id) : 0
+  }
+}
+
 Page({
   data: {
     hasAnalyzed: false,
@@ -378,9 +394,14 @@ Page({
     retest: null,
     project: null,
     publications: [],
+    selectedPublicationId: "",
+    selectedPublication: null,
+    selectedPublicationIndex: 0,
+    feedbackEntries: [],
     cmsTargets: [],
     cmsTargetIndex: 0,
     publishConfirmation: "",
+    verifyTerms: "",
     feedbackVerdict: "accepted",
     feedbackNotes: "",
     improving: false,
@@ -431,6 +452,7 @@ Page({
         project: detail.project || null,
         publications: detail.publications || []
       }
+      const publicationState = buildPublicationState(detail.publications || [], this.data.selectedPublicationId)
       if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
         normalized.injection_modules = latestVersion.modules
       }
@@ -443,6 +465,8 @@ Page({
         retest: latestRetest,
         project: detail.project || null,
         publications: detail.publications || [],
+        feedbackEntries: detail.feedback || [],
+        ...publicationState,
         dimensions: buildDimensions(normalized.breakdown),
         assets: buildAssets(normalized),
         nextSteps: buildNextSteps(normalized),
@@ -513,6 +537,10 @@ Page({
 
   onPublishConfirmationInput(event) {
     this.setData({ publishConfirmation: event.detail.value })
+  },
+
+  onVerifyTermsInput(event) {
+    this.setData({ verifyTerms: event.detail.value })
   },
 
   onFeedbackNotesInput(event) {
@@ -604,6 +632,11 @@ Page({
         version: null,
         injection: null,
         retest: null,
+        publications: [],
+        selectedPublicationId: "",
+        selectedPublication: null,
+        selectedPublicationIndex: 0,
+        feedbackEntries: [],
         project: mode === "url" ? {
           owner: "待分配",
           target_score: 80,
@@ -639,7 +672,12 @@ Page({
       injection: null,
       retest: null,
       publications: [],
+      selectedPublicationId: "",
+      selectedPublication: null,
+      selectedPublicationIndex: 0,
+      feedbackEntries: [],
       publishConfirmation: "",
+      verifyTerms: "",
       feedbackNotes: ""
     })
     wx.pageScrollTo({ scrollTop: 0, duration: 250 })
@@ -982,6 +1020,7 @@ Page({
     if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
       result.injection_modules = latestVersion.modules
     }
+    const publicationState = buildPublicationState(detail.publications || [], this.data.selectedPublicationId)
     this.setData({
       result,
       workflow: result.workflow,
@@ -990,7 +1029,20 @@ Page({
       retest: latestRetest,
       project: detail.project || this.data.project,
       publications: detail.publications || [],
+      feedbackEntries: detail.feedback || [],
+      ...publicationState,
       stepPanel: buildStepPanel(result, this.data.activeStep)
+    })
+  },
+
+  changeSelectedPublication(event) {
+    const selectedPublicationIndex = Number(event.detail.value)
+    const publications = this.data.publications || []
+    const selectedPublication = publications[selectedPublicationIndex] || null
+    this.setData({
+      selectedPublicationIndex,
+      selectedPublicationId: selectedPublication ? selectedPublication.publication_id : "",
+      selectedPublication
     })
   },
 
@@ -1017,7 +1069,7 @@ Page({
   },
 
   async confirmCmsPublish() {
-    const publication = (this.data.publications || [])[0]
+    const publication = this.data.selectedPublication
     if (!publication || publication.status !== "pending_confirmation") {
       wx.showToast({ title: "暂无待确认发布", icon: "none" })
       return
@@ -1041,7 +1093,7 @@ Page({
   },
 
   async retryCmsPublish() {
-    const publication = (this.data.publications || []).find((item) => item.status === "failed")
+    const publication = this.data.selectedPublication || (this.data.publications || []).find((item) => item.status === "failed")
     if (!publication) {
       wx.showToast({ title: "暂无失败发布", icon: "none" })
       return
@@ -1058,19 +1110,28 @@ Page({
   },
 
   async verifyCmsPublication() {
-    const publication = (this.data.publications || []).find((item) => ["published", "verification_failed"].includes(item.status))
+    const publication = this.data.selectedPublication
     if (!publication) {
       wx.showToast({ title: "暂无可校验发布", icon: "none" })
       return
     }
+    if (!["published", "verification_failed", "verified_live"].includes(publication.status)) {
+      wx.showToast({ title: "当前发布状态不可校验", icon: "none" })
+      return
+    }
+    const expectedTerms = this.data.verifyTerms
+      .split(/\n|,|，/)
+      .map((item) => item.trim())
+      .filter(Boolean)
     this.setData({ verifyingPublication: true, error: "" })
     try {
       await verifyPublication({
         publication_id: publication.publication_id,
+        expected_terms: expectedTerms.length ? expectedTerms : undefined,
         notes: this.data.feedbackNotes.trim() || undefined
       })
       await this.reloadCurrentTask()
-      this.setData({ verifyingPublication: false })
+      this.setData({ verifyingPublication: false, verifyTerms: "" })
       wx.showToast({ title: "上线校验完成", icon: "success" })
     } catch (error) {
       this.setData({ verifyingPublication: false, error: error.message || "上线校验失败" })
@@ -1082,7 +1143,7 @@ Page({
       wx.showToast({ title: "请填写反馈说明", icon: "none" })
       return
     }
-    const publication = (this.data.publications || [])[0] || {}
+    const publication = this.data.selectedPublication || {}
     this.setData({ savingFeedback: true, error: "" })
     try {
       await saveFeedback({

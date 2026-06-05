@@ -1,0 +1,101 @@
+<view class="page">
+  <view class="app-header">
+    <view class="header-action back" bindtap="goBack">返回</view>
+    <view class="header-copy">
+      <text class="title">历史任务</text>
+      <text class="subtitle">分析、版本与复测记录</text>
+    </view>
+    <view class="header-action refresh {{loading ? 'disabled' : ''}}" bindtap="loadHistory">刷新</view>
+  </view>
+
+  <view class="stats">
+    <view class="stat"><text class="stat-value">{{tasks.length}}</text><text class="stat-label">任务</text></view>
+    <view class="stat"><text class="stat-value">{{versions.length}}</text><text class="stat-label">版本</text></view>
+    <view class="stat"><text class="stat-value">{{injections.length}}</text><text class="stat-label">交付</text></view>
+    <view class="stat"><text class="stat-value">{{retestGroups.length}}</text><text class="stat-label">复测</text></view>
+  </view>
+
+  <view wx:if="{{selectedTaskId}}" class="filter-bar">
+    <text class="filter-copy">筛选任务：{{selectedTaskId}}</text>
+    <button bindtap="clearFilter">清除</button>
+  </view>
+
+  <view class="tabs">
+    <button class="tab {{activeTab === 'tasks' ? 'active' : ''}}" data-tab="tasks" bindtap="switchTab">任务</button>
+    <button class="tab {{activeTab === 'versions' ? 'active' : ''}}" data-tab="versions" bindtap="switchTab">版本</button>
+    <button class="tab {{activeTab === 'injections' ? 'active' : ''}}" data-tab="injections" bindtap="switchTab">交付</button>
+    <button class="tab {{activeTab === 'retests' ? 'active' : ''}}" data-tab="retests" bindtap="switchTab">复测</button>
+  </view>
+
+  <text wx:if="{{error}}" class="error">{{error}}</text>
+
+  <view wx:if="{{activeTab === 'tasks'}}" class="list">
+    <view class="card task-card" wx:for="{{tasks}}" wx:key="task_id" wx:for-item="task" data-task-id="{{task.task_id}}" bindtap="selectTask">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{task.title || task.url}}</text>
+          <text class="url">{{task.url}}</text>
+        </view>
+        <text class="status">{{task.status}}</text>
+      </view>
+      <view class="card-footer">
+        <text>{{task.task_id}}</text>
+        <text class="resume-link" catchtap="resumeTask" data-task-id="{{task.task_id}}">继续任务 ›</text>
+      </view>
+    </view>
+    <text wx:if="{{!tasks.length && !loading}}" class="empty">暂无任务记录</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'injections'}}" class="list">
+    <view class="card" wx:for="{{displayInjections}}" wx:key="injection_id" wx:for-item="injection">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{injection.version_id}}</text>
+          <text class="url">{{injection.injection_id}}</text>
+        </view>
+        <text class="status {{injection.status}}">{{injection.status}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">目标</text><text class="meta-value">{{injection.target}}</text></view>
+        <view><text class="meta-label">完成时间</text><text class="meta-value date">{{injection.completed_at}}</text></view>
+        <view><text class="meta-label">交付结果</text><text class="meta-value">{{injection.response_summary}}</text></view>
+      </view>
+    </view>
+    <text wx:if="{{!displayInjections.length && !loading}}" class="empty">暂无交付记录</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'versions'}}" class="list">
+    <view class="card" wx:for="{{displayVersions}}" wx:key="version_id" wx:for-item="version">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{version.version_id}}</text>
+          <text class="url">{{version.url}}</text>
+        </view>
+        <text class="status {{version.status}}">{{version.status}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">模块</text><text class="meta-value">{{version.modules.length}}</text></view>
+        <view><text class="meta-label">编辑者</text><text class="meta-value">{{version.editor}}</text></view>
+        <view><text class="meta-label">更新时间</text><text class="meta-value date">{{version.updated_at}}</text></view>
+      </view>
+      <button class="copy" data-index="{{index}}" bindtap="copyPayload">复制注入 JSON</button>
+    </view>
+    <text wx:if="{{!displayVersions.length && !loading}}" class="empty">暂无版本记录</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'retests'}}" class="list">
+    <view class="card" wx:for="{{displayRetestGroups}}" wx:key="task_id" wx:for-item="group">
+      <text class="card-title">{{group.task_id}}</text>
+      <view class="retest" wx:for="{{group.items}}" wx:key="created_at" wx:for-item="item">
+        <view class="score-row">
+          <text class="score-before">{{item.previous_score}}</text>
+          <text class="score-arrow">→</text>
+          <text class="score-after">{{item.current_score}}</text>
+          <text class="delta {{item.score_delta > 0 ? 'positive' : ''}}">{{item.score_delta > 0 ? '+' : ''}}{{item.score_delta}}</text>
+        </view>
+        <view class="card-footer"><text>{{item.status}}</text><text>{{item.created_at}}</text></view>
+      </view>
+    </view>
+    <text wx:if="{{!displayRetestGroups.length && !loading}}" class="empty">暂无复测记录</text>
+  </view>
+</view>

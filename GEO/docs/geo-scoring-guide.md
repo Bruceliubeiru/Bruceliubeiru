@@ -17,54 +17,55 @@ The GEO Scoring Engine measures how AI-friendly and GEO-ready content is.
 
 ## Scoring Logic
 
-### Semantic Clarity
+### Semantic Clarity (20)
 
-Measures:
+- Clear definition: 5
+- Target user or use case: 5
+- Problem or value explained: 5
+- Enough context: 3
+- Question framing: 2
 
-- definition quality
-- explanation clarity
-- business understanding
+### Citation Readiness (20)
 
-### Citation Readiness
+- Complete sentences: 5
+- Quote-ready length: 5
+- Reasoning markers: 4
+- Specific claims: 4
+- Concise enough: 2
 
-Measures:
+### FAQ Coverage (15)
 
-- quote-ready wording
-- concise explanation
-- reusable phrasing
+- Questions present: 5
+- FAQ labels: 4
+- How-to intent: 3
+- Comparison intent: 3
 
-### FAQ Coverage
+### Comparison Readiness (15)
 
-Measures:
+- Comparison wording: 5
+- Alternatives: 4
+- Selection logic: 4
+- Table-like structure: 2
 
-- user intent coverage
-- direct question answering
+### Authority Signal (15)
 
-### Comparison Readiness
+- Data or metrics: 4
+- Examples or cases: 4
+- Numbers present: 3
+- Evidence language: 4
+- Trust or policy clarity: 4
 
-Measures:
+The dimension is capped at 15 points.
 
-- competitor comparison
-- alternative explanation
-- differentiation clarity
+### AI Readability (15)
 
-### Authority Signal
+- Headings or markdown: 4
+- Bullets or numbered steps: 4
+- Short enough for extraction: 4
+- Structured separators: 3
+- Readable density: 4
 
-Measures:
-
-- proof points
-- metrics
-- cases
-- benchmarks
-
-### AI Readability
-
-Measures:
-
-- formatting structure
-- headings
-- bullets
-- markdown clarity
+The dimension is capped at 15 points.
 
 ## Long-Term Goal
 

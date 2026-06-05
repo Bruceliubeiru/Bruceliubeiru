@@ -6,3 +6,5 @@ node_modules/
 venv/
 .idea/
 .vscode/
+backend/geo_growth.db
+exports/

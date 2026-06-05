@@ -1,6 +1,12 @@
+import json
+import hashlib
+import ipaddress
 import re
+import socket
+import sqlite3
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -38,6 +44,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+DB_PATH = Path(__file__).with_name("geo_growth.db")
+EXPORT_DIR = Path(__file__).resolve().parent.parent / "exports"
 TASK_STORE: dict[str, dict] = {}
 VERSION_STORE: dict[str, dict] = {}
 RETEST_STORE: dict[str, list[dict]] = {}
@@ -61,6 +69,9 @@ class GEOAnalyzeRequest(BaseModel):
     generate_faq: bool = True
     generate_schema: bool = True
     generate_conversion_tips: bool = True
+    use_ai: bool = False
+    provider: str = "openai"
+    model: str | None = None
 
 
 class GEOImproveRequest(BaseModel):
@@ -90,6 +101,21 @@ class GEORetestRequest(BaseModel):
     url: str
     previous_score: int = 0
     approved_payload: dict | None = None
+    version_id: str | None = None
+    injection_id: str | None = None
+
+
+class GEOInjectRequest(BaseModel):
+    version_id: str
+    target: str = "json_file"
+    webhook_url: str | None = None
+    headers: dict[str, str] | None = None
+
+
+class GEOExportRequest(BaseModel):
+    task_id: str
+    payload: dict
+    target: str = "json_file"
 
 
 class LLMGenerateRequest(BaseModel):
@@ -116,6 +142,362 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _json_dumps(value) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _json_loads(value: str | None, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return fallback
+
+
+def _init_db() -> None:
+    EXPORT_DIR.mkdir(exist_ok=True)
+    with _db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                task_id TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                title TEXT,
+                status TEXT,
+                latest_result TEXT,
+                latest_workflow TEXT,
+                latest_version_id TEXT,
+                latest_retest TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS versions (
+                version_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                status TEXT,
+                editor TEXT,
+                reviewer TEXT,
+                review_comment TEXT,
+                modules TEXT,
+                workflow TEXT,
+                injection_payload TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                approved_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS retests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                version_id TEXT,
+                injection_id TEXT,
+                url TEXT NOT NULL,
+                title TEXT,
+                previous_score INTEGER,
+                current_score INTEGER,
+                score_delta INTEGER,
+                status TEXT,
+                breakdown TEXT,
+                recommendations TEXT,
+                created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS injections (
+                injection_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                url TEXT NOT NULL,
+                target TEXT NOT NULL,
+                status TEXT NOT NULL,
+                response_summary TEXT,
+                artifact_path TEXT,
+                created_at TEXT,
+                completed_at TEXT
+            )
+            """
+        )
+        retest_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(retests)").fetchall()
+        }
+        if "version_id" not in retest_columns:
+            conn.execute("ALTER TABLE retests ADD COLUMN version_id TEXT")
+        if "injection_id" not in retest_columns:
+            conn.execute("ALTER TABLE retests ADD COLUMN injection_id TEXT")
+
+
+def _db_upsert_task(task: dict) -> None:
+    TASK_STORE[task["task_id"]] = task
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                task_id, url, title, status, latest_result, latest_workflow,
+                latest_version_id, latest_retest, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                url=excluded.url,
+                title=excluded.title,
+                status=excluded.status,
+                latest_result=excluded.latest_result,
+                latest_workflow=excluded.latest_workflow,
+                latest_version_id=excluded.latest_version_id,
+                latest_retest=excluded.latest_retest,
+                updated_at=excluded.updated_at
+            """,
+            (
+                task.get("task_id"),
+                task.get("url"),
+                task.get("title"),
+                task.get("status"),
+                _json_dumps(task.get("latest_result")) if task.get("latest_result") else None,
+                _json_dumps(task.get("latest_workflow")) if task.get("latest_workflow") else None,
+                task.get("latest_version_id"),
+                _json_dumps(task.get("latest_retest")) if task.get("latest_retest") else None,
+                task.get("created_at") or _now_iso(),
+                task.get("updated_at") or _now_iso(),
+            ),
+        )
+
+
+def _db_get_task(task_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+    if not row:
+        return TASK_STORE.get(task_id)
+    return _task_from_row(row)
+
+
+def _task_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "task_id": row["task_id"],
+        "url": row["url"],
+        "title": row["title"],
+        "status": row["status"],
+        "latest_result": _json_loads(row["latest_result"], None),
+        "latest_workflow": _json_loads(row["latest_workflow"], None),
+        "latest_version_id": row["latest_version_id"],
+        "latest_retest": _json_loads(row["latest_retest"], None),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _version_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "version_id": row["version_id"],
+        "task_id": row["task_id"],
+        "url": row["url"],
+        "status": row["status"],
+        "editor": row["editor"],
+        "reviewer": row["reviewer"],
+        "review_comment": row["review_comment"],
+        "modules": _json_loads(row["modules"], []),
+        "workflow": _json_loads(row["workflow"], {}),
+        "injection_payload": _json_loads(row["injection_payload"], {}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "approved_at": row["approved_at"],
+    }
+
+
+def _db_save_version(version: dict) -> None:
+    VERSION_STORE[version["version_id"]] = version
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO versions (
+                version_id, task_id, url, status, editor, reviewer, review_comment,
+                modules, workflow, injection_payload, created_at, updated_at, approved_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(version_id) DO UPDATE SET
+                status=excluded.status,
+                reviewer=excluded.reviewer,
+                review_comment=excluded.review_comment,
+                modules=excluded.modules,
+                workflow=excluded.workflow,
+                injection_payload=excluded.injection_payload,
+                updated_at=excluded.updated_at,
+                approved_at=excluded.approved_at
+            """,
+            (
+                version.get("version_id"),
+                version.get("task_id"),
+                version.get("url"),
+                version.get("status"),
+                version.get("editor"),
+                version.get("reviewer"),
+                version.get("review_comment"),
+                _json_dumps(version.get("modules", [])),
+                _json_dumps(version.get("workflow", {})),
+                _json_dumps(version.get("injection_payload", {})),
+                version.get("created_at") or _now_iso(),
+                version.get("updated_at") or _now_iso(),
+                version.get("approved_at"),
+            ),
+        )
+
+
+def _db_get_version(version_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM versions WHERE version_id = ?", (version_id,)).fetchone()
+    if not row:
+        return VERSION_STORE.get(version_id)
+    return _version_from_row(row)
+
+
+def _db_count_versions(task_id: str) -> int:
+    with _db() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM versions WHERE task_id = ?", (task_id,)).fetchone()
+    return int(row["count"]) if row else 0
+
+
+def _db_add_retest(retest: dict) -> None:
+    RETEST_STORE.setdefault(retest["task_id"], []).append(retest)
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO retests (
+                task_id, version_id, injection_id, url, title, previous_score, current_score, score_delta,
+                status, breakdown, recommendations, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                retest.get("task_id"),
+                retest.get("version_id"),
+                retest.get("injection_id"),
+                retest.get("url"),
+                retest.get("title"),
+                retest.get("previous_score"),
+                retest.get("current_score"),
+                retest.get("score_delta"),
+                retest.get("status"),
+                _json_dumps(retest.get("breakdown")),
+                _json_dumps(retest.get("recommendations")),
+                retest.get("created_at"),
+            ),
+        )
+
+
+def _db_save_injection(injection: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO injections (
+                injection_id, task_id, version_id, url, target, status,
+                response_summary, artifact_path, created_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(injection_id) DO UPDATE SET
+                status=excluded.status,
+                response_summary=excluded.response_summary,
+                artifact_path=excluded.artifact_path,
+                completed_at=excluded.completed_at
+            """,
+            (
+                injection.get("injection_id"),
+                injection.get("task_id"),
+                injection.get("version_id"),
+                injection.get("url"),
+                injection.get("target"),
+                injection.get("status"),
+                injection.get("response_summary"),
+                injection.get("artifact_path"),
+                injection.get("created_at"),
+                injection.get("completed_at"),
+            ),
+        )
+
+
+def _injection_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "injection_id": row["injection_id"],
+        "task_id": row["task_id"],
+        "version_id": row["version_id"],
+        "url": row["url"],
+        "target": row["target"],
+        "status": row["status"],
+        "response_summary": row["response_summary"],
+        "artifact_path": row["artifact_path"],
+        "created_at": row["created_at"],
+        "completed_at": row["completed_at"],
+    }
+
+
+def _db_get_injection(injection_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT * FROM injections WHERE injection_id = ?",
+            (injection_id,),
+        ).fetchone()
+    return _injection_from_row(row) if row else None
+
+
+def _db_latest_successful_injection(task_id: str, version_id: str | None = None) -> dict | None:
+    query = "SELECT * FROM injections WHERE task_id = ? AND status = 'completed'"
+    params: list[str] = [task_id]
+    if version_id:
+        query += " AND version_id = ?"
+        params.append(version_id)
+    query += " ORDER BY completed_at DESC LIMIT 1"
+    with _db() as conn:
+        row = conn.execute(query, params).fetchone()
+    return _injection_from_row(row) if row else None
+
+
+def _db_history() -> dict:
+    with _db() as conn:
+        task_rows = conn.execute("SELECT * FROM tasks ORDER BY updated_at DESC").fetchall()
+        version_rows = conn.execute("SELECT * FROM versions ORDER BY updated_at DESC").fetchall()
+        retest_rows = conn.execute("SELECT * FROM retests ORDER BY created_at DESC").fetchall()
+        injection_rows = conn.execute("SELECT * FROM injections ORDER BY created_at DESC").fetchall()
+
+    retests: dict[str, list[dict]] = {}
+    for row in retest_rows:
+        item = {
+            "task_id": row["task_id"],
+            "version_id": row["version_id"],
+            "injection_id": row["injection_id"],
+            "url": row["url"],
+            "title": row["title"],
+            "previous_score": row["previous_score"],
+            "current_score": row["current_score"],
+            "score_delta": row["score_delta"],
+            "status": row["status"],
+            "breakdown": _json_loads(row["breakdown"], {}),
+            "recommendations": _json_loads(row["recommendations"], []),
+            "created_at": row["created_at"],
+        }
+        retests.setdefault(row["task_id"], []).append(item)
+
+    return {
+        "tasks": [_task_from_row(row) for row in task_rows],
+        "versions": [_version_from_row(row) for row in version_rows],
+        "retests": retests,
+        "injections": [_injection_from_row(row) for row in injection_rows],
+    }
+
+
 def _update_stage_status(workflow: dict, key: str, status: str) -> dict:
     stages = workflow.get("stages") or []
     for stage in stages:
@@ -126,8 +508,39 @@ def _update_stage_status(workflow: dict, key: str, status: str) -> dict:
 
 
 def _build_version_id(task_id: str) -> str:
-    existing_count = sum(1 for version in VERSION_STORE.values() if version.get("task_id") == task_id)
+    existing_count = _db_count_versions(task_id)
     return f"{task_id}_v{existing_count + 1}"
+
+
+def _build_task_id(url: str) -> str:
+    return f"geo_{hashlib.sha256(url.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _build_injection_id(version_id: str) -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    return f"inject_{version_id}_{stamp}"
+
+
+def _validate_public_url(raw_url: str, label: str) -> str:
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{label} URL must use http or https.")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443)
+    except socket.gaierror as exc:
+        raise ValueError(f"{label} host cannot be resolved: {exc}") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if not ip.is_global:
+            raise ValueError(f"{label} URL must resolve to a public network address.")
+    return raw_url
+
+
+def _validate_public_webhook_url(raw_url: str) -> str:
+    return _validate_public_url(raw_url, "Webhook")
+
+
+_init_db()
 
 
 class _ReadableTextParser(HTMLParser):
@@ -164,9 +577,9 @@ def _normalize_url(raw_url: str) -> str:
         value = f"https://{value}"
 
     parsed = urlparse(value)
-    if not parsed.netloc or "." not in parsed.netloc:
+    if not parsed.netloc or not parsed.hostname or "." not in parsed.hostname:
         raise ValueError("Please provide a valid website URL.")
-    return value
+    return _validate_public_url(value, "Page")
 
 
 def _fetch_page_text(url: str) -> tuple[str, str]:
@@ -387,6 +800,92 @@ def _build_content_package(
     }
 
 
+def _extract_json_object(raw: str) -> dict:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(cleaned[start:end + 1])
+        raise
+
+
+def _validate_content_package(package: dict) -> dict:
+    required = {
+        "page_summary": {},
+        "geo_assets": {},
+        "content_gaps": [],
+        "injection_modules": [],
+        "faq_items": [],
+        "schema_suggestions": [],
+        "conversion_tips": [],
+    }
+    for key, fallback in required.items():
+        package.setdefault(key, fallback)
+    package["analysis_source"] = package.get("analysis_source", "ai")
+    return package
+
+
+def _try_ai_content_package(
+    url: str,
+    title: str,
+    content: str,
+    request: GEOAnalyzeRequest,
+    score_result: dict,
+) -> dict | None:
+    if not request.use_ai:
+        return None
+
+    prompt = f"""
+You are a GEO URL content injection analyst.
+Analyze the page and return strict JSON only. Do not include markdown fences.
+
+Page config:
+- url: {url}
+- title: {title}
+- page_type: {request.page_type}
+- page_goal: {request.page_goal}
+- market: {request.market}
+- language: {request.language}
+- current_geo_score: {score_result.get("geo_score")}
+
+Page text:
+{content[:9000]}
+
+Return JSON with exactly these top-level fields:
+page_summary, geo_assets, content_gaps, injection_modules, faq_items, schema_suggestions, conversion_tips.
+
+Rules:
+- Do not invent price, rating, inventory, review count, or policy details not visible in the text.
+- injection_modules must include module_type, title, body, target_position, priority.
+- faq_items must include question, answer, source_type, priority.
+- schema_suggestions must include schema_type, validation_status, json.
+- Copy should be directly usable for page review and CMS injection.
+"""
+    try:
+        output = MultiLLMClient().generate_text(
+            provider=request.provider,  # type: ignore[arg-type]
+            prompt=prompt,
+            model=request.model,
+            temperature=0.2,
+        )
+        package = _extract_json_object(output)
+        package = _validate_content_package(package)
+        package["ai_status"] = "generated"
+        package["analysis_source"] = "ai"
+        return package
+    except Exception as exc:
+        return {
+            "analysis_source": "rules",
+            "ai_status": f"fallback_rules_used: {exc}",
+        }
+
+
 def _improve_module(module: dict, entities: list[str], gaps: list[str]) -> dict:
     primary_entity = entities[0] if entities else "this offer"
     module_type = module.get("module_type", "content")
@@ -516,6 +1015,25 @@ def _build_improvement_workflow(result: dict) -> dict:
     }
 
 
+def _build_injection_payload(task_id: str, url: str, modules: list[dict], version_status: str) -> dict:
+    return {
+        "url": url,
+        "task_id": task_id,
+        "version_status": version_status,
+        "cms_fields": [
+            {
+                "field": module.get("injection_field") or f"cms.{module.get('module_type', 'content')}",
+                "module_type": module.get("module_type"),
+                "title": module.get("title"),
+                "body": module.get("body"),
+                "target_position": module.get("target_position"),
+                "priority": module.get("priority"),
+            }
+            for module in modules
+        ],
+    }
+
+
 def _build_growth_plan(score_result: dict, title: str, url: str) -> list[dict]:
     recommendations = score_result.get("recommendations") or []
     plan = [
@@ -556,6 +1074,11 @@ def root():
         "message": "AI Native Growth Operating System",
         "providers": ["openai", "gemini", "deepseek"],
     }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "database": str(DB_PATH), "export_dir": str(EXPORT_DIR)}
 
 
 @app.post("/geo/audit")
@@ -606,8 +1129,15 @@ def geo_analyze(request: GEOAnalyzeRequest):
         )
 
     score_result = score_content(content)
-    package = _build_content_package(url, title, content, request, score_result)
-    task_id = f"geo_{abs(hash(url)) % 100000000}"
+    ai_package = _try_ai_content_package(url, title, content, request, score_result)
+    if ai_package and ai_package.get("analysis_source") == "ai":
+        package = ai_package
+    else:
+        package = _build_content_package(url, title, content, request, score_result)
+        package["analysis_source"] = "rules"
+        if ai_package and ai_package.get("ai_status"):
+            package["ai_status"] = ai_package["ai_status"]
+    task_id = _build_task_id(url)
     result = {
         "task_id": task_id,
         "status": "completed",
@@ -618,15 +1148,17 @@ def geo_analyze(request: GEOAnalyzeRequest):
         "growth_plan": _build_growth_plan(score_result, title, url),
         **package,
     }
-    TASK_STORE[task_id] = {
+    existing_task = _db_get_task(task_id) or {}
+    _db_upsert_task({
+        **existing_task,
         "task_id": task_id,
         "url": url,
         "title": title,
         "status": "analyzed",
         "latest_result": result,
-        "created_at": _now_iso(),
+        "created_at": existing_task.get("created_at") or _now_iso(),
         "updated_at": _now_iso(),
-    }
+    })
     return result
 
 
@@ -639,7 +1171,9 @@ def geo_improve(request: GEOImproveRequest):
 You are a GEO content injection editor.
 Improve the following content package so it can be injected into a landing page CMS.
 Keep all claims consistent with the provided page facts. Do not invent price, rating, inventory, or review counts.
-Return concise module copy that is AI-readable, conversion-aware, and easy to review.
+Return strict JSON only with one top-level field: improved_modules.
+Each improved module must include module_type, title, body, target_position, priority,
+change_reason, and acceptance_check.
 
 Content package:
 {request.result}
@@ -651,25 +1185,45 @@ Content package:
                 model=request.model,
                 temperature=0.25,
             )
-            workflow["ai_output"] = output
+            ai_result = _extract_json_object(output)
+            ai_modules = ai_result.get("improved_modules") or []
+            if not ai_modules:
+                raise ValueError("AI response did not include improved_modules.")
+
+            normalized_modules = []
+            for module in ai_modules:
+                module_type = module.get("module_type", "content")
+                normalized_modules.append(
+                    {
+                        **module,
+                        "status": "draft",
+                        "review_status": "pending_review",
+                        "injection_field": module.get("injection_field") or f"cms.{module_type}",
+                    }
+                )
+            workflow["improved_modules"] = normalized_modules
+            workflow["injection_payload"] = _build_injection_payload(
+                request.result.get("task_id", ""),
+                request.result.get("url", ""),
+                normalized_modules,
+                "pending_review",
+            )
             workflow["ai_status"] = "generated"
         except Exception as exc:
             workflow["ai_status"] = f"fallback_rules_used: {exc}"
 
     task_id = request.result.get("task_id")
     if task_id:
-        task = TASK_STORE.setdefault(
-            task_id,
-            {
-                "task_id": task_id,
-                "url": request.result.get("url"),
-                "title": request.result.get("title"),
-                "created_at": _now_iso(),
-            },
-        )
+        task = _db_get_task(task_id) or {
+            "task_id": task_id,
+            "url": request.result.get("url"),
+            "title": request.result.get("title"),
+            "created_at": _now_iso(),
+        }
         task["status"] = "draft_ready"
         task["latest_workflow"] = workflow
         task["updated_at"] = _now_iso()
+        _db_upsert_task(task)
 
     return workflow
 
@@ -682,22 +1236,12 @@ def geo_version_save(request: GEOVersionSaveRequest):
     workflow = request.workflow or {}
     workflow = _update_stage_status(workflow, "review", "pending")
     version_id = _build_version_id(request.task_id)
-    payload = workflow.get("injection_payload") or {
-        "url": request.url,
-        "task_id": request.task_id,
-        "version_status": "pending_review",
-        "cms_fields": [
-            {
-                "field": module.get("injection_field") or f"cms.{module.get('module_type', 'content')}",
-                "module_type": module.get("module_type"),
-                "title": module.get("title"),
-                "body": module.get("body"),
-                "target_position": module.get("target_position"),
-                "priority": module.get("priority"),
-            }
-            for module in request.modules
-        ],
-    }
+    payload = _build_injection_payload(
+        request.task_id,
+        request.url,
+        request.modules,
+        "pending_review",
+    )
     payload["version_id"] = version_id
     payload["version_status"] = "pending_review"
 
@@ -713,27 +1257,31 @@ def geo_version_save(request: GEOVersionSaveRequest):
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
-    VERSION_STORE[version_id] = version
+    _db_save_version(version)
 
-    task = TASK_STORE.setdefault(
-        request.task_id,
-        {"task_id": request.task_id, "url": request.url, "created_at": _now_iso()},
-    )
+    task = _db_get_task(request.task_id) or {"task_id": request.task_id, "url": request.url, "created_at": _now_iso()}
     task["status"] = "pending_review"
     task["latest_version_id"] = version_id
+    task["latest_workflow"] = workflow
     task["updated_at"] = _now_iso()
+    _db_upsert_task(task)
 
     return version
 
 
 @app.post("/geo/version/review")
 def geo_version_review(request: GEOReviewRequest):
-    version = VERSION_STORE.get(request.version_id)
+    version = _db_get_version(request.version_id)
     if not version:
         raise HTTPException(status_code=404, detail="Version not found.")
 
     if request.action not in {"approve", "reject"}:
         raise HTTPException(status_code=400, detail="Action must be approve or reject.")
+    if version.get("status") not in {"pending_review", "rejected"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Version in status {version.get('status')} cannot be reviewed again.",
+        )
 
     status = "approved" if request.action == "approve" else "rejected"
     workflow = version.get("workflow") or {}
@@ -754,19 +1302,123 @@ def geo_version_review(request: GEOReviewRequest):
         }
     )
 
+    _db_save_version(version)
+
     task_id = version.get("task_id")
-    if task_id in TASK_STORE:
-        TASK_STORE[task_id]["status"] = status
-        TASK_STORE[task_id]["latest_version_id"] = request.version_id
-        TASK_STORE[task_id]["updated_at"] = _now_iso()
+    task = _db_get_task(task_id) if task_id else None
+    if task:
+        task["status"] = status
+        task["latest_version_id"] = request.version_id
+        task["latest_workflow"] = workflow
+        task["updated_at"] = _now_iso()
+        _db_upsert_task(task)
 
     return version
 
 
+@app.post("/geo/inject")
+def geo_inject(request: GEOInjectRequest):
+    version = _db_get_version(request.version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    if version.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="Only approved versions can be injected.")
+    if request.target not in {"json_file", "webhook"}:
+        raise HTTPException(status_code=400, detail="Target must be json_file or webhook.")
+
+    injection_id = _build_injection_id(request.version_id)
+    created_at = _now_iso()
+    injection = {
+        "injection_id": injection_id,
+        "task_id": version["task_id"],
+        "version_id": version["version_id"],
+        "url": version["url"],
+        "target": request.target,
+        "status": "running",
+        "created_at": created_at,
+    }
+    _db_save_injection(injection)
+
+    payload = {
+        "injection_id": injection_id,
+        "task_id": version["task_id"],
+        "version_id": version["version_id"],
+        "url": version["url"],
+        "approved_at": version.get("approved_at"),
+        "payload": version.get("injection_payload") or {},
+    }
+    try:
+        if request.target == "json_file":
+            file_path = EXPORT_DIR / f"{injection_id}.json"
+            file_path.write_text(_json_dumps(payload), encoding="utf-8")
+            injection["artifact_path"] = str(file_path)
+            injection["response_summary"] = "Approved payload written to JSON delivery artifact."
+        else:
+            if not request.webhook_url:
+                raise ValueError("webhook_url is required for webhook target.")
+            webhook_url = _validate_public_webhook_url(request.webhook_url)
+            headers = {"Content-Type": "application/json", **(request.headers or {})}
+            webhook_request = Request(
+                webhook_url,
+                data=_json_dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urlopen(webhook_request, timeout=15) as response:
+                response_body = response.read(1000).decode("utf-8", errors="ignore")
+                injection["response_summary"] = (
+                    f"HTTP {response.status}: {response_body[:500]}" if response_body else f"HTTP {response.status}"
+                )
+        injection["status"] = "completed"
+        injection["completed_at"] = _now_iso()
+    except (ValueError, HTTPError, URLError, TimeoutError) as exc:
+        injection["status"] = "failed"
+        injection["response_summary"] = str(exc)
+        injection["completed_at"] = _now_iso()
+        _db_save_injection(injection)
+        raise HTTPException(status_code=502, detail=f"Injection failed: {exc}") from exc
+
+    _db_save_injection(injection)
+    workflow = version.get("workflow") or {}
+    workflow = _update_stage_status(workflow, "inject", "completed")
+    workflow = _update_stage_status(workflow, "retest", "ready")
+    version["workflow"] = workflow
+    version["updated_at"] = _now_iso()
+    _db_save_version(version)
+
+    task = _db_get_task(version["task_id"])
+    if task:
+        task["status"] = "injected"
+        task["latest_workflow"] = workflow
+        task["updated_at"] = _now_iso()
+        _db_upsert_task(task)
+    return injection
+
+
 @app.post("/geo/retest")
 def geo_retest(request: GEORetestRequest):
+    injection = None
+    if request.injection_id:
+        injection = _db_get_injection(request.injection_id)
+        if not injection or injection.get("task_id") != request.task_id:
+            raise HTTPException(status_code=404, detail="Injection record not found for this task.")
+        if injection.get("status") != "completed":
+            raise HTTPException(status_code=409, detail="Retest requires a completed injection.")
+    else:
+        injection = _db_latest_successful_injection(request.task_id, request.version_id)
+    if not injection:
+        raise HTTPException(
+            status_code=409,
+            detail="Retest requires a completed injection or delivery record.",
+        )
+
     try:
         url = _normalize_url(request.url)
+        if url != injection.get("url"):
+            raise HTTPException(
+                status_code=409,
+                detail="Retest URL must match the URL of the completed injection.",
+            )
         title, content = _fetch_page_text(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -778,6 +1430,8 @@ def geo_retest(request: GEORetestRequest):
     delta = current_score - int(request.previous_score or 0)
     retest = {
         "task_id": request.task_id,
+        "version_id": injection.get("version_id"),
+        "injection_id": injection.get("injection_id"),
         "url": url,
         "title": title,
         "previous_score": request.previous_score,
@@ -788,23 +1442,67 @@ def geo_retest(request: GEORetestRequest):
         "status": "improved" if delta > 0 else "needs_more_work",
         "created_at": _now_iso(),
     }
-    RETEST_STORE.setdefault(request.task_id, []).append(retest)
+    _db_add_retest(retest)
 
-    if request.task_id in TASK_STORE:
-        TASK_STORE[request.task_id]["status"] = "retested"
-        TASK_STORE[request.task_id]["latest_retest"] = retest
-        TASK_STORE[request.task_id]["updated_at"] = _now_iso()
+    task = _db_get_task(request.task_id)
+    if task:
+        task["status"] = "retested"
+        task["latest_retest"] = retest
+        workflow = task.get("latest_workflow") or {}
+        task["latest_workflow"] = _update_stage_status(workflow, "retest", "completed")
+        task["updated_at"] = _now_iso()
+        _db_upsert_task(task)
 
     return retest
 
 
 @app.get("/geo/history")
 def geo_history():
-    tasks = sorted(TASK_STORE.values(), key=lambda item: item.get("updated_at", ""), reverse=True)
+    return _db_history()
+
+
+@app.get("/geo/tasks/{task_id}")
+def geo_task_detail(task_id: str):
+    task = _db_get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    history = _db_history()
     return {
-        "tasks": tasks,
-        "versions": list(VERSION_STORE.values()),
-        "retests": RETEST_STORE,
+        "task": task,
+        "versions": [item for item in history["versions"] if item["task_id"] == task_id],
+        "injections": [item for item in history["injections"] if item["task_id"] == task_id],
+        "retests": history["retests"].get(task_id, []),
+    }
+
+
+@app.get("/geo/versions/{version_id}")
+def geo_version_detail(version_id: str):
+    version = _db_get_version(version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    return version
+
+
+@app.post("/geo/export/json")
+def geo_export_json(request: GEOExportRequest):
+    if not request.payload:
+        raise HTTPException(status_code=400, detail="No payload to export.")
+
+    export_id = f"{request.task_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    file_path = EXPORT_DIR / f"{export_id}.json"
+    export_payload = {
+        "export_id": export_id,
+        "target": request.target,
+        "task_id": request.task_id,
+        "created_at": _now_iso(),
+        "payload": request.payload,
+    }
+    file_path.write_text(_json_dumps(export_payload), encoding="utf-8")
+    return {
+        "export_id": export_id,
+        "target": request.target,
+        "file_path": str(file_path),
+        "payload": export_payload,
     }
 
 

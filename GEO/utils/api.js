@@ -1,10 +1,10 @@
 const app = getApp()
 
-function request(path, data) {
+function request(path, data, method = "POST") {
   return new Promise((resolve, reject) => {
     wx.request({
       url: `${app.globalData.apiBase}${path}`,
-      method: "POST",
+      method,
       data,
       header: {
         "Content-Type": "application/json"
@@ -46,10 +46,11 @@ function analyzeUrl(payload) {
   return request("/geo/analyze", payload)
 }
 
-function improvePackage(result) {
+function improvePackage(result, useAi = false) {
   return request("/geo/improve", {
     result,
-    use_ai: false
+    use_ai: useAi,
+    provider: "openai"
   })
 }
 
@@ -68,6 +69,22 @@ function retestTask(payload) {
   return request("/geo/retest", payload)
 }
 
+function injectVersion(payload) {
+  return request("/geo/inject", payload)
+}
+
+function getHistory() {
+  return request("/geo/history", {}, "GET")
+}
+
+function getTaskDetail(taskId) {
+  return request(`/geo/tasks/${taskId}`, {}, "GET")
+}
+
+function exportJson(payload) {
+  return request("/geo/export/json", payload)
+}
+
 module.exports = {
   auditUrl,
   auditContent,
@@ -75,5 +92,9 @@ module.exports = {
   improvePackage,
   saveVersion,
   reviewVersion,
-  retestTask
+  injectVersion,
+  retestTask,
+  getHistory,
+  getTaskDetail,
+  exportJson
 }

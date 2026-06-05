@@ -1,6 +1,7 @@
 {
   "pages": [
-    "pages/index/index"
+    "pages/index/index",
+    "pages/history/history"
   ],
   "window": {
     "navigationBarTitleText": "GEO 推广工作台",

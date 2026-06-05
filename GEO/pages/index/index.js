@@ -1,4 +1,14 @@
-const { auditContent, analyzeUrl, improvePackage, saveVersion, reviewVersion, retestTask } = require("../../utils/api")
+const {
+  auditContent,
+  analyzeUrl,
+  improvePackage,
+  saveVersion,
+  reviewVersion,
+  injectVersion,
+  retestTask,
+  getTaskDetail,
+  exportJson
+} = require("../../utils/api")
 
 const dimensionLabels = {
   semantic_clarity: "语义清晰",
@@ -337,6 +347,7 @@ function buildExportJson(result) {
 
 Page({
   data: {
+    hasAnalyzed: false,
     mode: "url",
     url: "",
     content: "",
@@ -350,16 +361,22 @@ Page({
     generateFaq: true,
     generateSchema: true,
     generateConversionTips: true,
+    useAi: false,
     activeTab: "summary",
     activeStep: "advise",
     stepPanel: buildStepPanel(defaultResult, "advise"),
     workflow: defaultWorkflow,
     version: null,
+    injection: null,
     retest: null,
     improving: false,
     savingVersion: false,
     reviewing: false,
+    injecting: false,
+    deliveryTarget: "json_file",
+    webhookUrl: "",
     retesting: false,
+    exporting: false,
     taskList: [],
     loading: false,
     error: "",
@@ -367,6 +384,55 @@ Page({
     dimensions: buildDimensions(defaultResult.breakdown),
     assets: buildAssets(defaultResult),
     nextSteps: buildNextSteps(defaultResult)
+  },
+
+  onShow() {
+    const taskId = wx.getStorageSync("geo_resume_task")
+    if (!taskId) {
+      return
+    }
+    wx.removeStorageSync("geo_resume_task")
+    this.resumeTask(taskId)
+  },
+
+  async resumeTask(taskId) {
+    this.setData({ loading: true, error: "" })
+    try {
+      const detail = await getTaskDetail(taskId)
+      const task = detail.task || {}
+      const latestVersion = (detail.versions || [])[0] || null
+      const latestInjection = (detail.injections || [])[0] || null
+      const latestRetest = (detail.retests || [])[0] || task.latest_retest || null
+      const baseResult = task.latest_result || defaultResult
+      const normalized = {
+        ...baseResult,
+        is_url_task: true,
+        workflow: task.latest_workflow || (latestVersion && latestVersion.workflow) || defaultWorkflow,
+        version: latestVersion,
+        injection: latestInjection,
+        retest: latestRetest
+      }
+      if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
+        normalized.injection_modules = latestVersion.modules
+      }
+      this.setData({
+        hasAnalyzed: true,
+        result: normalized,
+        workflow: normalized.workflow,
+        version: latestVersion,
+        injection: latestInjection,
+        retest: latestRetest,
+        dimensions: buildDimensions(normalized.breakdown),
+        assets: buildAssets(normalized),
+        nextSteps: buildNextSteps(normalized),
+        stepPanel: buildStepPanel(normalized, "export"),
+        activeStep: "export",
+        activeTab: "modules",
+        loading: false
+      })
+    } catch (error) {
+      this.setData({ loading: false, error: error.message || "恢复任务失败" })
+    }
   },
 
   onUrlInput(event) {
@@ -397,6 +463,14 @@ Page({
   toggleOption(event) {
     const key = event.currentTarget.dataset.key
     this.setData({ [key]: !this.data[key] })
+  },
+
+  setDeliveryTarget(event) {
+    this.setData({ deliveryTarget: event.currentTarget.dataset.target, error: "" })
+  },
+
+  onWebhookInput(event) {
+    this.setData({ webhookUrl: event.detail.value, error: "" })
   },
 
   switchTab(event) {
@@ -435,7 +509,9 @@ Page({
           market: marketOptions[marketIndex].value,
           generate_faq: this.data.generateFaq,
           generate_schema: this.data.generateSchema,
-          generate_conversion_tips: this.data.generateConversionTips
+          generate_conversion_tips: this.data.generateConversionTips,
+          use_ai: this.data.useAi,
+          provider: "openai"
         }
         const results = await Promise.all(urls.map((item) => analyzeUrl({ ...payloadBase, url: item })))
         result = results[0]
@@ -452,6 +528,7 @@ Page({
 
       const normalized = {
         ...result,
+        is_url_task: mode === "url",
         title: result.title || "内容 GEO 诊断",
         url: result.url || "手动输入内容",
         content_preview: result.content_preview || value.slice(0, 600),
@@ -467,6 +544,7 @@ Page({
       normalized.workflow = result.workflow || defaultWorkflow
 
       this.setData({
+        hasAnalyzed: true,
         result: normalized,
         dimensions: buildDimensions(normalized.breakdown),
         assets: buildAssets(normalized),
@@ -474,6 +552,7 @@ Page({
         stepPanel: buildStepPanel(normalized, this.data.activeStep),
         workflow: normalized.workflow,
         version: null,
+        injection: null,
         retest: null,
         taskList,
         activeTab: "summary",
@@ -485,6 +564,22 @@ Page({
         loading: false
       })
     }
+  },
+
+  resetAudit() {
+    this.setData({
+      hasAnalyzed: false,
+      url: "",
+      content: "",
+      error: "",
+      taskList: [],
+      activeTab: "summary",
+      activeStep: "advise",
+      version: null,
+      injection: null,
+      retest: null
+    })
+    wx.pageScrollTo({ scrollTop: 0, duration: 250 })
   },
 
   copyBrief() {
@@ -522,6 +617,10 @@ Page({
     })
   },
 
+  goHistory() {
+    wx.navigateTo({ url: "/pages/history/history" })
+  },
+
   runStepAction() {
     const { activeStep } = this.data
     if (activeStep === "produce") {
@@ -545,7 +644,7 @@ Page({
     this.setData({ improving: true, error: "" })
 
     try {
-      const workflow = await improvePackage(this.data.result)
+      const workflow = await improvePackage(this.data.result, this.data.useAi)
       const improvedModules = workflow.improved_modules && workflow.improved_modules.length
         ? workflow.improved_modules
         : this.data.result.injection_modules
@@ -554,6 +653,7 @@ Page({
         workflow,
         injection_modules: improvedModules,
         version: null,
+        injection: null,
         retest: null
       }
 
@@ -561,6 +661,7 @@ Page({
         result: updatedResult,
         workflow,
         version: null,
+        injection: null,
         retest: null,
         stepPanel: buildStepPanel(updatedResult, "produce"),
         activeTab: "modules",
@@ -607,6 +708,10 @@ Page({
   },
 
   async saveDraftVersion() {
+    if (!this.data.result.task_id || this.data.result.is_url_task === false) {
+      wx.showToast({ title: "内容分析仅支持诊断，请使用 URL 分析进入闭环", icon: "none" })
+      return
+    }
     if (this.data.savingVersion) {
       return
     }
@@ -681,6 +786,11 @@ Page({
       wx.showToast({ title: "请先审核通过", icon: "none" })
       return
     }
+    const injection = this.data.result.injection || this.data.injection
+    if (!injection || injection.status !== "completed") {
+      wx.showToast({ title: "请先执行交付注入", icon: "none" })
+      return
+    }
     if (this.data.retesting) {
       return
     }
@@ -691,7 +801,9 @@ Page({
         task_id: this.data.result.task_id,
         url: this.data.result.url,
         previous_score: this.data.result.geo_score,
-        approved_payload: version.injection_payload
+        approved_payload: version.injection_payload,
+        version_id: version.version_id,
+        injection_id: injection.injection_id
       })
       const result = {
         ...this.data.result,
@@ -709,6 +821,80 @@ Page({
       this.setData({
         error: error.message || "复测失败",
         retesting: false
+      })
+    }
+  },
+
+  async runInjection() {
+    const version = this.data.result.version || {}
+    if (version.status !== "approved") {
+      wx.showToast({ title: "请先审核通过", icon: "none" })
+      return
+    }
+    if (this.data.injecting) {
+      return
+    }
+    if (this.data.deliveryTarget === "webhook" && !this.data.webhookUrl.trim()) {
+      wx.showToast({ title: "请输入 CMS Webhook", icon: "none" })
+      return
+    }
+    this.setData({ injecting: true, error: "" })
+    try {
+      const injection = await injectVersion({
+        version_id: version.version_id,
+        target: this.data.deliveryTarget,
+        webhook_url: this.data.deliveryTarget === "webhook" ? this.data.webhookUrl.trim() : undefined
+      })
+      const workflowBase = this.data.result.workflow || defaultWorkflow
+      const workflow = {
+        ...workflowBase,
+        stages: (workflowBase.stages || []).map((stage) => {
+          if (stage.key === "inject") return { ...stage, status: "completed" }
+          if (stage.key === "retest") return { ...stage, status: "ready" }
+          return stage
+        })
+      }
+      const result = { ...this.data.result, injection, workflow }
+      this.setData({
+        result,
+        injection,
+        workflow,
+        stepPanel: buildStepPanel(result, "export"),
+        activeStep: "export",
+        injecting: false
+      })
+      wx.showToast({ title: "交付已完成", icon: "success" })
+    } catch (error) {
+      this.setData({ injecting: false, error: error.message || "交付注入失败" })
+    }
+  },
+
+  async exportJsonFile() {
+    if (this.data.exporting) {
+      return
+    }
+
+    const workflow = this.data.result.workflow || {}
+    const payload = workflow.injection_payload || this.data.result
+    this.setData({ exporting: true, error: "" })
+
+    try {
+      const exported = await exportJson({
+        task_id: this.data.result.task_id || "manual",
+        target: "json_file",
+        payload
+      })
+      wx.setClipboardData({
+        data: exported.file_path,
+        success() {
+          wx.showToast({ title: "导出路径已复制", icon: "success" })
+        }
+      })
+      this.setData({ exporting: false })
+    } catch (error) {
+      this.setData({
+        error: error.message || "导出失败",
+        exporting: false
       })
     }
   }

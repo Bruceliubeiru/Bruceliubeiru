@@ -1,286 +1,332 @@
 <view class="page">
-  <view class="hero">
-    <view class="hero-copy">
-      <text class="eyebrow">GEO Growth OS</text>
-      <text class="title">网址 GEO 推广工作台</text>
-      <text class="subtitle">输入页面，快速判断它是否容易被 AI 搜索、总结、引用、比较和推荐。</text>
-    </view>
-    <view class="score-card">
-      <text class="score-label">当前 GEO 分</text>
-      <view class="score-row">
-        <text class="score">{{result.geo_score}}</text>
-        <text class="score-max">/{{result.max_score || 100}}</text>
+  <view class="app-header">
+    <view class="brand-block">
+      <view class="brand-mark">G</view>
+      <view>
+        <text class="brand-name">GEO 工作台</text>
+        <text class="brand-meta">AI Search Content OS</text>
       </view>
-      <text class="score-note">{{result.title}}</text>
+    </view>
+    <button class="header-action" bindtap="goHistory">历史任务</button>
+  </view>
+
+  <view wx:if="{{!hasAnalyzed}}" class="start-view">
+    <view class="intro-band">
+      <text class="intro-kicker">URL ANALYSIS</text>
+      <text class="intro-title">新建 GEO 分析</text>
+      <view class="intro-flow">
+        <view class="flow-item active">
+          <text class="flow-no">01</text>
+          <text class="flow-name">诊断</text>
+        </view>
+        <view class="flow-line"></view>
+        <view class="flow-item">
+          <text class="flow-no">02</text>
+          <text class="flow-name">生成</text>
+        </view>
+        <view class="flow-line"></view>
+        <view class="flow-item">
+          <text class="flow-no">03</text>
+          <text class="flow-name">审核</text>
+        </view>
+        <view class="flow-line"></view>
+        <view class="flow-item">
+          <text class="flow-no">04</text>
+          <text class="flow-name">注入</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="surface analysis-form">
+      <view class="segmented">
+        <button class="segment {{mode === 'url' ? 'active' : ''}}" data-mode="url" bindtap="switchMode">URL 分析</button>
+        <button class="segment {{mode === 'content' ? 'active' : ''}}" data-mode="content" bindtap="switchMode">文案分析</button>
+      </view>
+
+      <block wx:if="{{mode === 'url'}}">
+        <view class="field-block">
+          <text class="field-label">目标 URL</text>
+          <textarea class="main-input" value="{{url}}" placeholder="https://example.com/page" bindinput="onUrlInput" />
+          <text class="field-hint">支持多个 URL 换行输入，单次最多 5 个</text>
+        </view>
+
+        <view class="form-section">
+          <text class="form-section-title">分析范围</text>
+          <view class="config-grid">
+            <picker mode="selector" range="{{pageTypeOptions}}" range-key="label" value="{{pageTypeIndex}}" bindchange="changePageType">
+              <view class="config-field">
+                <text class="config-label">页面类型</text>
+                <text class="config-value">{{pageTypeOptions[pageTypeIndex].label}}</text>
+              </view>
+            </picker>
+            <picker mode="selector" range="{{languageOptions}}" range-key="label" value="{{languageIndex}}" bindchange="changeLanguage">
+              <view class="config-field">
+                <text class="config-label">语言</text>
+                <text class="config-value">{{languageOptions[languageIndex].label}}</text>
+              </view>
+            </picker>
+            <picker mode="selector" range="{{marketOptions}}" range-key="label" value="{{marketIndex}}" bindchange="changeMarket">
+              <view class="config-field">
+                <text class="config-label">市场</text>
+                <text class="config-value">{{marketOptions[marketIndex].label}}</text>
+              </view>
+            </picker>
+          </view>
+        </view>
+
+        <view class="form-section">
+          <text class="form-section-title">生成内容</text>
+          <view class="option-grid">
+            <button class="option-toggle {{generateFaq ? 'on' : ''}}" data-key="generateFaq" bindtap="toggleOption">
+              <text class="option-check">{{generateFaq ? '✓' : ''}}</text>
+              <text>FAQ</text>
+            </button>
+            <button class="option-toggle {{generateSchema ? 'on' : ''}}" data-key="generateSchema" bindtap="toggleOption">
+              <text class="option-check">{{generateSchema ? '✓' : ''}}</text>
+              <text>Schema</text>
+            </button>
+            <button class="option-toggle {{generateConversionTips ? 'on' : ''}}" data-key="generateConversionTips" bindtap="toggleOption">
+              <text class="option-check">{{generateConversionTips ? '✓' : ''}}</text>
+              <text>转化建议</text>
+            </button>
+            <button class="option-toggle {{useAi ? 'on' : ''}}" data-key="useAi" bindtap="toggleOption">
+              <text class="option-check">{{useAi ? '✓' : ''}}</text>
+              <text>AI 分析</text>
+            </button>
+          </view>
+        </view>
+      </block>
+
+      <block wx:else>
+        <view class="field-block">
+          <text class="field-label">页面文案</text>
+          <textarea class="main-input content-input" value="{{content}}" placeholder="粘贴页面正文、产品介绍或 FAQ 文案" bindinput="onContentInput" />
+        </view>
+      </block>
+
+      <button class="primary-action" loading="{{loading}}" disabled="{{loading}}" bindtap="runAudit">
+        {{loading ? '正在分析' : '开始分析'}}
+      </button>
+      <text wx:if="{{error}}" class="error">{{error}}</text>
+    </view>
+
+    <view class="quick-grid">
+      <button class="quick-action" bindtap="goHistory">
+        <text class="quick-icon">H</text>
+        <text class="quick-title">历史任务</text>
+        <text class="quick-meta">任务、版本与复测</text>
+      </button>
+      <view class="quick-action static">
+        <text class="quick-icon">S</text>
+        <text class="quick-title">评分标准</text>
+        <text class="quick-meta">6 维 100 分细则</text>
+      </view>
     </view>
   </view>
 
-  <view class="panel input-panel">
-    <view class="mode-tabs">
-      <button class="tab {{mode === 'url' ? 'active' : ''}}" data-mode="url" bindtap="switchMode">网址</button>
-      <button class="tab {{mode === 'content' ? 'active' : ''}}" data-mode="content" bindtap="switchMode">文案</button>
+  <view wx:else class="result-view">
+    <view class="result-toolbar">
+      <button class="back-action" bindtap="resetAudit">新建分析</button>
+      <view class="toolbar-actions">
+        <button class="toolbar-button" bindtap="copyJson">复制 JSON</button>
+        <button class="toolbar-button" loading="{{exporting}}" disabled="{{exporting}}" bindtap="exportJsonFile">导出</button>
+      </view>
     </view>
 
-    <block wx:if="{{mode === 'url'}}">
-      <textarea class="url-input multi-url" value="{{url}}" placeholder="输入要分析的网址；多个 URL 可换行输入" bindinput="onUrlInput" />
-      <view class="config-grid">
-        <picker mode="selector" range="{{pageTypeOptions}}" range-key="label" value="{{pageTypeIndex}}" bindchange="changePageType">
-          <view class="config-field">
-            <text class="config-label">页面类型</text>
-            <text class="config-value">{{pageTypeOptions[pageTypeIndex].label}}</text>
-          </view>
-        </picker>
-        <picker mode="selector" range="{{languageOptions}}" range-key="label" value="{{languageIndex}}" bindchange="changeLanguage">
-          <view class="config-field">
-            <text class="config-label">语言</text>
-            <text class="config-value">{{languageOptions[languageIndex].label}}</text>
-          </view>
-        </picker>
-        <picker mode="selector" range="{{marketOptions}}" range-key="label" value="{{marketIndex}}" bindchange="changeMarket">
-          <view class="config-field">
-            <text class="config-label">市场</text>
-            <text class="config-value">{{marketOptions[marketIndex].label}}</text>
-          </view>
-        </picker>
+    <view class="score-hero">
+      <view class="score-main">
+        <text class="score-label">GEO SCORE</text>
+        <view class="score-line">
+          <text class="score-number">{{result.geo_score}}</text>
+          <text class="score-total">/100</text>
+        </view>
+        <text class="score-title">{{result.title}}</text>
+        <text class="score-url">{{result.url}}</text>
       </view>
-      <view class="toggle-row">
-        <button class="toggle {{generateFaq ? 'on' : ''}}" data-key="generateFaq" bindtap="toggleOption">FAQ</button>
-        <button class="toggle {{generateSchema ? 'on' : ''}}" data-key="generateSchema" bindtap="toggleOption">Schema</button>
-        <button class="toggle {{generateConversionTips ? 'on' : ''}}" data-key="generateConversionTips" bindtap="toggleOption">转化建议</button>
+      <view class="score-change">
+        <text class="change-label">预计提升</text>
+        <text class="change-value">+{{workflow.score_delta || 12}}</text>
+        <text class="change-target">目标 {{workflow.predicted_score || result.geo_score + 12}}</text>
       </view>
-    </block>
-    <block wx:else>
-      <textarea class="content-input" value="{{content}}" placeholder="粘贴页面正文、产品介绍或 FAQ 文案" bindinput="onContentInput" />
-    </block>
-
-    <button class="primary-button" loading="{{loading}}" disabled="{{loading}}" bindtap="runAudit">
-      {{loading ? '诊断中' : '开始 GEO 诊断'}}
-    </button>
-    <text wx:if="{{error}}" class="error">{{error}}</text>
-  </view>
-
-  <view wx:if="{{taskList.length}}" class="section">
-    <view class="section-head">
-      <text class="section-title">任务摘要</text>
-      <text class="section-subtitle">多 URL 会分别生成任务，当前展示第一个完整结果</text>
     </view>
-    <view class="task-list">
-      <view class="task-item" wx:for="{{taskList}}" wx:key="task_id" wx:for-item="task">
-        <view class="task-main">
+
+    <scroll-view class="workflow-rail" scroll-x>
+      <view class="workflow-row">
+        <view class="workflow-step {{stage.status}}" wx:for="{{workflow.stages}}" wx:key="key" wx:for-item="stage">
+          <view class="workflow-dot"></view>
+          <text class="workflow-name">{{stage.name}}</text>
+          <text class="workflow-status">{{stage.status}}</text>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view wx:if="{{taskList.length > 1}}" class="surface compact-surface">
+      <view class="section-head">
+        <text class="section-title">批量任务</text>
+        <text class="section-tag">{{taskList.length}} 个 URL</text>
+      </view>
+      <view class="task-row" wx:for="{{taskList}}" wx:key="task_id" wx:for-item="task">
+        <view class="task-copy">
           <text class="task-title">{{task.title}}</text>
           <text class="task-url">{{task.url}}</text>
         </view>
-        <view class="task-score">{{task.score}}</view>
+        <text class="task-score">{{task.score}}</text>
       </view>
     </view>
-  </view>
 
-  <view class="section">
-    <view class="section-head">
-      <text class="section-title">诊断拆解</text>
-      <text class="section-subtitle">{{result.url}}</text>
-    </view>
-    <view class="dimension-list">
-      <view class="dimension" wx:for="{{dimensions}}" wx:key="key">
-        <view class="dimension-top">
-          <text class="dimension-label">{{item.label}}</text>
-          <text class="dimension-value">{{item.value}}/{{item.max}}</text>
+    <view class="surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">DIAGNOSTIC</text>
+          <text class="section-title">诊断拆解</text>
         </view>
-        <view class="track">
-          <view class="bar" style="width: {{item.percent}}%;"></view>
-        </view>
+        <text class="section-tag">{{dimensions.length}} 项</text>
       </view>
-    </view>
-  </view>
-
-  <view class="section package-section">
-    <view class="section-head package-head">
-      <view class="section-copy">
-        <text class="section-title">GEO 内容包</text>
-        <text class="section-subtitle">按 PRD 输出页面摘要、资产、注入模块、Schema 和转化建议</text>
-      </view>
-      <view class="export-actions">
-        <button class="ghost-button" bindtap="copyJson">JSON</button>
-        <button class="ghost-button" bindtap="copyMarkdown">MD</button>
-      </view>
-    </view>
-
-    <view class="result-tabs">
-      <button class="result-tab {{activeTab === tab.value ? 'active' : ''}}" wx:for="{{resultTabs}}" wx:key="value" wx:for-item="tab" data-tab="{{tab.value}}" bindtap="switchTab">{{tab.label}}</button>
-    </view>
-
-    <view class="workflow-strip">
-      <view class="workflow-stage {{stage.status}}" wx:for="{{workflow.stages}}" wx:key="key" wx:for-item="stage">
-        <text class="workflow-name">{{stage.name}}</text>
-        <text class="workflow-status">{{stage.status}}</text>
-      </view>
-    </view>
-
-    <view wx:if="{{activeTab === 'summary'}}" class="tab-panel">
-      <view class="summary-grid">
-        <view class="summary-item">
-          <text class="summary-label">页面主题</text>
-          <text class="summary-value">{{result.page_summary.theme}}</text>
-        </view>
-        <view class="summary-item">
-          <text class="summary-label">页面类型</text>
-          <text class="summary-value">{{result.page_summary.product_type}}</text>
-        </view>
-        <view class="summary-item">
-          <text class="summary-label">市场/语言</text>
-          <text class="summary-value">{{result.page_summary.market}} · {{result.page_summary.language}}</text>
+      <view class="metric-grid">
+        <view class="metric-item" wx:for="{{dimensions}}" wx:key="key">
+          <view class="metric-top">
+            <text class="metric-name">{{item.label}}</text>
+            <text class="metric-value">{{item.value}}/{{item.max}}</text>
+          </view>
+          <view class="metric-track"><view class="metric-bar" style="width: {{item.percent}}%;"></view></view>
         </view>
       </view>
-      <view class="chip-wrap">
-        <view class="info-chip" wx:for="{{result.page_summary.target_user}}" wx:key="*this" wx:for-item="user">{{user}}</view>
-      </view>
-      <view class="gap-list">
-        <view class="gap-item" wx:for="{{result.content_gaps}}" wx:key="*this" wx:for-item="gap">{{gap}}</view>
-      </view>
     </view>
 
-    <view wx:if="{{activeTab === 'assets'}}" class="tab-panel">
-      <text class="subhead">核心实体</text>
-      <view class="chip-wrap">
-        <view class="info-chip" wx:for="{{result.geo_assets.entities}}" wx:key="*this" wx:for-item="entity">{{entity}}</view>
-      </view>
-      <text class="subhead">关键词</text>
-      <view class="chip-wrap">
-        <view class="info-chip muted" wx:for="{{result.geo_assets.keywords}}" wx:key="*this" wx:for-item="keyword">{{keyword}}</view>
-      </view>
-      <text class="subhead">搜索意图</text>
-      <view class="chip-wrap">
-        <view class="info-chip intent" wx:for="{{result.geo_assets.search_intents}}" wx:key="*this" wx:for-item="intent">{{intent}}</view>
-      </view>
-    </view>
-
-    <view wx:if="{{activeTab === 'modules'}}" class="tab-panel">
-      <view class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
-        <view class="module-meta">
-          <text class="module-type">{{module.module_type}}</text>
-          <text class="module-priority">{{module.review_status || module.priority}}</text>
+    <view class="surface execution-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">ACTION PLAN</text>
+          <text class="section-title">执行工作流</text>
         </view>
-        <input class="module-edit-title" value="{{module.title}}" data-index="{{index}}" bindinput="updateModuleTitle" />
-        <textarea class="module-edit-body" value="{{module.body}}" data-index="{{index}}" bindinput="updateModuleBody" />
-        <text class="module-position">推荐位置：{{module.target_position}}</text>
-        <text wx:if="{{module.injection_field}}" class="module-position">注入字段：{{module.injection_field}}</text>
-        <text wx:if="{{module.change_reason}}" class="module-reason">改进原因：{{module.change_reason}}</text>
+        <text class="section-tag">{{stepPanel.phase}}</text>
       </view>
-      <view class="review-actions">
-        <button class="ghost-button" loading="{{savingVersion}}" disabled="{{savingVersion}}" bindtap="saveDraftVersion">
-          {{savingVersion ? '保存中' : '保存版本'}}
-        </button>
-        <button class="ghost-button" loading="{{reviewing}}" disabled="{{reviewing}}" bindtap="approveVersion">
-          {{reviewing ? '审核中' : '审核通过'}}
-        </button>
-        <button class="ghost-button" loading="{{retesting}}" disabled="{{retesting}}" bindtap="runRetest">
-          {{retesting ? '复测中' : '复测'}}
+      <view class="step-switcher">
+        <button class="step-switch {{activeStep === item.key ? 'active' : ''}}" wx:for="{{nextSteps}}" wx:key="key" data-step="{{item.key}}" bindtap="switchStep">
+          <text class="step-index">{{index + 1}}</text>
+          <text class="step-label">{{item.title}}</text>
         </button>
       </view>
-      <view wx:if="{{version}}" class="version-note">
-        <text>版本：{{version.version_id}} · {{version.status}}</text>
-      </view>
-      <view wx:if="{{retest}}" class="version-note">
-        <text>复测：{{retest.previous_score}} → {{retest.current_score}}，变化 {{retest.score_delta}} 分</text>
-      </view>
-      <view class="faq-mini" wx:for="{{result.faq_items}}" wx:key="question" wx:for-item="faq">
-        <text class="faq-question">{{faq.question}}</text>
-        <text class="faq-answer">{{faq.answer}}</text>
-      </view>
-    </view>
-
-    <view wx:if="{{activeTab === 'schema'}}" class="tab-panel">
-      <view class="schema-card" wx:for="{{result.schema_suggestions}}" wx:key="schema_type" wx:for-item="schema">
-        <text class="schema-type">{{schema.schema_type}}</text>
-        <text class="schema-status">{{schema.validation_status}}</text>
-        <text class="schema-note">复制 JSON 可查看完整结构化数据示例</text>
+      <view class="active-step-panel">
+        <text class="active-step-title">{{stepPanel.title}}</text>
+        <text class="active-step-detail">{{stepPanel.detail}}</text>
+        <view class="check-list">
+          <view class="check-row" wx:for="{{stepPanel.items}}" wx:key="*this" wx:for-item="todo">
+            <view class="check-mark">✓</view>
+            <text class="check-copy">{{todo}}</text>
+          </view>
+        </view>
+        <text class="step-note">{{stepPanel.note}}</text>
+        <button class="primary-action compact" loading="{{improving && activeStep === 'produce'}}" disabled="{{improving}}" bindtap="runStepAction">
+          {{improving && activeStep === 'produce' ? '正在生成' : stepPanel.action}}
+        </button>
       </view>
     </view>
 
-    <view wx:if="{{activeTab === 'conversion'}}" class="tab-panel">
-      <view class="tip-item" wx:for="{{result.conversion_tips}}" wx:key="*this" wx:for-item="tip">
-        <view class="tip-dot"></view>
-        <text class="tip-text">{{tip}}</text>
-      </view>
-    </view>
-  </view>
-
-  <view class="section next-section">
-    <view class="section-head package-head">
-      <view class="section-copy">
-        <text class="section-title">下一步执行</text>
-        <text class="section-subtitle">把诊断结果变成可发布的 GEO 内容资产</text>
-      </view>
-      <button class="ghost-button" bindtap="copyBrief">复制简报</button>
-    </view>
-
-    <view class="step-tabs">
-      <button class="step-tab {{activeStep === item.key ? 'active' : ''}}" wx:for="{{nextSteps}}" wx:key="key" data-step="{{item.key}}" bindtap="switchStep">
-        <text class="step-no">{{item.phase}}</text>
-        <text class="step-name">{{item.title}}</text>
-      </button>
-    </view>
-
-    <view class="step-panel">
-      <view class="step-panel-head">
-        <text class="next-phase">{{stepPanel.phase}}</text>
-        <view class="next-body">
-          <text class="next-title">{{stepPanel.title}}</text>
-          <text class="next-detail">{{stepPanel.detail}}</text>
+    <view class="surface package-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">CONTENT PACKAGE</text>
+          <text class="section-title">内容与注入</text>
+        </view>
+        <view class="mini-actions">
+          <button bindtap="copyMarkdown">MD</button>
+          <button bindtap="copyJson">JSON</button>
         </view>
       </view>
-      <view class="step-output">
-        <text class="output-label">本步产出</text>
-        <view class="output-chip">{{stepPanel.output}}</view>
-      </view>
-      <view class="step-checklist">
-        <view class="step-check" wx:for="{{stepPanel.items}}" wx:key="*this" wx:for-item="todo">
-          <view class="check-dot"></view>
-          <text class="check-text">{{todo}}</text>
+
+      <scroll-view class="result-tabs-scroll" scroll-x>
+        <view class="result-tabs">
+          <button class="result-tab {{activeTab === tab.value ? 'active' : ''}}" wx:for="{{resultTabs}}" wx:key="value" wx:for-item="tab" data-tab="{{tab.value}}" bindtap="switchTab">{{tab.label}}</button>
+        </view>
+      </scroll-view>
+
+      <view wx:if="{{activeTab === 'summary'}}" class="tab-panel">
+        <view class="summary-grid">
+          <view class="summary-item">
+            <text class="summary-label">页面主题</text>
+            <text class="summary-value">{{result.page_summary.theme}}</text>
+          </view>
+          <view class="summary-item half">
+            <text class="summary-label">页面类型</text>
+            <text class="summary-value">{{result.page_summary.product_type}}</text>
+          </view>
+          <view class="summary-item half">
+            <text class="summary-label">市场 / 语言</text>
+            <text class="summary-value">{{result.page_summary.market}} · {{result.page_summary.language}}</text>
+          </view>
+        </view>
+        <text class="content-subtitle">目标用户</text>
+        <view class="chip-wrap">
+          <view class="chip" wx:for="{{result.page_summary.target_user}}" wx:key="*this" wx:for-item="user">{{user}}</view>
+        </view>
+        <text class="content-subtitle">内容缺口</text>
+        <view class="issue-row" wx:for="{{result.content_gaps}}" wx:key="*this" wx:for-item="gap">
+          <view class="issue-mark">!</view><text>{{gap}}</text>
         </view>
       </view>
-      <text class="step-note">{{stepPanel.note}}</text>
-      <button class="primary-button step-button" loading="{{improving && activeStep === 'produce'}}" disabled="{{improving}}" bindtap="runStepAction">
-        {{improving && activeStep === 'produce' ? '生成中' : stepPanel.action}}
-      </button>
-    </view>
-  </view>
 
-  <view class="section">
-    <view class="section-head">
-      <text class="section-title">推广优先级</text>
-      <text class="section-subtitle">先改最容易影响 AI 答案的内容资产</text>
-    </view>
-    <view class="plan-list">
-      <view class="plan-item" wx:for="{{result.growth_plan}}" wx:key="title">
-        <view class="plan-index">{{index + 1}}</view>
-        <view class="plan-body">
-          <text class="plan-title">{{item.title}}</text>
-          <text class="plan-impact">{{item.impact}}</text>
-          <text class="plan-action">{{item.action}}</text>
+      <view wx:if="{{activeTab === 'assets'}}" class="tab-panel">
+        <text class="content-subtitle first">核心实体</text>
+        <view class="chip-wrap"><view class="chip green" wx:for="{{result.geo_assets.entities}}" wx:key="*this" wx:for-item="entity">{{entity}}</view></view>
+        <text class="content-subtitle">关键词</text>
+        <view class="chip-wrap"><view class="chip" wx:for="{{result.geo_assets.keywords}}" wx:key="*this" wx:for-item="keyword">{{keyword}}</view></view>
+        <text class="content-subtitle">搜索意图</text>
+        <view class="chip-wrap"><view class="chip amber" wx:for="{{result.geo_assets.search_intents}}" wx:key="*this" wx:for-item="intent">{{intent}}</view></view>
+      </view>
+
+      <view wx:if="{{activeTab === 'modules'}}" class="tab-panel">
+        <view class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
+          <view class="module-head">
+            <text class="module-type">{{module.module_type}}</text>
+            <text class="module-status">{{module.review_status || module.priority}}</text>
+          </view>
+          <input class="module-title-input" value="{{module.title}}" data-index="{{index}}" bindinput="updateModuleTitle" />
+          <textarea class="module-body-input" value="{{module.body}}" data-index="{{index}}" bindinput="updateModuleBody" />
+          <view class="module-meta-row">
+            <text>{{module.target_position}}</text>
+            <text wx:if="{{module.injection_field}}">{{module.injection_field}}</text>
+          </view>
+        </view>
+        <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="review-bar">
+          <button loading="{{savingVersion}}" disabled="{{savingVersion}}" bindtap="saveDraftVersion">保存版本</button>
+          <button class="approve" loading="{{reviewing}}" disabled="{{reviewing}}" bindtap="approveVersion">审核通过</button>
+        </view>
+        <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="delivery-config">
+          <text class="delivery-title">交付目标</text>
+          <view class="delivery-switch">
+            <button class="{{deliveryTarget === 'json_file' ? 'active' : ''}}" data-target="json_file" bindtap="setDeliveryTarget">JSON 文件</button>
+            <button class="{{deliveryTarget === 'webhook' ? 'active' : ''}}" data-target="webhook" bindtap="setDeliveryTarget">CMS Webhook</button>
+          </view>
+          <input wx:if="{{deliveryTarget === 'webhook'}}" class="webhook-input" value="{{webhookUrl}}" placeholder="https://cms.example.com/geo-hook" bindinput="onWebhookInput" />
+        </view>
+        <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="review-bar">
+          <button loading="{{injecting}}" disabled="{{injecting}}" bindtap="runInjection">交付注入</button>
+          <button loading="{{retesting}}" disabled="{{retesting}}" bindtap="runRetest">复测</button>
+        </view>
+        <view wx:else class="status-note">内容分析模式仅提供诊断与草稿预览；请使用 URL 分析进入版本、审核、交付与复测闭环。</view>
+        <view wx:if="{{version}}" class="status-note">版本 {{version.version_id}} · {{version.status}}</view>
+        <view wx:if="{{injection}}" class="status-note">交付 {{injection.injection_id}} · {{injection.status}} · {{injection.target}}</view>
+        <view wx:if="{{retest}}" class="status-note">复测 {{retest.previous_score}} → {{retest.current_score}} · {{retest.score_delta}} 分</view>
+      </view>
+
+      <view wx:if="{{activeTab === 'schema'}}" class="tab-panel">
+        <view class="schema-row" wx:for="{{result.schema_suggestions}}" wx:key="schema_type" wx:for-item="schema">
+          <view><text class="schema-title">{{schema.schema_type}}</text><text class="schema-meta">结构化数据建议</text></view>
+          <text class="schema-status">{{schema.validation_status}}</text>
+        </view>
+      </view>
+
+      <view wx:if="{{activeTab === 'conversion'}}" class="tab-panel">
+        <view class="conversion-row" wx:for="{{result.conversion_tips}}" wx:key="*this" wx:for-item="tip">
+          <text class="conversion-index">{{index + 1}}</text><text>{{tip}}</text>
         </view>
       </view>
     </view>
-  </view>
 
-  <view class="section">
-    <view class="section-head">
-      <text class="section-title">推荐生成资产</text>
-      <text class="section-subtitle">把一个网址拆成可持续投放的 GEO 素材</text>
+    <view class="surface preview-surface">
+      <view class="section-head"><text class="section-title">抓取内容预览</text></view>
+      <text class="preview-copy">{{result.content_preview}}</text>
     </view>
-    <view class="asset-grid">
-      <view class="asset-card" wx:for="{{assets}}" wx:key="name">
-        <text class="asset-name">{{item.name}}</text>
-        <text class="asset-detail">{{item.detail}}</text>
-      </view>
-    </view>
-  </view>
-
-  <view class="section preview-section">
-    <view class="section-head">
-      <text class="section-title">页面内容预览</text>
-      <text class="section-subtitle">用于本次评分的可读文本片段</text>
-    </view>
-    <text class="preview-text">{{result.content_preview}}</text>
   </view>
 </view>

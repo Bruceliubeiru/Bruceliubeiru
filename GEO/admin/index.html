@@ -152,6 +152,18 @@
         <div class="form-row"><input id="cmsName" placeholder="目标名称"><input id="cmsUrl" placeholder="https://cms.example.com/publish"><select id="cmsEnv"><option>staging</option><option>production</option></select><input id="cmsSecretEnv" placeholder="凭证环境变量（可选）"><button class="refresh" id="saveCms">保存目标</button></div>
         <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>名称</th><th>环境</th><th>地址</th><th>凭证</th><th>状态</th></tr></thead><tbody id="cmsRows"></tbody></table></div>
       </section>
+      <section class="grid">
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">品牌知识库</div><div class="panel-meta">用于分析与改写时的品牌事实约束</div></div></div>
+          <div class="form-row"><input id="kbBrand" placeholder="品牌名"><input id="kbTitle" placeholder="知识标题"><input id="kbCategory" placeholder="分类"><input id="kbSource" placeholder="来源"><button class="refresh" id="saveKb">保存</button></div>
+          <div style="margin-top:8px"><input id="kbContent" placeholder="知识内容，建议包含定位、禁用说法、关键事实" style="width:100%;height:36px;border:1px solid var(--line);border-radius:5px;padding:0 9px"></div>
+          <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>品牌</th><th>分类</th><th>标题</th><th>状态</th></tr></thead><tbody id="kbRows"></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">AI 调用日志</div><div class="panel-meta">分析、改写、FAQ 与失败回退记录</div></div></div>
+          <div class="table-wrap"><table><thead><tr><th>时间</th><th>动作</th><th>提供方</th><th>状态</th><th>任务</th></tr></thead><tbody id="llmRows"></tbody></table></div>
+        </div>
+      </section>
       <section class="panel" style="margin-top:14px">
         <div class="panel-head"><div><div class="panel-title">异步任务</div><div class="panel-meta">定时复测、失败重试与执行状态</div></div><div class="filters"><select id="jobStatus"><option value="">全部状态</option><option>queued</option><option>running</option><option>retry_wait</option><option>completed</option><option>failed</option></select><button class="refresh" id="runDue">运行到期任务</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>计划时间</th><th>尝试</th><th>错误</th><th>操作</th></tr></thead><tbody id="jobRows"></tbody></table></div>
@@ -168,6 +180,8 @@
     let audit = null;
     let jobs = null;
     let cmsTargets = [];
+    let knowledgeItems = [];
+    let llmLogs = [];
     let apiKey = sessionStorage.getItem("geoApiKey") || "";
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
@@ -240,6 +254,22 @@
       cmsTargets = result.items;
       renderCmsTargets(cmsTargets);
     }
+    function renderKnowledge(items) {
+      $("kbRows").innerHTML = items.length ? items.map((item) => `<tr><td>${escapeHtml(item.brand)}</td><td>${escapeHtml(item.category)}</td><td><div class="task-title">${escapeHtml(item.title)}</div><div class="task-url">${escapeHtml(item.content)}</div></td><td>${badge(item.status)}</td></tr>`).join("") : `<tr><td colspan="4" class="empty">暂无品牌知识</td></tr>`;
+    }
+    async function loadKnowledge() {
+      const result = await api("/admin/api/knowledge?limit=20");
+      knowledgeItems = result.items;
+      renderKnowledge(knowledgeItems);
+    }
+    function renderLlmLogs(items) {
+      $("llmRows").innerHTML = items.length ? items.map((item) => `<tr><td>${formatTime(item.created_at)}</td><td><strong>${escapeHtml(item.action)}</strong></td><td>${escapeHtml(item.provider)}<div class="task-url">${escapeHtml(item.model || "-")}</div></td><td>${badge(item.status)}</td><td><div class="task-title">${escapeHtml(item.task_id || "-")}</div><div class="task-url">${escapeHtml(item.error_message || item.response_excerpt || "-")}</div></td></tr>`).join("") : `<tr><td colspan="5" class="empty">暂无 AI 调用日志</td></tr>`;
+    }
+    async function loadLlmLogs() {
+      const result = await api("/admin/api/llm-logs?limit=20");
+      llmLogs = result.items;
+      renderLlmLogs(llmLogs);
+    }
     async function loadAudit() {
       const params = new URLSearchParams({limit: "20"});
       const actor = $("auditActor").value.trim();
@@ -266,7 +296,7 @@
     async function load() {
       $("error").hidden = true;
       try {
-        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs(), loadCmsTargets()]);
+        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs(), loadCmsTargets(), loadKnowledge(), loadLlmLogs()]);
         renderMetrics(overview.metrics);
         renderTasks(overview.recent_tasks);
         renderAttention(overview.attention);
@@ -295,7 +325,8 @@
         const version = detail.versions[0];
         const pendingPublication = (detail.publications || []).find((item) => item.status === "pending_confirmation");
         const failedPublication = (detail.publications || []).find((item) => item.status === "failed");
-        const actions = `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${version?.status === "approved" && cmsTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}</div></section>`;
+        const publishedPublication = (detail.publications || []).find((item) => ["published","verification_failed"].includes(item.status));
+        const actions = `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${version?.status === "approved" && cmsTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}${publishedPublication ? `<button class="action" data-verify-publish="${escapeHtml(publishedPublication.publication_id)}">上线校验</button>` : ""}</div></section>`;
         const publicationTimeline = [["发布", detail.publications || [], "publication_id", "status", "updated_at"]];
         $("detailBody").innerHTML = `<div class="detail-grid">${summary.map(([label,value]) => `<div class="detail-item"><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>${actions}` + [...timelines, ...publicationTimeline].map(([label,items,titleKey,statusKey,timeKey]) => `<section class="section"><h3>${label}记录</h3><div class="timeline">${items.length ? items.map((item) => `<div class="timeline-item"><strong>${label}</strong><span>${escapeHtml(item[titleKey] || "-")}</span><span>${badge(item[statusKey])}<br><small>${formatTime(item[timeKey])}</small></span></div>`).join("") : `<div class="empty">暂无${label}记录</div>`}</div></section>`).join("");
         document.querySelector("[data-quality]")?.addEventListener("click", async (event) => { await api(`/geo/versions/${event.target.dataset.quality}/quality-check`, {method:"POST"}); $("detailDialog").close(); await showTask(taskId); });
@@ -303,6 +334,7 @@
         document.querySelector("[data-preview]")?.addEventListener("click", async (event) => { await api("/cms/publications/preview", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({version_id:event.target.dataset.preview, target_id:cmsTargets[0].target_id})}); $("detailDialog").close(); await showTask(taskId); });
         document.querySelector("[data-publish]")?.addEventListener("click", async (event) => { if (!confirm("确认将已审核版本发布到 CMS？")) return; await api("/cms/publications/confirm", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({publication_id:event.target.dataset.publish, confirmation:"PUBLISH"})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         document.querySelector("[data-retry-publish]")?.addEventListener("click", async (event) => { await api(`/cms/publications/${event.target.dataset.retryPublish}/retry`, {method:"POST"}); $("detailDialog").close(); await showTask(taskId); });
+        document.querySelector("[data-verify-publish]")?.addEventListener("click", async (event) => { await api("/cms/publications/verify", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({publication_id:event.target.dataset.verifyPublish})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("saveProject").addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({owner:$("projectOwner").value, target_score:Number($("projectTarget").value), todos:$("projectTodos").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("detailDialog").showModal();
       } catch (error) {
@@ -338,6 +370,13 @@
         await api("/cms/targets", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({name:$("cmsName").value, webhook_url:$("cmsUrl").value, environment:$("cmsEnv").value, auth_env_var:$("cmsSecretEnv").value || null})});
         $("cmsName").value = ""; $("cmsUrl").value = ""; $("cmsSecretEnv").value = "";
         await loadCmsTargets();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("saveKb").addEventListener("click", async () => {
+      try {
+        await api("/geo/knowledge", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({brand:$("kbBrand").value, title:$("kbTitle").value, category:$("kbCategory").value || "positioning", source:$("kbSource").value || null, content:$("kbContent").value, status:"approved"})});
+        $("kbBrand").value = ""; $("kbTitle").value = ""; $("kbCategory").value = ""; $("kbSource").value = ""; $("kbContent").value = "";
+        await loadKnowledge();
       } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
     });
     $("closeDialog").addEventListener("click", () => $("detailDialog").close());

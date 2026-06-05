@@ -5,6 +5,12 @@ const {
   saveVersion,
   reviewVersion,
   injectVersion,
+  getCmsTargets,
+  createPublicationPreview,
+  confirmPublication,
+  retryPublication,
+  verifyPublication,
+  saveFeedback,
   retestTask,
   scheduleRetest,
   getTaskDetail,
@@ -371,10 +377,19 @@ Page({
     injection: null,
     retest: null,
     project: null,
+    publications: [],
+    cmsTargets: [],
+    cmsTargetIndex: 0,
+    publishConfirmation: "",
+    feedbackVerdict: "accepted",
+    feedbackNotes: "",
     improving: false,
     savingVersion: false,
     reviewing: false,
     injecting: false,
+    publishing: false,
+    verifyingPublication: false,
+    savingFeedback: false,
     deliveryTarget: "json_file",
     webhookUrl: "",
     retesting: false,
@@ -413,7 +428,8 @@ Page({
         version: latestVersion,
         injection: latestInjection,
         retest: latestRetest,
-        project: detail.project || null
+        project: detail.project || null,
+        publications: detail.publications || []
       }
       if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
         normalized.injection_modules = latestVersion.modules
@@ -426,6 +442,7 @@ Page({
         injection: latestInjection,
         retest: latestRetest,
         project: detail.project || null,
+        publications: detail.publications || [],
         dimensions: buildDimensions(normalized.breakdown),
         assets: buildAssets(normalized),
         nextSteps: buildNextSteps(normalized),
@@ -434,8 +451,21 @@ Page({
         activeTab: "modules",
         loading: false
       })
+      await this.loadCmsTargets()
     } catch (error) {
       this.setData({ loading: false, error: error.message || "恢复任务失败" })
+    }
+  },
+
+  async loadCmsTargets() {
+    try {
+      const result = await getCmsTargets()
+      this.setData({
+        cmsTargets: result.items || [],
+        cmsTargetIndex: 0
+      })
+    } catch (error) {
+      this.setData({ error: error.message || "加载 CMS 目标失败" })
     }
   },
 
@@ -475,6 +505,22 @@ Page({
 
   onWebhookInput(event) {
     this.setData({ webhookUrl: event.detail.value, error: "" })
+  },
+
+  changeCmsTarget(event) {
+    this.setData({ cmsTargetIndex: Number(event.detail.value) })
+  },
+
+  onPublishConfirmationInput(event) {
+    this.setData({ publishConfirmation: event.detail.value })
+  },
+
+  onFeedbackNotesInput(event) {
+    this.setData({ feedbackNotes: event.detail.value })
+  },
+
+  setFeedbackVerdict(event) {
+    this.setData({ feedbackVerdict: event.currentTarget.dataset.verdict })
   },
 
   switchTab(event) {
@@ -569,6 +615,9 @@ Page({
         activeTab: "summary",
         loading: false
       })
+      if (mode === "url") {
+        await this.loadCmsTargets()
+      }
     } catch (error) {
       this.setData({
         error: error.message || "诊断失败，请稍后重试",
@@ -588,7 +637,10 @@ Page({
       activeStep: "advise",
       version: null,
       injection: null,
-      retest: null
+      retest: null,
+      publications: [],
+      publishConfirmation: "",
+      feedbackNotes: ""
     })
     wx.pageScrollTo({ scrollTop: 0, duration: 250 })
   },
@@ -907,6 +959,145 @@ Page({
       wx.showToast({ title: "交付已完成", icon: "success" })
     } catch (error) {
       this.setData({ injecting: false, error: error.message || "交付注入失败" })
+    }
+  },
+
+  async reloadCurrentTask() {
+    if (!this.data.result.task_id) {
+      return
+    }
+    const detail = await getTaskDetail(this.data.result.task_id)
+    const task = detail.task || {}
+    const latestVersion = (detail.versions || [])[0] || this.data.version
+    const latestInjection = (detail.injections || [])[0] || this.data.injection
+    const latestRetest = (detail.retests || [])[0] || this.data.retest
+    const result = {
+      ...(task.latest_result || this.data.result),
+      workflow: task.latest_workflow || this.data.workflow,
+      version: latestVersion,
+      injection: latestInjection,
+      retest: latestRetest,
+      project: detail.project || this.data.project
+    }
+    if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
+      result.injection_modules = latestVersion.modules
+    }
+    this.setData({
+      result,
+      workflow: result.workflow,
+      version: latestVersion,
+      injection: latestInjection,
+      retest: latestRetest,
+      project: detail.project || this.data.project,
+      publications: detail.publications || [],
+      stepPanel: buildStepPanel(result, this.data.activeStep)
+    })
+  },
+
+  async createCmsPreview() {
+    const version = this.data.result.version || {}
+    const target = this.data.cmsTargets[this.data.cmsTargetIndex]
+    if (version.status !== "approved") {
+      wx.showToast({ title: "请先审核通过", icon: "none" })
+      return
+    }
+    if (!target) {
+      wx.showToast({ title: "请先配置 CMS 目标", icon: "none" })
+      return
+    }
+    this.setData({ publishing: true, error: "" })
+    try {
+      await createPublicationPreview({ version_id: version.version_id, target_id: target.target_id })
+      await this.reloadCurrentTask()
+      this.setData({ publishing: false })
+      wx.showToast({ title: "已创建预览", icon: "success" })
+    } catch (error) {
+      this.setData({ publishing: false, error: error.message || "创建发布预览失败" })
+    }
+  },
+
+  async confirmCmsPublish() {
+    const publication = (this.data.publications || [])[0]
+    if (!publication || publication.status !== "pending_confirmation") {
+      wx.showToast({ title: "暂无待确认发布", icon: "none" })
+      return
+    }
+    if (this.data.publishConfirmation.trim() !== "PUBLISH") {
+      wx.showToast({ title: "请输入 PUBLISH", icon: "none" })
+      return
+    }
+    this.setData({ publishing: true, error: "" })
+    try {
+      await confirmPublication({
+        publication_id: publication.publication_id,
+        confirmation: this.data.publishConfirmation.trim()
+      })
+      await this.reloadCurrentTask()
+      this.setData({ publishing: false, publishConfirmation: "" })
+      wx.showToast({ title: "已提交发布", icon: "success" })
+    } catch (error) {
+      this.setData({ publishing: false, error: error.message || "确认发布失败" })
+    }
+  },
+
+  async retryCmsPublish() {
+    const publication = (this.data.publications || []).find((item) => item.status === "failed")
+    if (!publication) {
+      wx.showToast({ title: "暂无失败发布", icon: "none" })
+      return
+    }
+    this.setData({ publishing: true, error: "" })
+    try {
+      await retryPublication(publication.publication_id)
+      await this.reloadCurrentTask()
+      this.setData({ publishing: false })
+      wx.showToast({ title: "已重置发布", icon: "success" })
+    } catch (error) {
+      this.setData({ publishing: false, error: error.message || "重试发布失败" })
+    }
+  },
+
+  async verifyCmsPublication() {
+    const publication = (this.data.publications || []).find((item) => ["published", "verification_failed"].includes(item.status))
+    if (!publication) {
+      wx.showToast({ title: "暂无可校验发布", icon: "none" })
+      return
+    }
+    this.setData({ verifyingPublication: true, error: "" })
+    try {
+      await verifyPublication({
+        publication_id: publication.publication_id,
+        notes: this.data.feedbackNotes.trim() || undefined
+      })
+      await this.reloadCurrentTask()
+      this.setData({ verifyingPublication: false })
+      wx.showToast({ title: "上线校验完成", icon: "success" })
+    } catch (error) {
+      this.setData({ verifyingPublication: false, error: error.message || "上线校验失败" })
+    }
+  },
+
+  async submitFeedback() {
+    if (!this.data.result.task_id || !this.data.feedbackNotes.trim()) {
+      wx.showToast({ title: "请填写反馈说明", icon: "none" })
+      return
+    }
+    const publication = (this.data.publications || [])[0] || {}
+    this.setData({ savingFeedback: true, error: "" })
+    try {
+      await saveFeedback({
+        task_id: this.data.result.task_id,
+        version_id: this.data.version && this.data.version.version_id,
+        publication_id: publication.publication_id,
+        verdict: this.data.feedbackVerdict,
+        notes: this.data.feedbackNotes.trim(),
+        source: "miniapp"
+      })
+      await this.reloadCurrentTask()
+      this.setData({ savingFeedback: false, feedbackNotes: "" })
+      wx.showToast({ title: "反馈已记录", icon: "success" })
+    } catch (error) {
+      this.setData({ savingFeedback: false, error: error.message || "保存反馈失败" })
     }
   },
 

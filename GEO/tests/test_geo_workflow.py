@@ -350,6 +350,74 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("failed", failed["status"])
         self.assertEqual("pending_confirmation", retried["status"])
 
+    def test_published_cms_publication_can_be_verified_live(self):
+        result, approved = self._approved_version()
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="Test CMS", webhook_url="https://cms.example.com/publish")
+        )
+        preview = main.cms_publication_preview(
+            main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
+        )
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, *_): return b'{"published":true}'
+
+        with patch.object(main, "urlopen", return_value=Response()):
+            published = main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
+            )
+        verified = main.cms_publication_verify(
+            main.CMSPublicationVerifyRequest(
+                publication_id=published["publication_id"],
+                expected_terms=["GEO Growth OS"],
+                notes="live page checked",
+            )
+        )
+        self.assertEqual("verified_live", verified["status"])
+        self.assertEqual("verified_live", verified["live_status"])
+        self.assertIn("GEO Growth OS", verified["live_summary"]["matched_terms"])
+
+    def test_knowledge_and_feedback_are_persisted_in_task_context(self):
+        main.geo_knowledge_save(
+            main.GEOKnowledgeItemRequest(
+                brand="example",
+                category="facts",
+                title="Brand wording",
+                content="Use precise product language and avoid unsupported guarantees.",
+            )
+        )
+        result = main.geo_analyze(main.GEOAnalyzeRequest(url="https://example.com/geo"))
+        workflow = main.geo_improve(main.GEOImproveRequest(result=result))
+        feedback = main.geo_feedback_save(
+            main.GEOFeedbackRequest(
+                task_id=result["task_id"],
+                verdict="needs_edit",
+                notes="运营要求补充真实案例证据。",
+            )
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertTrue(result["knowledge_snapshot"])
+        self.assertEqual("Brand wording", result["knowledge_snapshot"][0]["title"])
+        self.assertIn("knowledge_snapshot", workflow)
+        self.assertEqual("needs_edit", feedback["verdict"])
+        self.assertEqual(1, len(detail["feedback"]))
+
+    def test_llm_logs_are_saved_for_ai_calls(self):
+        fake_output = """{"page_summary":{},"geo_assets":{},"content_gaps":[],"injection_modules":[],"faq_items":[],"schema_suggestions":[],"conversion_tips":[]}"""
+        with patch("backend.main.MultiLLMClient") as client_cls:
+            client_cls.return_value.generate_text.return_value = fake_output
+            result = main.geo_analyze(
+                main.GEOAnalyzeRequest(url="https://example.com/geo", use_ai=True, provider="openai")
+            )
+        logs = main.admin_llm_logs(task_id=result["task_id"], limit=20)
+        self.assertEqual("ai", result["analysis_source"])
+        self.assertEqual("geo_analyze", logs["items"][0]["action"])
+        self.assertEqual("success", logs["items"][0]["status"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (

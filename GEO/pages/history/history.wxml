@@ -24,6 +24,7 @@
     <button class="tab {{activeTab === 'tasks' ? 'active' : ''}}" data-tab="tasks" bindtap="switchTab">任务</button>
     <button class="tab {{activeTab === 'versions' ? 'active' : ''}}" data-tab="versions" bindtap="switchTab">版本</button>
     <button class="tab {{activeTab === 'injections' ? 'active' : ''}}" data-tab="injections" bindtap="switchTab">交付</button>
+    <button class="tab {{activeTab === 'publications' ? 'active' : ''}}" data-tab="publications" bindtap="switchTab">发布</button>
     <button class="tab {{activeTab === 'retests' ? 'active' : ''}}" data-tab="retests" bindtap="switchTab">复测</button>
   </view>
 
@@ -62,6 +63,24 @@
       </view>
     </view>
     <text wx:if="{{!displayInjections.length && !loading}}" class="empty">暂无交付记录</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'publications'}}" class="list">
+    <view class="card" wx:for="{{displayPublications}}" wx:key="publication_id" wx:for-item="publication">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{publication.publication_id}}</text>
+          <text class="url">{{publication.target_id}}</text>
+        </view>
+        <text class="status {{publication.status}}">{{publication.status}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">确认</text><text class="meta-value">{{publication.confirmed_by || '-'}}</text></view>
+        <view><text class="meta-label">上线校验</text><text class="meta-value">{{publication.live_status || '-'}}</text></view>
+        <view><text class="meta-label">结果</text><text class="meta-value">{{publication.response_summary || '-'}}</text></view>
+      </view>
+    </view>
+    <text wx:if="{{!displayPublications.length && !loading}}" class="empty">暂无发布记录</text>
   </view>
 
   <view wx:if="{{activeTab === 'versions'}}" class="list">

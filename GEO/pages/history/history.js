@@ -9,6 +9,8 @@ Page({
     displayVersions: [],
     injections: [],
     displayInjections: [],
+    publications: [],
+    displayPublications: [],
     retestGroups: [],
     displayRetestGroups: [],
     selectedTaskId: "",
@@ -38,6 +40,7 @@ Page({
       activeTab: "versions",
       displayVersions: this.data.versions.filter((version) => version.task_id === taskId),
       displayInjections: this.data.injections.filter((injection) => injection.task_id === taskId),
+      displayPublications: this.data.publications.filter((publication) => publication.task_id === taskId),
       displayRetestGroups: this.data.retestGroups.filter((group) => group.task_id === taskId)
     })
   },
@@ -47,6 +50,7 @@ Page({
       selectedTaskId: "",
       displayVersions: this.data.versions,
       displayInjections: this.data.injections,
+      displayPublications: this.data.publications,
       displayRetestGroups: this.data.retestGroups
     })
   },
@@ -70,6 +74,8 @@ Page({
         displayVersions: history.versions || [],
         injections: history.injections || [],
         displayInjections: history.injections || [],
+        publications: history.publications || [],
+        displayPublications: history.publications || [],
         retestGroups,
         displayRetestGroups: retestGroups,
         loading: false

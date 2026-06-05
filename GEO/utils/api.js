@@ -77,6 +77,30 @@ function injectVersion(payload) {
   return request("/geo/inject", payload)
 }
 
+function getCmsTargets() {
+  return request("/cms/targets", {}, "GET")
+}
+
+function createPublicationPreview(payload) {
+  return request("/cms/publications/preview", payload)
+}
+
+function confirmPublication(payload) {
+  return request("/cms/publications/confirm", payload)
+}
+
+function retryPublication(publicationId) {
+  return request(`/cms/publications/${publicationId}/retry`, {}, "POST")
+}
+
+function verifyPublication(payload) {
+  return request("/cms/publications/verify", payload)
+}
+
+function saveFeedback(payload) {
+  return request("/geo/feedback", payload)
+}
+
 function getHistory() {
   return request("/geo/history", {}, "GET")
 }
@@ -97,6 +121,12 @@ module.exports = {
   saveVersion,
   reviewVersion,
   injectVersion,
+  getCmsTargets,
+  createPublicationPreview,
+  confirmPublication,
+  retryPublication,
+  verifyPublication,
+  saveFeedback,
   retestTask,
   scheduleRetest,
   getHistory,

@@ -46,6 +46,9 @@ def build_admin_overview(history: dict) -> dict:
     injections = history.get("injections") or []
     retests = history.get("retests") or {}
     publications = history.get("publications") or []
+    knowledge_items = history.get("knowledge_items") or []
+    feedback_entries = history.get("feedback_entries") or []
+    llm_logs = history.get("llm_logs") or []
     summaries = [_task_summary(task, versions, injections, retests) for task in tasks]
 
     pending_versions = [item for item in versions if item.get("status") == "pending_review"]
@@ -79,6 +82,11 @@ def build_admin_overview(history: dict) -> dict:
             "average_delta": average_delta,
             "blocked_versions": len(blocked_versions),
             "failed_publications": len(failed_publications),
+            "published": len([item for item in publications if item.get("status") in {"published", "verified_live"}]),
+            "verified_live": len([item for item in publications if item.get("status") == "verified_live"]),
+            "knowledge_items": len(knowledge_items),
+            "feedback_entries": len(feedback_entries),
+            "llm_logs": len(llm_logs),
         },
         "status_counts": dict(Counter(item["status"] for item in summaries)),
         "attention": {
@@ -93,6 +101,9 @@ def build_admin_overview(history: dict) -> dict:
         "recent_tasks": summaries[:12],
         "recent_injections": injections[:8],
         "recent_retests": all_retests[:8],
+        "recent_publications": publications[:8],
+        "recent_feedback": feedback_entries[:8],
+        "recent_llm_logs": llm_logs[:8],
     }
 
 

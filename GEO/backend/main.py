@@ -222,6 +222,12 @@ class CMSPublishConfirmRequest(BaseModel):
     confirmation: str
 
 
+class CMSPublicationVerifyRequest(BaseModel):
+    publication_id: str
+    expected_terms: list[str] | None = None
+    notes: str | None = None
+
+
 class LLMGenerateRequest(BaseModel):
     provider: str = "openai"
     prompt: str
@@ -240,6 +246,24 @@ class GEOFAQRequest(BaseModel):
     product_description: str
     count: int = 20
     model: str | None = None
+
+
+class GEOKnowledgeItemRequest(BaseModel):
+    brand: str
+    category: str = "positioning"
+    title: str
+    content: str
+    source: str | None = None
+    status: str = "approved"
+
+
+class GEOFeedbackRequest(BaseModel):
+    task_id: str
+    version_id: str | None = None
+    publication_id: str | None = None
+    verdict: str
+    notes: str
+    source: str = "miniapp"
 
 
 def _now_iso() -> str:
@@ -366,6 +390,52 @@ def _init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS knowledge_items (
+                knowledge_id TEXT PRIMARY KEY,
+                brand TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_entries (
+                feedback_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                version_id TEXT,
+                publication_id TEXT,
+                verdict TEXT NOT NULL,
+                notes TEXT NOT NULL,
+                source TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS llm_logs (
+                log_id TEXT PRIMARY KEY,
+                task_id TEXT,
+                action TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT,
+                status TEXT NOT NULL,
+                prompt_excerpt TEXT,
+                response_excerpt TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS injections (
                 injection_id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -433,6 +503,15 @@ def _init_db() -> None:
         version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(versions)").fetchall()}
         if "quality_report" not in version_columns:
             conn.execute("ALTER TABLE versions ADD COLUMN quality_report TEXT")
+        publication_columns = {row["name"] for row in conn.execute("PRAGMA table_info(publications)").fetchall()}
+        for column, definition in {
+            "live_status": "TEXT",
+            "live_summary": "TEXT",
+            "live_confirmed_by": "TEXT",
+            "live_confirmed_at": "TEXT",
+        }.items():
+            if column not in publication_columns:
+                conn.execute(f"ALTER TABLE publications ADD COLUMN {column} {definition}")
 
 
 def _db_upsert_task(task: dict) -> None:
@@ -828,6 +907,7 @@ def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
     blocking_claim = re.compile(r"\b(guarantee(?:d)?|always|never|number\s*one|#1|100%)\b", re.I)
     warning_claim = re.compile(r"\b(best|cheapest)\b", re.I)
     required_fields = ("module_type", "title", "body", "target_position")
+    fact_checks: list[dict] = []
     for index, module in enumerate(modules):
         for field in required_fields:
             if not str(module.get(field) or "").strip():
@@ -839,12 +919,28 @@ def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
             issues.append({"severity": "blocking", "code": "unsupported_sensitive_claim", "module": index})
         elif warning_claim.search(body):
             issues.append({"severity": "warning", "code": "review_comparative_claim", "module": index})
+        fact_checks.append(
+            {
+                "module": index,
+                "title_present": bool(str(module.get("title") or "").strip()),
+                "body_length": len(body.strip()),
+                "status": "review" if warning_claim.search(body) else "pass",
+            }
+        )
 
     schemas = (workflow or {}).get("schema_suggestions") or []
+    schema_checks: list[dict] = []
     for index, schema in enumerate(schemas):
         schema_json = schema.get("json") if isinstance(schema, dict) else None
         if schema_json and (not schema_json.get("@context") or not schema_json.get("@type")):
             issues.append({"severity": "blocking", "code": "invalid_schema", "schema": index})
+        schema_checks.append(
+            {
+                "schema": index,
+                "schema_type": (schema or {}).get("schema_type"),
+                "status": "pass" if schema_json and schema_json.get("@context") and schema_json.get("@type") else "invalid",
+            }
+        )
 
     blocking = [item for item in issues if item["severity"] == "blocking"]
     warnings = [item for item in issues if item["severity"] == "warning"]
@@ -857,9 +953,51 @@ def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
             "sensitive_claims": not any(item["code"] == "unsupported_sensitive_claim" for item in blocking),
             "schema_validity": not any(item["code"] == "invalid_schema" for item in blocking),
         },
+        "fact_checks": fact_checks,
+        "schema_checks": schema_checks,
         "issues": issues,
         "checked_at": _now_iso(),
     }
+
+
+def _log_llm_call(
+    *,
+    action: str,
+    provider: str,
+    model: str | None,
+    status: str,
+    prompt: str,
+    task_id: str | None = None,
+    response: str | None = None,
+    error: str | None = None,
+) -> None:
+    _db_add_llm_log(
+        {
+            "log_id": f"log_{uuid.uuid4().hex[:16]}",
+            "task_id": task_id,
+            "action": action,
+            "provider": provider,
+            "model": model,
+            "status": status,
+            "prompt_excerpt": prompt[:800],
+            "response_excerpt": (response or "")[:800] or None,
+            "error_message": error,
+            "created_at": _now_iso(),
+        }
+    )
+
+
+def _knowledge_context(url: str, title: str, limit: int = 4) -> list[dict]:
+    hostname = (urlparse(url).hostname or "").lower()
+    title_text = title.lower()
+    matches = []
+    for item in _db_knowledge_items(status="approved", limit=50):
+        brand = (item.get("brand") or "").strip().lower()
+        if not brand:
+            continue
+        if brand in hostname or brand in title_text:
+            matches.append(item)
+    return matches[:limit]
 
 
 def _project_view(task: dict, versions: list[dict] | None = None, injections: list[dict] | None = None, retests: list[dict] | None = None) -> dict:
@@ -932,6 +1070,170 @@ def _db_get_cms_target(target_id: str) -> dict | None:
     return next((item for item in _db_cms_targets() if item["target_id"] == target_id), None)
 
 
+def _db_save_knowledge_item(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO knowledge_items (
+                knowledge_id, brand, category, title, content, source, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(knowledge_id) DO UPDATE SET
+                brand=excluded.brand,
+                category=excluded.category,
+                title=excluded.title,
+                content=excluded.content,
+                source=excluded.source,
+                status=excluded.status,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["knowledge_id"],
+                item["brand"],
+                item["category"],
+                item["title"],
+                item["content"],
+                item.get("source"),
+                item["status"],
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
+
+
+def _db_knowledge_items(status: str | None = None, brand: str | None = None, limit: int = 100) -> list[dict]:
+    query = "SELECT * FROM knowledge_items"
+    filters: list[str] = []
+    params: list[str | int] = []
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if brand:
+        filters.append("brand = ?")
+        params.append(brand)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "knowledge_id": row["knowledge_id"],
+            "brand": row["brand"],
+            "category": row["category"],
+            "title": row["title"],
+            "content": row["content"],
+            "source": row["source"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def _db_add_feedback(entry: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO feedback_entries (
+                feedback_id, task_id, version_id, publication_id, verdict, notes, source, actor, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry["feedback_id"],
+                entry["task_id"],
+                entry.get("version_id"),
+                entry.get("publication_id"),
+                entry["verdict"],
+                entry["notes"],
+                entry["source"],
+                entry["actor"],
+                entry["created_at"],
+            ),
+        )
+
+
+def _db_feedback(task_id: str | None = None, limit: int = 100) -> list[dict]:
+    query = "SELECT * FROM feedback_entries"
+    params: list[str | int] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "feedback_id": row["feedback_id"],
+            "task_id": row["task_id"],
+            "version_id": row["version_id"],
+            "publication_id": row["publication_id"],
+            "verdict": row["verdict"],
+            "notes": row["notes"],
+            "source": row["source"],
+            "actor": row["actor"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def _db_add_llm_log(entry: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO llm_logs (
+                log_id, task_id, action, provider, model, status, prompt_excerpt, response_excerpt,
+                error_message, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry["log_id"],
+                entry.get("task_id"),
+                entry["action"],
+                entry["provider"],
+                entry.get("model"),
+                entry["status"],
+                entry.get("prompt_excerpt"),
+                entry.get("response_excerpt"),
+                entry.get("error_message"),
+                entry["created_at"],
+            ),
+        )
+
+
+def _db_llm_logs(task_id: str | None = None, limit: int = 100) -> list[dict]:
+    query = "SELECT * FROM llm_logs"
+    params: list[str | int] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "log_id": row["log_id"],
+            "task_id": row["task_id"],
+            "action": row["action"],
+            "provider": row["provider"],
+            "model": row["model"],
+            "status": row["status"],
+            "prompt_excerpt": row["prompt_excerpt"],
+            "response_excerpt": row["response_excerpt"],
+            "error_message": row["error_message"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
 def _db_save_publication(publication: dict) -> None:
     with _db() as conn:
         conn.execute(
@@ -939,14 +1241,19 @@ def _db_save_publication(publication: dict) -> None:
             INSERT INTO publications (
                 publication_id, task_id, version_id, target_id, status, preview,
                 quality_report, injection_id, confirmed_by, confirmed_at,
-                response_summary, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                response_summary, live_status, live_summary, live_confirmed_by,
+                live_confirmed_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(publication_id) DO UPDATE SET
                 status=excluded.status,
                 injection_id=excluded.injection_id,
                 confirmed_by=excluded.confirmed_by,
                 confirmed_at=excluded.confirmed_at,
                 response_summary=excluded.response_summary,
+                live_status=excluded.live_status,
+                live_summary=excluded.live_summary,
+                live_confirmed_by=excluded.live_confirmed_by,
+                live_confirmed_at=excluded.live_confirmed_at,
                 updated_at=excluded.updated_at
             """,
             (
@@ -954,7 +1261,10 @@ def _db_save_publication(publication: dict) -> None:
                 publication["target_id"], publication["status"], _json_dumps(publication["preview"]),
                 _json_dumps(publication["quality_report"]), publication.get("injection_id"),
                 publication.get("confirmed_by"), publication.get("confirmed_at"),
-                publication.get("response_summary"), publication["created_at"], publication["updated_at"],
+                publication.get("response_summary"), publication.get("live_status"),
+                _json_dumps(publication.get("live_summary")) if publication.get("live_summary") is not None else None,
+                publication.get("live_confirmed_by"),
+                publication.get("live_confirmed_at"), publication["created_at"], publication["updated_at"],
             ),
         )
 
@@ -975,6 +1285,8 @@ def _db_publications(task_id: str | None = None) -> list[dict]:
             "preview": _json_loads(row["preview"], {}), "quality_report": _json_loads(row["quality_report"], {}),
             "injection_id": row["injection_id"], "confirmed_by": row["confirmed_by"],
             "confirmed_at": row["confirmed_at"], "response_summary": row["response_summary"],
+            "live_status": row["live_status"], "live_summary": _json_loads(row["live_summary"], None),
+            "live_confirmed_by": row["live_confirmed_by"], "live_confirmed_at": row["live_confirmed_at"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
         for row in rows
@@ -982,9 +1294,29 @@ def _db_publications(task_id: str | None = None) -> list[dict]:
 
 
 def _db_get_publication(publication_id: str) -> dict | None:
-    return next((item for item in _db_publications() if item["publication_id"] == publication_id), None)
-
-
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM publications WHERE publication_id = ?", (publication_id,)).fetchone()
+    if not row:
+        return None
+    return {
+        "publication_id": row["publication_id"],
+        "task_id": row["task_id"],
+        "version_id": row["version_id"],
+        "target_id": row["target_id"],
+        "status": row["status"],
+        "preview": _json_loads(row["preview"], {}),
+        "quality_report": _json_loads(row["quality_report"], {}),
+        "injection_id": row["injection_id"],
+        "confirmed_by": row["confirmed_by"],
+        "confirmed_at": row["confirmed_at"],
+        "response_summary": row["response_summary"],
+        "live_status": row["live_status"],
+        "live_summary": _json_loads(row["live_summary"], None),
+        "live_confirmed_by": row["live_confirmed_by"],
+        "live_confirmed_at": row["live_confirmed_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 def _run_job(job_id: str) -> dict:
     job = _db_get_job(job_id)
     if not job:
@@ -1072,6 +1404,9 @@ def _db_history() -> dict:
         "injections": [_injection_from_row(row) for row in injection_rows],
         "publications": _db_publications(),
         "cms_targets": _db_cms_targets(),
+        "knowledge_items": _db_knowledge_items(limit=200),
+        "feedback_entries": _db_feedback(limit=200),
+        "llm_logs": _db_llm_logs(limit=200),
     }
 
 
@@ -1418,6 +1753,11 @@ def _try_ai_content_package(
     if not request.use_ai:
         return None
 
+    knowledge_items = _knowledge_context(url, title)
+    knowledge_block = "\n".join(
+        f"- [{item['category']}] {item['title']}: {item['content'][:220]}"
+        for item in knowledge_items
+    ) or "- none"
     prompt = f"""
 You are a GEO URL content injection analyst.
 Analyze the page and return strict JSON only. Do not include markdown fences.
@@ -1433,6 +1773,9 @@ Page config:
 
 Page text:
 {content[:9000]}
+
+Brand knowledge:
+{knowledge_block}
 
 Return JSON with exactly these top-level fields:
 page_summary, geo_assets, content_gaps, injection_modules, faq_items, schema_suggestions, conversion_tips.
@@ -1451,15 +1794,35 @@ Rules:
             model=request.model,
             temperature=0.2,
         )
+        _log_llm_call(
+            action="geo_analyze",
+            provider=request.provider,
+            model=request.model,
+            status="success",
+            prompt=prompt,
+            task_id=_build_task_id(url),
+            response=output,
+        )
         package = _extract_json_object(output)
         package = _validate_content_package(package)
         package["ai_status"] = "generated"
         package["analysis_source"] = "ai"
+        package["knowledge_snapshot"] = knowledge_items
         return package
     except Exception as exc:
+        _log_llm_call(
+            action="geo_analyze",
+            provider=request.provider,
+            model=request.model,
+            status="failed",
+            prompt=prompt,
+            task_id=_build_task_id(url),
+            error=str(exc),
+        )
         return {
             "analysis_source": "rules",
             "ai_status": f"fallback_rules_used: {exc}",
+            "knowledge_snapshot": knowledge_items,
         }
 
 
@@ -1699,6 +2062,21 @@ def admin_audit_logs(
     }
 
 
+@app.get("/admin/api/knowledge")
+def admin_knowledge(status: str | None = None, brand: str | None = None, limit: int = 100):
+    return {"items": _db_knowledge_items(status=status, brand=brand, limit=limit)}
+
+
+@app.get("/admin/api/feedback")
+def admin_feedback(task_id: str | None = None, limit: int = 100):
+    return {"items": _db_feedback(task_id=task_id, limit=limit)}
+
+
+@app.get("/admin/api/llm-logs")
+def admin_llm_logs(task_id: str | None = None, limit: int = 100):
+    return {"items": _db_llm_logs(task_id=task_id, limit=limit)}
+
+
 @app.get("/admin/api/jobs")
 def admin_jobs(status: str | None = None, limit: int = 50):
     return {"items": _db_jobs(status=status, limit=limit)}
@@ -1791,6 +2169,7 @@ def geo_analyze(request: GEOAnalyzeRequest):
         package["analysis_source"] = "rules"
         if ai_package and ai_package.get("ai_status"):
             package["ai_status"] = ai_package["ai_status"]
+        package["knowledge_snapshot"] = (ai_package or {}).get("knowledge_snapshot") or _knowledge_context(url, title)
     task_id = _build_task_id(url)
     result = {
         "task_id": task_id,
@@ -1830,8 +2209,19 @@ def geo_analyze(request: GEOAnalyzeRequest):
 @app.post("/geo/improve")
 def geo_improve(request: GEOImproveRequest):
     workflow = _build_improvement_workflow(request.result)
+    task_id = request.result.get("task_id")
+    feedback_notes = [item["notes"] for item in _db_feedback(task_id=task_id, limit=5)] if task_id else []
+    if request.result.get("knowledge_snapshot"):
+        workflow["knowledge_snapshot"] = request.result.get("knowledge_snapshot")
+    if feedback_notes:
+        workflow["feedback_snapshot"] = feedback_notes
 
     if request.use_ai and request.provider:
+        knowledge_block = "\n".join(
+            f"- {item.get('title')}: {item.get('content')}"
+            for item in workflow.get("knowledge_snapshot") or []
+        ) or "- none"
+        feedback_block = "\n".join(f"- {note}" for note in feedback_notes) or "- none"
         prompt = f"""
 You are a GEO content injection editor.
 Improve the following content package so it can be injected into a landing page CMS.
@@ -1842,6 +2232,12 @@ change_reason, and acceptance_check.
 
 Content package:
 {request.result}
+
+Brand knowledge:
+{knowledge_block}
+
+Recent operator feedback:
+{feedback_block}
 """
         try:
             output = MultiLLMClient().generate_text(
@@ -1849,6 +2245,15 @@ Content package:
                 prompt=prompt,
                 model=request.model,
                 temperature=0.25,
+            )
+            _log_llm_call(
+                action="geo_improve",
+                provider=request.provider,
+                model=request.model,
+                status="success",
+                prompt=prompt,
+                task_id=task_id,
+                response=output,
             )
             ai_result = _extract_json_object(output)
             ai_modules = ai_result.get("improved_modules") or []
@@ -1875,9 +2280,17 @@ Content package:
             )
             workflow["ai_status"] = "generated"
         except Exception as exc:
+            _log_llm_call(
+                action="geo_improve",
+                provider=request.provider,
+                model=request.model,
+                status="failed",
+                prompt=prompt,
+                task_id=task_id,
+                error=str(exc),
+            )
             workflow["ai_status"] = f"fallback_rules_used: {exc}"
 
-    task_id = request.result.get("task_id")
     if task_id:
         task = _db_get_task(task_id) or {
             "task_id": task_id,
@@ -2261,6 +2674,62 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
     return _project_view(task)
 
 
+@app.get("/geo/knowledge")
+def geo_knowledge(status: str | None = None, brand: str | None = None, limit: int = 100):
+    return {"items": _db_knowledge_items(status=status, brand=brand, limit=limit)}
+
+
+@app.post("/geo/knowledge")
+def geo_knowledge_save(request: GEOKnowledgeItemRequest):
+    knowledge_id = f"kb_{hashlib.sha256(f'{request.brand}:{request.category}:{request.title}'.encode()).hexdigest()[:12]}"
+    now = _now_iso()
+    existing = next((item for item in _db_knowledge_items(limit=200) if item["knowledge_id"] == knowledge_id), None)
+    item = {
+        "knowledge_id": knowledge_id,
+        "brand": request.brand.strip(),
+        "category": request.category.strip() or "positioning",
+        "title": request.title.strip(),
+        "content": request.content.strip(),
+        "source": (request.source or "").strip() or None,
+        "status": request.status.strip() or "approved",
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+    }
+    _db_save_knowledge_item(item)
+    _db_add_audit(_current_actor(), "save_knowledge", "knowledge", knowledge_id)
+    return item
+
+
+@app.get("/geo/feedback")
+def geo_feedback(task_id: str | None = None, limit: int = 100):
+    return {"items": _db_feedback(task_id=task_id, limit=limit)}
+
+
+@app.post("/geo/feedback")
+def geo_feedback_save(request: GEOFeedbackRequest):
+    feedback = {
+        "feedback_id": f"fb_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "version_id": request.version_id,
+        "publication_id": request.publication_id,
+        "verdict": request.verdict.strip(),
+        "notes": request.notes.strip(),
+        "source": request.source.strip() or "miniapp",
+        "actor": _current_actor(),
+        "created_at": _now_iso(),
+    }
+    _db_add_feedback(feedback)
+    _db_add_audit(
+        _current_actor(),
+        "save_feedback",
+        "feedback",
+        feedback["feedback_id"],
+        request.task_id,
+        detail={"verdict": request.verdict, "publication_id": request.publication_id},
+    )
+    return feedback
+
+
 @app.post("/geo/versions/{version_id}/quality-check")
 def geo_version_quality_check(version_id: str):
     version = _db_get_version(version_id)
@@ -2346,6 +2815,7 @@ def cms_publication_preview(request: CMSPublishPreviewRequest):
             "modules": [{"module_type": item.get("module_type"), "title": item.get("title")} for item in version.get("modules") or []],
         },
         "quality_report": quality,
+        "live_status": "pending",
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
@@ -2384,6 +2854,8 @@ def cms_publication_confirm(request: CMSPublishConfirmRequest):
         publication["status"] = "published"
         publication["injection_id"] = injection["injection_id"]
         publication["response_summary"] = injection.get("response_summary")
+        publication["live_status"] = "pending"
+        publication["live_summary"] = None
     except HTTPException as exc:
         publication["status"] = "failed"
         publication["response_summary"] = str(exc.detail)
@@ -2394,6 +2866,54 @@ def cms_publication_confirm(request: CMSPublishConfirmRequest):
     _db_add_audit(
         _current_actor(), "confirm_publish", "publication", publication["publication_id"],
         publication["task_id"], outcome=publication["status"],
+    )
+    return publication
+
+
+@app.post("/cms/publications/verify")
+def cms_publication_verify(request: CMSPublicationVerifyRequest):
+    publication = _db_get_publication(request.publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    if publication["status"] not in {"published", "verification_failed", "verified_live"}:
+        raise HTTPException(status_code=409, detail="Publication must be published before live verification.")
+
+    preview = publication.get("preview") or {}
+    expected_terms = [item.strip() for item in (request.expected_terms or []) if item.strip()]
+    if not expected_terms:
+        expected_terms = [item.get("title", "").strip() for item in preview.get("modules") or [] if item.get("title")]
+    try:
+        url = _normalize_url(preview.get("url") or "")
+        title, content = _fetch_page_text(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to verify live page: {exc}") from exc
+
+    matched = [term for term in expected_terms if term and term.lower() in content.lower()]
+    missing = [term for term in expected_terms if term and term not in matched]
+    live_status = "verified_live" if expected_terms and not missing else "verification_failed"
+    summary = {
+        "title": title,
+        "matched_terms": matched,
+        "missing_terms": missing,
+        "notes": request.notes,
+    }
+    publication["status"] = live_status
+    publication["live_status"] = live_status
+    publication["live_summary"] = summary
+    publication["live_confirmed_by"] = _current_actor()
+    publication["live_confirmed_at"] = _now_iso()
+    publication["updated_at"] = _now_iso()
+    _db_save_publication(publication)
+    _db_add_audit(
+        _current_actor(),
+        "verify_publish",
+        "publication",
+        publication["publication_id"],
+        publication["task_id"],
+        outcome=live_status,
+        detail=summary,
     )
     return publication
 
@@ -2409,6 +2929,10 @@ def cms_publication_retry(publication_id: str):
     publication["response_summary"] = None
     publication["confirmed_by"] = None
     publication["confirmed_at"] = None
+    publication["live_status"] = None
+    publication["live_summary"] = None
+    publication["live_confirmed_by"] = None
+    publication["live_confirmed_at"] = None
     publication["updated_at"] = _now_iso()
     _db_save_publication(publication)
     _db_add_audit(_current_actor(), "retry_publish", "publication", publication_id, publication["task_id"])
@@ -2431,6 +2955,9 @@ def geo_task_detail(task_id: str):
         "versions": [item for item in history["versions"] if item["task_id"] == task_id],
         "injections": [item for item in history["injections"] if item["task_id"] == task_id],
         "retests": history["retests"].get(task_id, []),
+        "feedback": [item for item in history["feedback_entries"] if item["task_id"] == task_id],
+        "llm_logs": [item for item in history["llm_logs"] if item.get("task_id") == task_id],
+        "knowledge_items": task.get("latest_result", {}).get("knowledge_snapshot", []),
         "project": _project_view(
             task,
             [item for item in history["versions"] if item["task_id"] == task_id],
@@ -2482,14 +3009,38 @@ def llm_generate(request: LLMGenerateRequest):
             model=request.model,
             temperature=request.temperature,
         )
+        _log_llm_call(
+            action="llm_generate",
+            provider=request.provider,
+            model=request.model,
+            status="success",
+            prompt=request.prompt,
+            response=output,
+        )
         return {
             "provider": request.provider,
             "model": request.model,
             "output": output,
         }
     except (LLMProviderError, ValueError) as exc:
+        _log_llm_call(
+            action="llm_generate",
+            provider=request.provider,
+            model=request.model,
+            status="failed",
+            prompt=request.prompt,
+            error=str(exc),
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        _log_llm_call(
+            action="llm_generate",
+            provider=request.provider,
+            model=request.model,
+            status="failed",
+            prompt=request.prompt,
+            error=str(exc),
+        )
         raise HTTPException(status_code=500, detail=f"LLM call failed: {exc}") from exc
 
 
@@ -2518,11 +3069,27 @@ Content:
             model=request.model,
             temperature=0.25,
         )
+        _log_llm_call(
+            action="geo_rewrite",
+            provider=request.provider,
+            model=request.model,
+            status="success",
+            prompt=prompt,
+            response=output,
+        )
         return {
             "provider": request.provider,
             "output": output,
         }
     except Exception as exc:
+        _log_llm_call(
+            action="geo_rewrite",
+            provider=request.provider,
+            model=request.model,
+            status="failed",
+            prompt=prompt,
+            error=str(exc),
+        )
         raise HTTPException(status_code=500, detail=f"GEO rewrite failed: {exc}") from exc
 
 
@@ -2549,9 +3116,25 @@ Product or service:
             model=request.model,
             temperature=0.35,
         )
+        _log_llm_call(
+            action="geo_faq",
+            provider=request.provider,
+            model=request.model,
+            status="success",
+            prompt=prompt,
+            response=output,
+        )
         return {
             "provider": request.provider,
             "output": output,
         }
     except Exception as exc:
+        _log_llm_call(
+            action="geo_faq",
+            provider=request.provider,
+            model=request.model,
+            status="failed",
+            prompt=prompt,
+            error=str(exc),
+        )
         raise HTTPException(status_code=500, detail=f"FAQ generation failed: {exc}") from exc

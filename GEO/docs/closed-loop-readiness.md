@@ -33,7 +33,10 @@ URL analysis
 | Async operations | SQLite job queue persists immediate/scheduled retests, attempts, backoff, failures, and manual retries |
 | Promotion projects | Every URL tracks owner, target score, stage, todos, next action, and measured effectiveness |
 | Quality gate | Version completeness, Schema structure, and unsupported claims are checked before approval and publishing |
-| CMS publishing | Environment-referenced credentials, publishing preview, explicit confirmation, result records, and failure visibility |
+| CMS publishing | Environment-referenced credentials, publishing preview, explicit confirmation, live-page verification, result records, and failure visibility |
+| Brand knowledge | Approved brand facts can be maintained in the admin console and injected into AI analysis/improvement prompts |
+| Feedback learning | Mini-program operators can record accept/edit/reject feedback that persists with the task and feeds later improvement runs |
+| AI traceability | LLM call logs persist provider/model/status plus prompt/response excerpts for audit and quota tracking |
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
 

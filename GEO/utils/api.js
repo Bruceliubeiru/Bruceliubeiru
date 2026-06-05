@@ -69,6 +69,10 @@ function retestTask(payload) {
   return request("/geo/retest", payload)
 }
 
+function scheduleRetest(payload) {
+  return request("/geo/retest/schedule", payload)
+}
+
 function injectVersion(payload) {
   return request("/geo/inject", payload)
 }
@@ -94,6 +98,7 @@ module.exports = {
   reviewVersion,
   injectVersion,
   retestTask,
+  scheduleRetest,
   getHistory,
   getTaskDetail,
   exportJson

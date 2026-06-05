@@ -79,6 +79,7 @@ class GEOWorkflowTest(unittest.TestCase):
         detail = main.geo_task_detail(result["task_id"])
         self.assertEqual(result["task_id"], rerun["task_id"])
         self.assertEqual(approved["version_id"], detail["task"]["latest_version_id"])
+        self.assertEqual("approved", detail["task"]["status"])
 
     def test_complete_closed_loop(self):
         result, approved = self._approved_version()
@@ -99,6 +100,7 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("completed", injection["status"])
         self.assertTrue(Path(injection["artifact_path"]).exists())
         self.assertEqual(injection["injection_id"], retest["injection_id"])
+        self.assertEqual("ineffective", retest["effect_details"]["verdict"])
         self.assertEqual("retested", detail["task"]["status"])
         self.assertEqual(1, len(detail["versions"]))
         self.assertEqual(1, len(detail["injections"]))
@@ -261,6 +263,92 @@ class GEOWorkflowTest(unittest.TestCase):
         retried = main.admin_retry_job(job["job_id"], BackgroundTasks())
         self.assertEqual("queued", retried["status"])
         self.assertEqual(0, retried["attempts"])
+
+    def test_project_management_exposes_owner_target_todos_and_next_action(self):
+        result = self._analyze()
+        project = main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(owner="Bruce", target_score=88, todos=["补充证据"]),
+        )
+        detail = main.geo_project_detail(result["task_id"])
+
+        self.assertEqual("Bruce", project["owner"])
+        self.assertEqual(88, detail["project"]["target_score"])
+        self.assertEqual(["补充证据"], detail["project"]["todos"])
+        self.assertEqual("improve", detail["project"]["next_action_key"])
+
+    def test_quality_gate_blocks_unsafe_version_and_allows_normal_version(self):
+        result = self._analyze()
+        blocked = main.geo_version_save(
+            main.GEOVersionSaveRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                modules=[{
+                    "module_type": "hero",
+                    "title": "Guaranteed",
+                    "body": "We guarantee this is always the number one option for every customer.",
+                    "target_position": "hero",
+                }],
+            )
+        )
+        self.assertEqual("blocked", blocked["quality_report"]["status"])
+        with self.assertRaises(HTTPException) as context:
+            main.geo_version_review(main.GEOReviewRequest(version_id=blocked["version_id"]))
+        self.assertEqual(409, context.exception.status_code)
+
+        workflow = main.geo_improve(main.GEOImproveRequest(result=result))
+        normal = main.geo_version_save(
+            main.GEOVersionSaveRequest(
+                task_id=result["task_id"],
+                url=result["url"],
+                modules=workflow["improved_modules"],
+                workflow=workflow,
+            )
+        )
+        self.assertEqual("passed", normal["quality_report"]["status"])
+
+    def test_cms_publication_requires_preview_and_confirmation(self):
+        result, approved = self._approved_version()
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="Test CMS", webhook_url="https://cms.example.com/publish")
+        )
+        preview = main.cms_publication_preview(
+            main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
+        )
+        self.assertEqual("pending_confirmation", preview["status"])
+        with self.assertRaises(HTTPException):
+            main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="yes")
+            )
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, *_): return b'{"published":true}'
+
+        with patch.object(main, "urlopen", return_value=Response()):
+            published = main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
+            )
+        self.assertEqual("published", published["status"])
+        self.assertTrue(published["injection_id"])
+
+    def test_failed_cms_publication_can_return_to_confirmation(self):
+        result, approved = self._approved_version()
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="Fail CMS", webhook_url="https://cms.example.com/fail")
+        )
+        preview = main.cms_publication_preview(
+            main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
+        )
+        with patch.object(main, "urlopen", side_effect=TimeoutError("timeout")):
+            failed = main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
+            )
+        retried = main.cms_publication_retry(failed["publication_id"])
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("pending_confirmation", retried["status"])
 
 
 class AuthTest(unittest.TestCase):

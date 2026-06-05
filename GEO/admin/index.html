@@ -41,6 +41,11 @@
     .key-input { width: 190px; height: 36px; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0 10px; color: var(--text); }
     .identity { color: var(--muted); font-size: 11px; white-space: nowrap; }
     .action { height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; background: #fff; color: #34414a; font-size: 11px; font-weight: 800; }
+    .action.primary { border-color: var(--green); background: var(--green); color: #fff; }
+    .form-row { display: grid; grid-template-columns: 1fr 2fr 1fr 1fr auto; gap: 8px; }
+    .form-row input, .form-row select { min-width: 0; height: 36px; border: 1px solid var(--line); border-radius: 5px; padding: 0 9px; }
+    .project-form { display: grid; grid-template-columns: 1fr 100px 2fr auto; gap: 8px; margin-top: 8px; }
+    .project-form input { min-width: 0; height: 34px; border: 1px solid var(--line); border-radius: 5px; padding: 0 9px; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
     .metric, .panel { border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
     .metric { padding: 16px; }
@@ -107,6 +112,8 @@
       .filters input, .filters select { flex: 1; width: auto; }
       th:nth-child(n+4), td:nth-child(n+4) { display: none; }
       .task-title, .task-url { max-width: 180px; }
+      .form-row { grid-template-columns: 1fr; }
+      .project-form { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -129,7 +136,7 @@
             <div><div class="panel-title">任务工作台</div><div class="panel-meta" id="taskCount"></div></div>
             <div class="filters"><input id="query" placeholder="搜索任务、网址"><select id="status"><option value="">全部状态</option></select></div>
           </div>
-          <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>评分</th><th>版本</th><th>交付</th><th>复测</th></tr></thead><tbody id="taskRows"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>项目</th><th>负责人</th><th>阶段</th><th>评分/目标</th><th>下一步</th><th>效果</th></tr></thead><tbody id="taskRows"></tbody></table></div>
         </div>
         <div class="panel">
           <div class="panel-head"><div><div class="panel-title">需要关注</div><div class="panel-meta">优先处理阻塞闭环的问题</div></div></div>
@@ -139,6 +146,11 @@
       <section class="panel" style="margin-top:14px">
         <div class="panel-head"><div><div class="panel-title">最近操作审计</div><div class="panel-meta">关键业务动作与执行结果</div></div><div class="audit-filters"><input id="auditActor" placeholder="筛选执行者"><select id="auditAction"><option value="">全部动作</option></select><select id="auditOutcome"><option value="">全部结果</option><option value="success">success</option><option value="completed">completed</option><option value="failed">failed</option><option value="approved">approved</option><option value="rejected">rejected</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>时间</th><th>执行者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+      </section>
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head"><div><div class="panel-title">CMS 发布目标</div><div class="panel-meta">凭证使用环境变量引用，不在数据库保存明文</div></div></div>
+        <div class="form-row"><input id="cmsName" placeholder="目标名称"><input id="cmsUrl" placeholder="https://cms.example.com/publish"><select id="cmsEnv"><option>staging</option><option>production</option></select><input id="cmsSecretEnv" placeholder="凭证环境变量（可选）"><button class="refresh" id="saveCms">保存目标</button></div>
+        <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>名称</th><th>环境</th><th>地址</th><th>凭证</th><th>状态</th></tr></thead><tbody id="cmsRows"></tbody></table></div>
       </section>
       <section class="panel" style="margin-top:14px">
         <div class="panel-head"><div><div class="panel-title">异步任务</div><div class="panel-meta">定时复测、失败重试与执行状态</div></div><div class="filters"><select id="jobStatus"><option value="">全部状态</option><option>queued</option><option>running</option><option>retry_wait</option><option>completed</option><option>failed</option></select><button class="refresh" id="runDue">运行到期任务</button></div></div>
@@ -155,6 +167,7 @@
     let overview = null;
     let audit = null;
     let jobs = null;
+    let cmsTargets = [];
     let apiKey = sessionStorage.getItem("geoApiKey") || "";
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
@@ -179,13 +192,15 @@
     }
     function renderTasks(tasks) {
       $("taskCount").textContent = `${tasks.length} 个任务`;
-      $("taskRows").innerHTML = tasks.length ? tasks.map((task) => `<tr data-task="${escapeHtml(task.task_id)}"><td><div class="task-title">${escapeHtml(task.title)}</div><div class="task-url">${escapeHtml(task.url)}</div></td><td>${badge(task.status)}</td><td><span class="score">${task.geo_score}</span>/100</td><td>${task.version_count}</td><td>${task.injection_count}</td><td>${task.retest_count}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">没有符合条件的任务</td></tr>`;
+      $("taskRows").innerHTML = tasks.length ? tasks.map((task) => `<tr data-task="${escapeHtml(task.task_id)}"><td><div class="task-title">${escapeHtml(task.title)}</div><div class="task-url">${escapeHtml(task.url)}</div></td><td>${escapeHtml(task.owner)}</td><td>${badge(task.status)}</td><td><span class="score">${task.geo_score}</span>/${task.target_score}</td><td>${escapeHtml(task.next_action)}</td><td>${escapeHtml(task.effectiveness)}</td></tr>`).join("") : `<tr><td colspan="6" class="empty">没有符合条件的项目</td></tr>`;
       document.querySelectorAll("[data-task]").forEach((row) => row.addEventListener("click", () => showTask(row.dataset.task)));
     }
     function renderAttention(attention) {
       const groups = [
         ["待审核版本", attention.pending_reviews, "version_id", "status"],
         ["失败交付", attention.failed_injections, "version_id", "response_summary"],
+        ["质量阻断", attention.blocked_versions || [], "version_id", "status"],
+        ["发布失败", attention.failed_publications || [], "publication_id", "response_summary"],
         ["复测未提升", attention.needs_more_work, "title", "score_delta"]
       ];
       const items = groups.flatMap(([label, list, titleKey, metaKey]) => list.map((item) => `<div class="queue-item"><div class="queue-title">${label} · ${escapeHtml(item[titleKey])}</div><div class="queue-meta">${escapeHtml(item[metaKey])}</div></div>`));
@@ -217,6 +232,14 @@
       jobs = await api(`/admin/api/jobs?limit=50&status=${encodeURIComponent(status)}`);
       renderJobs(jobs.items);
     }
+    function renderCmsTargets(items) {
+      $("cmsRows").innerHTML = items.length ? items.map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.environment)}</td><td><div class="task-url">${escapeHtml(item.webhook_url)}</div></td><td>${item.auth_env_var ? `${escapeHtml(item.auth_env_var)} · ${item.credential_configured ? "已配置" : "待配置"}` : "无需凭证"}</td><td>${badge(item.enabled ? "enabled" : "disabled")}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">尚未配置 CMS 发布目标</td></tr>`;
+    }
+    async function loadCmsTargets() {
+      const result = await api("/cms/targets");
+      cmsTargets = result.items;
+      renderCmsTargets(cmsTargets);
+    }
     async function loadAudit() {
       const params = new URLSearchParams({limit: "20"});
       const actor = $("auditActor").value.trim();
@@ -243,7 +266,7 @@
     async function load() {
       $("error").hidden = true;
       try {
-        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs()]);
+        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs(), loadCmsTargets()]);
         renderMetrics(overview.metrics);
         renderTasks(overview.recent_tasks);
         renderAttention(overview.attention);
@@ -261,7 +284,7 @@
         $("detailTitle").textContent = task.title || task.task_id;
         const summary = [
           ["任务 ID", task.task_id], ["状态", task.status], ["网址", task.url],
-          ["当前评分", task.latest_result?.geo_score ?? 0], ["最新版本", task.latest_version_id || "-"], ["更新时间", formatTime(task.updated_at)]
+          ["负责人", detail.project?.owner || "待分配"], ["评分目标", `${task.latest_result?.geo_score ?? 0}/${detail.project?.target_score || 80}`], ["下一步", detail.project?.next_action || "-"]
         ];
         const timelines = [
           ["版本", detail.versions, "version_id", "status", "updated_at"],
@@ -269,7 +292,18 @@
           ["复测", detail.retests, "injection_id", "status", "created_at"],
           ["审计", detail.audit_logs, "action", "outcome", "created_at"]
         ];
-        $("detailBody").innerHTML = `<div class="detail-grid">${summary.map(([label,value]) => `<div class="detail-item"><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>` + timelines.map(([label,items,titleKey,statusKey,timeKey]) => `<section class="section"><h3>${label}记录</h3><div class="timeline">${items.length ? items.map((item) => `<div class="timeline-item"><strong>${label}</strong><span>${escapeHtml(item[titleKey] || "-")}</span><span>${badge(item[statusKey])}<br><small>${formatTime(item[timeKey])}</small></span></div>`).join("") : `<div class="empty">暂无${label}记录</div>`}</div></section>`).join("");
+        const version = detail.versions[0];
+        const pendingPublication = (detail.publications || []).find((item) => item.status === "pending_confirmation");
+        const failedPublication = (detail.publications || []).find((item) => item.status === "failed");
+        const actions = `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${version?.status === "approved" && cmsTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}</div></section>`;
+        const publicationTimeline = [["发布", detail.publications || [], "publication_id", "status", "updated_at"]];
+        $("detailBody").innerHTML = `<div class="detail-grid">${summary.map(([label,value]) => `<div class="detail-item"><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>${actions}` + [...timelines, ...publicationTimeline].map(([label,items,titleKey,statusKey,timeKey]) => `<section class="section"><h3>${label}记录</h3><div class="timeline">${items.length ? items.map((item) => `<div class="timeline-item"><strong>${label}</strong><span>${escapeHtml(item[titleKey] || "-")}</span><span>${badge(item[statusKey])}<br><small>${formatTime(item[timeKey])}</small></span></div>`).join("") : `<div class="empty">暂无${label}记录</div>`}</div></section>`).join("");
+        document.querySelector("[data-quality]")?.addEventListener("click", async (event) => { await api(`/geo/versions/${event.target.dataset.quality}/quality-check`, {method:"POST"}); $("detailDialog").close(); await showTask(taskId); });
+        document.querySelector("[data-approve]")?.addEventListener("click", async (event) => { await api("/geo/version/review", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({version_id:event.target.dataset.approve, action:"approve"})}); $("detailDialog").close(); await showTask(taskId); await load(); });
+        document.querySelector("[data-preview]")?.addEventListener("click", async (event) => { await api("/cms/publications/preview", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({version_id:event.target.dataset.preview, target_id:cmsTargets[0].target_id})}); $("detailDialog").close(); await showTask(taskId); });
+        document.querySelector("[data-publish]")?.addEventListener("click", async (event) => { if (!confirm("确认将已审核版本发布到 CMS？")) return; await api("/cms/publications/confirm", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({publication_id:event.target.dataset.publish, confirmation:"PUBLISH"})}); $("detailDialog").close(); await showTask(taskId); await load(); });
+        document.querySelector("[data-retry-publish]")?.addEventListener("click", async (event) => { await api(`/cms/publications/${event.target.dataset.retryPublish}/retry`, {method:"POST"}); $("detailDialog").close(); await showTask(taskId); });
+        $("saveProject").addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({owner:$("projectOwner").value, target_score:Number($("projectTarget").value), todos:$("projectTodos").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("detailDialog").showModal();
       } catch (error) {
         $("error").textContent = error.message;
@@ -298,6 +332,13 @@
         $("error").textContent = error.message;
         $("error").hidden = false;
       }
+    });
+    $("saveCms").addEventListener("click", async () => {
+      try {
+        await api("/cms/targets", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({name:$("cmsName").value, webhook_url:$("cmsUrl").value, environment:$("cmsEnv").value, auth_env_var:$("cmsSecretEnv").value || null})});
+        $("cmsName").value = ""; $("cmsUrl").value = ""; $("cmsSecretEnv").value = "";
+        await loadCmsTargets();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
     });
     $("closeDialog").addEventListener("click", () => $("detailDialog").close());
     document.querySelectorAll("nav button").forEach((button) => button.addEventListener("click", () => {

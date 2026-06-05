@@ -6,6 +6,7 @@ const {
   reviewVersion,
   injectVersion,
   retestTask,
+  scheduleRetest,
   getTaskDetail,
   exportJson
 } = require("../../utils/api")
@@ -369,6 +370,7 @@ Page({
     version: null,
     injection: null,
     retest: null,
+    project: null,
     improving: false,
     savingVersion: false,
     reviewing: false,
@@ -410,7 +412,8 @@ Page({
         workflow: task.latest_workflow || (latestVersion && latestVersion.workflow) || defaultWorkflow,
         version: latestVersion,
         injection: latestInjection,
-        retest: latestRetest
+        retest: latestRetest,
+        project: detail.project || null
       }
       if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
         normalized.injection_modules = latestVersion.modules
@@ -422,6 +425,7 @@ Page({
         version: latestVersion,
         injection: latestInjection,
         retest: latestRetest,
+        project: detail.project || null,
         dimensions: buildDimensions(normalized.breakdown),
         assets: buildAssets(normalized),
         nextSteps: buildNextSteps(normalized),
@@ -554,6 +558,13 @@ Page({
         version: null,
         injection: null,
         retest: null,
+        project: mode === "url" ? {
+          owner: "待分配",
+          target_score: 80,
+          current_stage: "analyzed",
+          next_action: "生成改进内容",
+          effectiveness: "尚未复测"
+        } : null,
         taskList,
         activeTab: "summary",
         loading: false
@@ -733,6 +744,11 @@ Page({
         result,
         version,
         workflow: result.workflow,
+        project: {
+          ...(this.data.project || {}),
+          current_stage: "pending_review",
+          next_action: version.quality_report && version.quality_report.status === "blocked" ? "修复内容质量问题" : "人工审核版本"
+        },
         stepPanel: buildStepPanel(result, this.data.activeStep),
         savingVersion: false
       })
@@ -767,6 +783,7 @@ Page({
         result,
         version,
         workflow: result.workflow,
+        project: { ...(this.data.project || {}), current_stage: "approved", next_action: "创建发布预览" },
         stepPanel: buildStepPanel(result, "export"),
         activeStep: "export",
         reviewing: false
@@ -825,6 +842,29 @@ Page({
     }
   },
 
+  async scheduleRetest() {
+    const version = this.data.result.version || {}
+    const injection = this.data.result.injection || this.data.injection
+    if (!injection || injection.status !== "completed") {
+      wx.showToast({ title: "请先完成发布交付", icon: "none" })
+      return
+    }
+    try {
+      await scheduleRetest({
+        task_id: this.data.result.task_id,
+        url: this.data.result.url,
+        previous_score: this.data.result.geo_score,
+        version_id: version.version_id,
+        injection_id: injection.injection_id,
+        max_attempts: 3
+      })
+      wx.showToast({ title: "已安排复测", icon: "success" })
+      this.setData({ project: { ...(this.data.project || {}), next_action: "等待复测结果" } })
+    } catch (error) {
+      this.setData({ error: error.message || "安排复测失败" })
+    }
+  },
+
   async runInjection() {
     const version = this.data.result.version || {}
     if (version.status !== "approved") {
@@ -859,6 +899,7 @@ Page({
         result,
         injection,
         workflow,
+        project: { ...(this.data.project || {}), current_stage: "injected", next_action: "安排发布后复测" },
         stepPanel: buildStepPanel(result, "export"),
         activeStep: "export",
         injecting: false

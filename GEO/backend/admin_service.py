@@ -13,6 +13,14 @@ def _task_summary(task: dict, versions: list[dict], injections: list[dict], rete
     task_injections = [item for item in injections if item.get("task_id") == task_id]
     task_retests = retests.get(task_id, [])
     latest_retest = task_retests[0] if task_retests else task.get("latest_retest")
+    action_map = {
+        "analyzed": "生成改进内容",
+        "draft_ready": "保存待审核版本",
+        "pending_review": "人工审核版本",
+        "approved": "创建发布预览",
+        "injected": "安排发布后复测",
+        "retested": "根据效果继续优化",
+    }
     return {
         "task_id": task_id,
         "title": task.get("title") or task.get("url"),
@@ -24,6 +32,10 @@ def _task_summary(task: dict, versions: list[dict], injections: list[dict], rete
         "injection_count": len(task_injections),
         "retest_count": len(task_retests),
         "latest_retest": latest_retest,
+        "owner": task.get("owner") or "待分配",
+        "target_score": int(task.get("target_score") or 80),
+        "next_action": action_map.get(task.get("status"), "检查项目异常"),
+        "effectiveness": "有效优化" if latest_retest and int(latest_retest.get("score_delta") or 0) > 0 else ("未见提升" if latest_retest else "尚未复测"),
         "updated_at": task.get("updated_at"),
     }
 
@@ -33,10 +45,13 @@ def build_admin_overview(history: dict) -> dict:
     versions = history.get("versions") or []
     injections = history.get("injections") or []
     retests = history.get("retests") or {}
+    publications = history.get("publications") or []
     summaries = [_task_summary(task, versions, injections, retests) for task in tasks]
 
     pending_versions = [item for item in versions if item.get("status") == "pending_review"]
     failed_injections = [item for item in injections if item.get("status") == "failed"]
+    blocked_versions = [item for item in versions if (item.get("quality_report") or {}).get("status") == "blocked"]
+    failed_publications = [item for item in publications if item.get("status") == "failed"]
     improved_retests = [
         item
         for items in retests.values()
@@ -62,11 +77,15 @@ def build_admin_overview(history: dict) -> dict:
             "improved_retests": len(improved_retests),
             "average_score": average_score,
             "average_delta": average_delta,
+            "blocked_versions": len(blocked_versions),
+            "failed_publications": len(failed_publications),
         },
         "status_counts": dict(Counter(item["status"] for item in summaries)),
         "attention": {
             "pending_reviews": pending_versions[:8],
             "failed_injections": failed_injections[:8],
+            "blocked_versions": blocked_versions[:8],
+            "failed_publications": failed_publications[:8],
             "needs_more_work": [
                 item for item in all_retests if item.get("status") == "needs_more_work"
             ][:8],

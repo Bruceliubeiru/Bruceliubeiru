@@ -276,6 +276,9 @@
       </view>
 
       <view wx:if="{{activeTab === 'modules'}}" class="tab-panel">
+        <view wx:if="{{project}}" class="status-note">
+          当前阶段：{{project.current_stage || result.status}} · 下一步：{{project.next_action}} · 负责人：{{project.owner || '待分配'}} · 目标 {{project.target_score || 80}} 分
+        </view>
         <view class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
           <view class="module-head">
             <text class="module-type">{{module.module_type}}</text>
@@ -302,10 +305,12 @@
         </view>
         <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="review-bar">
           <button loading="{{injecting}}" disabled="{{injecting}}" bindtap="runInjection">交付注入</button>
-          <button loading="{{retesting}}" disabled="{{retesting}}" bindtap="runRetest">复测</button>
+          <button bindtap="scheduleRetest">安排复测</button>
+          <button loading="{{retesting}}" disabled="{{retesting}}" bindtap="runRetest">立即复测</button>
         </view>
         <view wx:else class="status-note">内容分析模式仅提供诊断与草稿预览；请使用 URL 分析进入版本、审核、交付与复测闭环。</view>
         <view wx:if="{{version}}" class="status-note">版本 {{version.version_id}} · {{version.status}}</view>
+        <view wx:if="{{version && version.quality_report}}" class="status-note">质量门禁 {{version.quality_report.status}} · {{version.quality_report.score}} 分 · {{version.quality_report.issues.length}} 项需关注</view>
         <view wx:if="{{injection}}" class="status-note">交付 {{injection.injection_id}} · {{injection.status}} · {{injection.target}}</view>
         <view wx:if="{{retest}}" class="status-note">复测 {{retest.previous_score}} → {{retest.current_score}} · {{retest.score_delta}} 分</view>
       </view>

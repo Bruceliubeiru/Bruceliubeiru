@@ -31,6 +31,9 @@ URL analysis
 | Audit | SQLite operation log records analysis, version, approval, injection, and retest actions |
 | Access control | Optional API Key authentication enforces viewer/operator/reviewer/admin roles and records trusted actors |
 | Async operations | SQLite job queue persists immediate/scheduled retests, attempts, backoff, failures, and manual retries |
+| Promotion projects | Every URL tracks owner, target score, stage, todos, next action, and measured effectiveness |
+| Quality gate | Version completeness, Schema structure, and unsupported claims are checked before approval and publishing |
+| CMS publishing | Environment-referenced credentials, publishing preview, explicit confirmation, result records, and failure visibility |
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
 

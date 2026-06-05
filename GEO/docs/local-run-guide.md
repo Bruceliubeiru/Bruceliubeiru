@@ -95,6 +95,14 @@ http://127.0.0.1:8000/admin
 | POST /geo/inject | Deliver an approved version to JSON file or CMS webhook |
 | POST /geo/retest | Retest the URL after a completed delivery/injection |
 | POST /geo/retest/schedule | Persist an immediate or scheduled retest job |
+| GET /geo/projects | List long-running URL promotion projects with owner, target, stage, and next action |
+| POST /geo/projects/{task_id} | Update project owner, target score, and todos |
+| POST /geo/versions/{version_id}/quality-check | Run content completeness, claim, and Schema quality checks |
+| GET /cms/targets | List CMS publishing targets without exposing credentials |
+| POST /cms/targets | Configure a CMS target using an environment-variable credential reference |
+| POST /cms/publications/preview | Create an approved, quality-gated publishing preview |
+| POST /cms/publications/confirm | Explicitly confirm and execute a CMS publication |
+| POST /cms/publications/{publication_id}/retry | Return a failed publication to the confirmation queue |
 | GET /geo/history | Persistent task, version, injection, and retest history |
 | GET /geo/tasks/{task_id} | Restore a complete task workflow |
 | GET /geo/versions/{version_id} | Load one review version |
@@ -183,6 +191,20 @@ curl -X POST -H "Authorization: Bearer $GEO_OPERATOR_TOKEN" \
 
 Failed jobs wait five minutes per attempt and retry up to `max_attempts` (default
 3, maximum 10). Operators can inspect and retry jobs from the admin console.
+
+## Promotion Projects And CMS Publishing
+
+Every analyzed URL is also a long-running promotion project. Projects track an
+owner, target score, current workflow stage, todos, next action, and retest
+effectiveness. Saved versions receive a quality report; blocking completeness,
+Schema, or unsupported-claim issues prevent approval and publication.
+
+CMS targets store webhook configuration and an optional environment variable
+name for credentials. Credential values are read only at publish time and are
+never persisted or returned by the API. Publishing requires an approved version,
+a passed quality report, a preview record, and explicit `PUBLISH` confirmation.
+Failed publications remain visible in the operations console and can be returned
+to the confirmation queue after configuration or credential fixes.
 
 Run the automated closed-loop checks with:
 

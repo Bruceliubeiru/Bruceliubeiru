@@ -1,6 +1,7 @@
 import json
 import hashlib
 import ipaddress
+import os
 import re
 import socket
 import sqlite3
@@ -196,6 +197,31 @@ class GEOExportRequest(BaseModel):
     target: str = "json_file"
 
 
+class GEOProjectUpdateRequest(BaseModel):
+    owner: str | None = None
+    target_score: int | None = None
+    todos: list[str] | None = None
+
+
+class CMSPublishTargetRequest(BaseModel):
+    name: str
+    webhook_url: str
+    environment: str = "staging"
+    auth_header: str = "Authorization"
+    auth_env_var: str | None = None
+    enabled: bool = True
+
+
+class CMSPublishPreviewRequest(BaseModel):
+    version_id: str
+    target_id: str
+
+
+class CMSPublishConfirmRequest(BaseModel):
+    publication_id: str
+    confirmation: str
+
+
 class LLMGenerateRequest(BaseModel):
     provider: str = "openai"
     prompt: str
@@ -257,6 +283,9 @@ def _init_db() -> None:
                 latest_workflow TEXT,
                 latest_version_id TEXT,
                 latest_retest TEXT,
+                owner TEXT,
+                target_score INTEGER,
+                todos TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -296,7 +325,42 @@ def _init_db() -> None:
                 status TEXT,
                 breakdown TEXT,
                 recommendations TEXT,
+                effect_details TEXT,
                 created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cms_targets (
+                target_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                webhook_url TEXT NOT NULL,
+                environment TEXT NOT NULL,
+                auth_header TEXT,
+                auth_env_var TEXT,
+                enabled INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS publications (
+                publication_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                preview TEXT NOT NULL,
+                quality_report TEXT NOT NULL,
+                injection_id TEXT,
+                confirmed_by TEXT,
+                confirmed_at TEXT,
+                response_summary TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """
         )
@@ -356,6 +420,19 @@ def _init_db() -> None:
             conn.execute("ALTER TABLE retests ADD COLUMN version_id TEXT")
         if "injection_id" not in retest_columns:
             conn.execute("ALTER TABLE retests ADD COLUMN injection_id TEXT")
+        if "effect_details" not in retest_columns:
+            conn.execute("ALTER TABLE retests ADD COLUMN effect_details TEXT")
+        task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        for column, definition in {
+            "owner": "TEXT",
+            "target_score": "INTEGER",
+            "todos": "TEXT",
+        }.items():
+            if column not in task_columns:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+        version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(versions)").fetchall()}
+        if "quality_report" not in version_columns:
+            conn.execute("ALTER TABLE versions ADD COLUMN quality_report TEXT")
 
 
 def _db_upsert_task(task: dict) -> None:
@@ -365,9 +442,9 @@ def _db_upsert_task(task: dict) -> None:
             """
             INSERT INTO tasks (
                 task_id, url, title, status, latest_result, latest_workflow,
-                latest_version_id, latest_retest, created_at, updated_at
+                latest_version_id, latest_retest, owner, target_score, todos, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 url=excluded.url,
                 title=excluded.title,
@@ -376,6 +453,9 @@ def _db_upsert_task(task: dict) -> None:
                 latest_workflow=excluded.latest_workflow,
                 latest_version_id=excluded.latest_version_id,
                 latest_retest=excluded.latest_retest,
+                owner=excluded.owner,
+                target_score=excluded.target_score,
+                todos=excluded.todos,
                 updated_at=excluded.updated_at
             """,
             (
@@ -387,6 +467,9 @@ def _db_upsert_task(task: dict) -> None:
                 _json_dumps(task.get("latest_workflow")) if task.get("latest_workflow") else None,
                 task.get("latest_version_id"),
                 _json_dumps(task.get("latest_retest")) if task.get("latest_retest") else None,
+                task.get("owner"),
+                task.get("target_score"),
+                _json_dumps(task.get("todos", [])),
                 task.get("created_at") or _now_iso(),
                 task.get("updated_at") or _now_iso(),
             ),
@@ -411,6 +494,9 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "latest_workflow": _json_loads(row["latest_workflow"], None),
         "latest_version_id": row["latest_version_id"],
         "latest_retest": _json_loads(row["latest_retest"], None),
+        "owner": row["owner"],
+        "target_score": row["target_score"],
+        "todos": _json_loads(row["todos"], []),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -431,6 +517,7 @@ def _version_from_row(row: sqlite3.Row) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "approved_at": row["approved_at"],
+        "quality_report": _json_loads(row["quality_report"], None),
     }
 
 
@@ -441,9 +528,9 @@ def _db_save_version(version: dict) -> None:
             """
             INSERT INTO versions (
                 version_id, task_id, url, status, editor, reviewer, review_comment,
-                modules, workflow, injection_payload, created_at, updated_at, approved_at
+                modules, workflow, injection_payload, created_at, updated_at, approved_at, quality_report
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(version_id) DO UPDATE SET
                 status=excluded.status,
                 reviewer=excluded.reviewer,
@@ -453,6 +540,7 @@ def _db_save_version(version: dict) -> None:
                 injection_payload=excluded.injection_payload,
                 updated_at=excluded.updated_at,
                 approved_at=excluded.approved_at
+                ,quality_report=excluded.quality_report
             """,
             (
                 version.get("version_id"),
@@ -468,6 +556,7 @@ def _db_save_version(version: dict) -> None:
                 version.get("created_at") or _now_iso(),
                 version.get("updated_at") or _now_iso(),
                 version.get("approved_at"),
+                _json_dumps(version.get("quality_report")) if version.get("quality_report") else None,
             ),
         )
 
@@ -493,9 +582,9 @@ def _db_add_retest(retest: dict) -> None:
             """
             INSERT INTO retests (
                 task_id, version_id, injection_id, url, title, previous_score, current_score, score_delta,
-                status, breakdown, recommendations, created_at
+                status, breakdown, recommendations, effect_details, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 retest.get("task_id"),
@@ -509,6 +598,7 @@ def _db_add_retest(retest: dict) -> None:
                 retest.get("status"),
                 _json_dumps(retest.get("breakdown")),
                 _json_dumps(retest.get("recommendations")),
+                _json_dumps(retest.get("effect_details", {})),
                 retest.get("created_at"),
             ),
         )
@@ -733,6 +823,168 @@ def _db_jobs(status: str | None = None, limit: int = 50, due_only: bool = False)
     return [_job_from_row(row) for row in rows]
 
 
+def _quality_report(modules: list[dict], workflow: dict | None = None) -> dict:
+    issues: list[dict] = []
+    blocking_claim = re.compile(r"\b(guarantee(?:d)?|always|never|number\s*one|#1|100%)\b", re.I)
+    warning_claim = re.compile(r"\b(best|cheapest)\b", re.I)
+    required_fields = ("module_type", "title", "body", "target_position")
+    for index, module in enumerate(modules):
+        for field in required_fields:
+            if not str(module.get(field) or "").strip():
+                issues.append({"severity": "blocking", "code": "missing_field", "module": index, "field": field})
+        body = str(module.get("body") or "")
+        if len(body.strip()) < 24:
+            issues.append({"severity": "blocking", "code": "body_too_short", "module": index})
+        if blocking_claim.search(body):
+            issues.append({"severity": "blocking", "code": "unsupported_sensitive_claim", "module": index})
+        elif warning_claim.search(body):
+            issues.append({"severity": "warning", "code": "review_comparative_claim", "module": index})
+
+    schemas = (workflow or {}).get("schema_suggestions") or []
+    for index, schema in enumerate(schemas):
+        schema_json = schema.get("json") if isinstance(schema, dict) else None
+        if schema_json and (not schema_json.get("@context") or not schema_json.get("@type")):
+            issues.append({"severity": "blocking", "code": "invalid_schema", "schema": index})
+
+    blocking = [item for item in issues if item["severity"] == "blocking"]
+    warnings = [item for item in issues if item["severity"] == "warning"]
+    score = max(0, 100 - len(blocking) * 20 - len(warnings) * 5)
+    return {
+        "status": "passed" if not blocking else "blocked",
+        "score": score,
+        "checks": {
+            "module_completeness": not any(item["code"] in {"missing_field", "body_too_short"} for item in blocking),
+            "sensitive_claims": not any(item["code"] == "unsupported_sensitive_claim" for item in blocking),
+            "schema_validity": not any(item["code"] == "invalid_schema" for item in blocking),
+        },
+        "issues": issues,
+        "checked_at": _now_iso(),
+    }
+
+
+def _project_view(task: dict, versions: list[dict] | None = None, injections: list[dict] | None = None, retests: list[dict] | None = None) -> dict:
+    versions = versions or []
+    injections = injections or []
+    retests = retests or []
+    latest_version = versions[0] if versions else None
+    latest_injection = injections[0] if injections else None
+    latest_retest = retests[0] if retests else task.get("latest_retest")
+    score = int((task.get("latest_result") or {}).get("geo_score") or 0)
+    target_score = int(task.get("target_score") or 80)
+    status = task.get("status") or "analyzed"
+    action_map = {
+        "analyzed": ("生成改进内容", "improve"),
+        "draft_ready": ("保存待审核版本", "save_version"),
+        "pending_review": ("人工审核版本", "review"),
+        "approved": ("创建发布预览", "publish_preview"),
+        "injected": ("安排发布后复测", "schedule_retest"),
+        "retested": ("根据效果继续优化", "improve"),
+    }
+    next_action, next_action_key = action_map.get(status, ("检查项目异常", "inspect"))
+    if latest_version and (latest_version.get("quality_report") or {}).get("status") == "blocked":
+        next_action, next_action_key = "修复内容质量问题", "fix_quality"
+    effect = "尚未复测"
+    if latest_retest:
+        delta = int(latest_retest.get("score_delta") or 0)
+        effect = "有效优化" if delta > 0 else "未见提升"
+    todos = task.get("todos") or []
+    if not todos:
+        todos = [next_action]
+        if score < target_score:
+            todos.append(f"将 GEO 分数从 {score} 提升到 {target_score}")
+    return {
+        **task,
+        "project_id": task["task_id"],
+        "owner": task.get("owner") or "待分配",
+        "target_score": target_score,
+        "current_stage": status,
+        "next_action": next_action,
+        "next_action_key": next_action_key,
+        "todos": todos,
+        "effectiveness": effect,
+        "latest_version": latest_version,
+        "latest_injection": latest_injection,
+        "latest_retest": latest_retest,
+    }
+
+
+def _db_cms_targets() -> list[dict]:
+    with _db() as conn:
+        rows = conn.execute("SELECT * FROM cms_targets ORDER BY updated_at DESC").fetchall()
+    return [
+        {
+            "target_id": row["target_id"],
+            "name": row["name"],
+            "webhook_url": row["webhook_url"],
+            "environment": row["environment"],
+            "auth_header": row["auth_header"],
+            "auth_env_var": row["auth_env_var"],
+            "credential_configured": bool(row["auth_env_var"] and os.getenv(row["auth_env_var"])),
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def _db_get_cms_target(target_id: str) -> dict | None:
+    return next((item for item in _db_cms_targets() if item["target_id"] == target_id), None)
+
+
+def _db_save_publication(publication: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO publications (
+                publication_id, task_id, version_id, target_id, status, preview,
+                quality_report, injection_id, confirmed_by, confirmed_at,
+                response_summary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(publication_id) DO UPDATE SET
+                status=excluded.status,
+                injection_id=excluded.injection_id,
+                confirmed_by=excluded.confirmed_by,
+                confirmed_at=excluded.confirmed_at,
+                response_summary=excluded.response_summary,
+                updated_at=excluded.updated_at
+            """,
+            (
+                publication["publication_id"], publication["task_id"], publication["version_id"],
+                publication["target_id"], publication["status"], _json_dumps(publication["preview"]),
+                _json_dumps(publication["quality_report"]), publication.get("injection_id"),
+                publication.get("confirmed_by"), publication.get("confirmed_at"),
+                publication.get("response_summary"), publication["created_at"], publication["updated_at"],
+            ),
+        )
+
+
+def _db_publications(task_id: str | None = None) -> list[dict]:
+    query = "SELECT * FROM publications"
+    params: list[str] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY created_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "publication_id": row["publication_id"], "task_id": row["task_id"],
+            "version_id": row["version_id"], "target_id": row["target_id"], "status": row["status"],
+            "preview": _json_loads(row["preview"], {}), "quality_report": _json_loads(row["quality_report"], {}),
+            "injection_id": row["injection_id"], "confirmed_by": row["confirmed_by"],
+            "confirmed_at": row["confirmed_at"], "response_summary": row["response_summary"],
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def _db_get_publication(publication_id: str) -> dict | None:
+    return next((item for item in _db_publications() if item["publication_id"] == publication_id), None)
+
+
 def _run_job(job_id: str) -> dict:
     job = _db_get_job(job_id)
     if not job:
@@ -808,6 +1060,7 @@ def _db_history() -> dict:
             "status": row["status"],
             "breakdown": _json_loads(row["breakdown"], {}),
             "recommendations": _json_loads(row["recommendations"], []),
+            "effect_details": _json_loads(row["effect_details"], {}),
             "created_at": row["created_at"],
         }
         retests.setdefault(row["task_id"], []).append(item)
@@ -817,6 +1070,8 @@ def _db_history() -> dict:
         "versions": [_version_from_row(row) for row in version_rows],
         "retests": retests,
         "injections": [_injection_from_row(row) for row in injection_rows],
+        "publications": _db_publications(),
+        "cms_targets": _db_cms_targets(),
     }
 
 
@@ -1548,12 +1803,22 @@ def geo_analyze(request: GEOAnalyzeRequest):
         **package,
     }
     existing_task = _db_get_task(task_id) or {}
+    stage_order = {
+        "analyzed": 10,
+        "draft_ready": 20,
+        "pending_review": 30,
+        "approved": 40,
+        "injected": 50,
+        "retested": 60,
+    }
+    existing_status = existing_task.get("status") or "analyzed"
+    next_status = existing_status if stage_order.get(existing_status, 0) > stage_order["analyzed"] else "analyzed"
     _db_upsert_task({
         **existing_task,
         "task_id": task_id,
         "url": url,
         "title": title,
-        "status": "analyzed",
+        "status": next_status,
         "latest_result": result,
         "created_at": existing_task.get("created_at") or _now_iso(),
         "updated_at": _now_iso(),
@@ -1655,6 +1920,7 @@ def geo_version_save(request: GEOVersionSaveRequest):
         "modules": request.modules,
         "workflow": workflow,
         "injection_payload": payload,
+        "quality_report": _quality_report(request.modules, workflow),
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
@@ -1686,6 +1952,8 @@ def geo_version_review(request: GEOReviewRequest):
 
     if request.action not in {"approve", "reject"}:
         raise HTTPException(status_code=400, detail="Action must be approve or reject.")
+    if request.action == "approve" and (version.get("quality_report") or {}).get("status") != "passed":
+        raise HTTPException(status_code=409, detail="Version is blocked by content quality checks.")
     if version.get("status") not in {"pending_review", "rejected"}:
         raise HTTPException(
             status_code=409,
@@ -1864,6 +2132,13 @@ def geo_retest(request: GEORetestRequest):
     score_result = score_content(content)
     current_score = int(score_result.get("geo_score") or 0)
     delta = current_score - int(request.previous_score or 0)
+    task = _db_get_task(request.task_id)
+    previous_breakdown = ((task or {}).get("latest_result") or {}).get("breakdown") or {}
+    current_breakdown = score_result.get("breakdown") or {}
+    dimension_deltas = {
+        key: int(current_breakdown.get(key) or 0) - int(previous_breakdown.get(key) or 0)
+        for key in set(previous_breakdown) | set(current_breakdown)
+    }
     retest = {
         "task_id": request.task_id,
         "version_id": injection.get("version_id"),
@@ -1875,12 +2150,17 @@ def geo_retest(request: GEORetestRequest):
         "score_delta": delta,
         "breakdown": score_result.get("breakdown"),
         "recommendations": score_result.get("recommendations"),
+        "effect_details": {
+            "dimension_deltas": dimension_deltas,
+            "improved_dimensions": [key for key, value in dimension_deltas.items() if value > 0],
+            "declined_dimensions": [key for key, value in dimension_deltas.items() if value < 0],
+            "verdict": "effective" if delta > 0 else "ineffective",
+        },
         "status": "improved" if delta > 0 else "needs_more_work",
         "created_at": _now_iso(),
     }
     _db_add_retest(retest)
 
-    task = _db_get_task(request.task_id)
     if task:
         task["status"] = "retested"
         task["latest_retest"] = retest
@@ -1940,6 +2220,201 @@ def geo_schedule_retest(request: GEORetestScheduleRequest, background_tasks: Bac
     return job
 
 
+@app.get("/geo/projects")
+def geo_projects():
+    history = _db_history()
+    return {
+        "items": [
+            _project_view(
+                task,
+                [item for item in history["versions"] if item["task_id"] == task["task_id"]],
+                [item for item in history["injections"] if item["task_id"] == task["task_id"]],
+                history["retests"].get(task["task_id"], []),
+            )
+            for task in history["tasks"]
+        ]
+    }
+
+
+@app.get("/geo/projects/{task_id}")
+def geo_project_detail(task_id: str):
+    detail = geo_task_detail(task_id)
+    detail["project"] = _project_view(detail["task"], detail["versions"], detail["injections"], detail["retests"])
+    detail["publications"] = _db_publications(task_id)
+    return detail
+
+
+@app.post("/geo/projects/{task_id}")
+def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
+    task = _db_get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if request.owner is not None:
+        task["owner"] = request.owner.strip() or None
+    if request.target_score is not None:
+        task["target_score"] = max(1, min(request.target_score, 100))
+    if request.todos is not None:
+        task["todos"] = [item.strip() for item in request.todos if item.strip()][:20]
+    task["updated_at"] = _now_iso()
+    _db_upsert_task(task)
+    _db_add_audit(_current_actor(), "update_project", "task", task_id, task_id)
+    return _project_view(task)
+
+
+@app.post("/geo/versions/{version_id}/quality-check")
+def geo_version_quality_check(version_id: str):
+    version = _db_get_version(version_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    version["quality_report"] = _quality_report(version.get("modules") or [], version.get("workflow") or {})
+    version["updated_at"] = _now_iso()
+    _db_save_version(version)
+    _db_add_audit(
+        _current_actor(), "quality_check", "version", version_id, version.get("task_id"),
+        outcome=version["quality_report"]["status"],
+        detail={"score": version["quality_report"]["score"], "issue_count": len(version["quality_report"]["issues"])},
+    )
+    return version["quality_report"]
+
+
+@app.get("/cms/targets")
+def cms_targets():
+    return {"items": _db_cms_targets()}
+
+
+@app.post("/cms/targets")
+def cms_target_save(request: CMSPublishTargetRequest):
+    try:
+        webhook_url = _validate_public_webhook_url(request.webhook_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    target_id = f"cms_{hashlib.sha256(f'{request.name}:{webhook_url}'.encode()).hexdigest()[:12]}"
+    now = _now_iso()
+    with _db() as conn:
+        existing = conn.execute("SELECT created_at FROM cms_targets WHERE target_id = ?", (target_id,)).fetchone()
+        conn.execute(
+            """
+            INSERT INTO cms_targets (
+                target_id, name, webhook_url, environment, auth_header, auth_env_var,
+                enabled, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(target_id) DO UPDATE SET
+                name=excluded.name, webhook_url=excluded.webhook_url,
+                environment=excluded.environment, auth_header=excluded.auth_header,
+                auth_env_var=excluded.auth_env_var, enabled=excluded.enabled,
+                updated_at=excluded.updated_at
+            """,
+            (
+                target_id, request.name.strip(), webhook_url, request.environment,
+                request.auth_header, request.auth_env_var, int(request.enabled),
+                existing["created_at"] if existing else now, now,
+            ),
+        )
+    _db_add_audit(_current_actor(), "save_cms_target", "cms_target", target_id)
+    return _db_get_cms_target(target_id)
+
+
+@app.get("/cms/publications")
+def cms_publications(task_id: str | None = None):
+    return {"items": _db_publications(task_id)}
+
+
+@app.post("/cms/publications/preview")
+def cms_publication_preview(request: CMSPublishPreviewRequest):
+    version = _db_get_version(request.version_id)
+    target = _db_get_cms_target(request.target_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found.")
+    if not target or not target["enabled"]:
+        raise HTTPException(status_code=404, detail="Enabled CMS target not found.")
+    if version.get("status") != "approved":
+        raise HTTPException(status_code=409, detail="Only approved versions can create a publication preview.")
+    quality = version.get("quality_report") or _quality_report(version.get("modules") or [], version.get("workflow") or {})
+    if quality["status"] != "passed":
+        raise HTTPException(status_code=409, detail="Publication is blocked by content quality checks.")
+    publication = {
+        "publication_id": f"pub_{uuid.uuid4().hex[:16]}",
+        "task_id": version["task_id"],
+        "version_id": version["version_id"],
+        "target_id": target["target_id"],
+        "status": "pending_confirmation",
+        "preview": {
+            "target_name": target["name"],
+            "environment": target["environment"],
+            "url": version["url"],
+            "module_count": len(version.get("modules") or []),
+            "modules": [{"module_type": item.get("module_type"), "title": item.get("title")} for item in version.get("modules") or []],
+        },
+        "quality_report": quality,
+        "created_at": _now_iso(),
+        "updated_at": _now_iso(),
+    }
+    _db_save_publication(publication)
+    _db_add_audit(_current_actor(), "preview_publish", "publication", publication["publication_id"], version["task_id"])
+    return publication
+
+
+@app.post("/cms/publications/confirm")
+def cms_publication_confirm(request: CMSPublishConfirmRequest):
+    publication = _db_get_publication(request.publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    if publication["status"] != "pending_confirmation":
+        raise HTTPException(status_code=409, detail="Publication is not waiting for confirmation.")
+    if request.confirmation != "PUBLISH":
+        raise HTTPException(status_code=400, detail="Type PUBLISH to confirm this CMS publication.")
+    target = _db_get_cms_target(publication["target_id"])
+    if not target or not target["enabled"]:
+        raise HTTPException(status_code=409, detail="CMS target is unavailable.")
+    headers: dict[str, str] = {}
+    if target.get("auth_env_var"):
+        secret = os.getenv(target["auth_env_var"])
+        if not secret:
+            raise HTTPException(status_code=409, detail="CMS credential environment variable is not configured.")
+        headers[target["auth_header"]] = secret
+    try:
+        injection = geo_inject(
+            GEOInjectRequest(
+                version_id=publication["version_id"],
+                target="webhook",
+                webhook_url=target["webhook_url"],
+                headers=headers,
+            )
+        )
+        publication["status"] = "published"
+        publication["injection_id"] = injection["injection_id"]
+        publication["response_summary"] = injection.get("response_summary")
+    except HTTPException as exc:
+        publication["status"] = "failed"
+        publication["response_summary"] = str(exc.detail)
+    publication["confirmed_by"] = _current_actor()
+    publication["confirmed_at"] = _now_iso()
+    publication["updated_at"] = _now_iso()
+    _db_save_publication(publication)
+    _db_add_audit(
+        _current_actor(), "confirm_publish", "publication", publication["publication_id"],
+        publication["task_id"], outcome=publication["status"],
+    )
+    return publication
+
+
+@app.post("/cms/publications/{publication_id}/retry")
+def cms_publication_retry(publication_id: str):
+    publication = _db_get_publication(publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    if publication["status"] != "failed":
+        raise HTTPException(status_code=409, detail="Only failed publications can be retried.")
+    publication["status"] = "pending_confirmation"
+    publication["response_summary"] = None
+    publication["confirmed_by"] = None
+    publication["confirmed_at"] = None
+    publication["updated_at"] = _now_iso()
+    _db_save_publication(publication)
+    _db_add_audit(_current_actor(), "retry_publish", "publication", publication_id, publication["task_id"])
+    return publication
+
+
 @app.get("/geo/history")
 def geo_history():
     return _db_history()
@@ -1956,6 +2431,13 @@ def geo_task_detail(task_id: str):
         "versions": [item for item in history["versions"] if item["task_id"] == task_id],
         "injections": [item for item in history["injections"] if item["task_id"] == task_id],
         "retests": history["retests"].get(task_id, []),
+        "project": _project_view(
+            task,
+            [item for item in history["versions"] if item["task_id"] == task_id],
+            [item for item in history["injections"] if item["task_id"] == task_id],
+            history["retests"].get(task_id, []),
+        ),
+        "publications": _db_publications(task_id),
     }
 
 

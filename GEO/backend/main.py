@@ -146,6 +146,10 @@ class GEOAnalyzeRequest(BaseModel):
     use_ai: bool = False
     provider: str = "openai"
     model: str | None = None
+    client_name: str | None = None
+    brand_name: str | None = None
+    target_engines: list[str] = ["chatgpt", "perplexity"]
+    business_goal: str = "提升 AI 推荐可见度与询盘"
 
 
 class GEOImproveRequest(BaseModel):
@@ -201,6 +205,11 @@ class GEOProjectUpdateRequest(BaseModel):
     owner: str | None = None
     target_score: int | None = None
     todos: list[str] | None = None
+    client_name: str | None = None
+    brand_name: str | None = None
+    target_engines: list[str] | None = None
+    business_goal: str | None = None
+    service_tier: str | None = None
 
 
 class CMSPublishTargetRequest(BaseModel):
@@ -275,6 +284,48 @@ class GEOFeedbackRequest(BaseModel):
     source: str = "miniapp"
 
 
+class GEOMonitorQueryRequest(BaseModel):
+    task_id: str
+    query_text: str
+    category: str = "comparison"
+    competitor: str | None = None
+    engine: str = "perplexity"
+    active: bool = True
+
+
+class GEOSourceObservationRequest(BaseModel):
+    task_id: str
+    query_id: str
+    source_domain: str
+    source_url: str | None = None
+    page_type: str = "unknown"
+    citation_count: int = 1
+    notes: str | None = None
+
+
+class GEOTrustAnchorRequest(BaseModel):
+    task_id: str
+    channel: str
+    topic: str
+    target_url: str | None = None
+    owner: str | None = None
+    status: str = "planned"
+    guidance: str | None = None
+    evidence_url: str | None = None
+
+
+class GEOMentionCheckRequest(BaseModel):
+    task_id: str
+    query_id: str
+    engine: str = "perplexity"
+    brand_mentioned: bool = False
+    mention_position: int | None = None
+    source_type: str | None = None
+    source_url: str | None = None
+    answer_excerpt: str | None = None
+    notes: str | None = None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -319,6 +370,11 @@ def _init_db() -> None:
                 owner TEXT,
                 target_score INTEGER,
                 todos TEXT,
+                client_name TEXT,
+                brand_name TEXT,
+                target_engines TEXT,
+                business_goal TEXT,
+                service_tier TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -492,6 +548,70 @@ def _init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS monitor_queries (
+                query_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                query_text TEXT NOT NULL,
+                category TEXT NOT NULL,
+                competitor TEXT,
+                engine TEXT NOT NULL,
+                active INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS source_observations (
+                observation_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                query_id TEXT NOT NULL,
+                source_domain TEXT NOT NULL,
+                source_url TEXT,
+                page_type TEXT NOT NULL,
+                citation_count INTEGER NOT NULL,
+                notes TEXT,
+                observed_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trust_anchor_tasks (
+                anchor_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                target_url TEXT,
+                owner TEXT,
+                status TEXT NOT NULL,
+                guidance TEXT,
+                evidence_url TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mention_checks (
+                check_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                query_id TEXT NOT NULL,
+                engine TEXT NOT NULL,
+                brand_mentioned INTEGER NOT NULL,
+                mention_position INTEGER,
+                source_type TEXT,
+                source_url TEXT,
+                answer_excerpt TEXT,
+                notes TEXT,
+                checked_at TEXT NOT NULL
+            )
+            """
+        )
         retest_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(retests)").fetchall()
         }
@@ -506,6 +626,11 @@ def _init_db() -> None:
             "owner": "TEXT",
             "target_score": "INTEGER",
             "todos": "TEXT",
+            "client_name": "TEXT",
+            "brand_name": "TEXT",
+            "target_engines": "TEXT",
+            "business_goal": "TEXT",
+            "service_tier": "TEXT",
         }.items():
             if column not in task_columns:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
@@ -530,9 +655,11 @@ def _db_upsert_task(task: dict) -> None:
             """
             INSERT INTO tasks (
                 task_id, url, title, status, latest_result, latest_workflow,
-                latest_version_id, latest_retest, owner, target_score, todos, created_at, updated_at
+                latest_version_id, latest_retest, owner, target_score, todos,
+                client_name, brand_name, target_engines, business_goal, service_tier,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 url=excluded.url,
                 title=excluded.title,
@@ -544,6 +671,11 @@ def _db_upsert_task(task: dict) -> None:
                 owner=excluded.owner,
                 target_score=excluded.target_score,
                 todos=excluded.todos,
+                client_name=excluded.client_name,
+                brand_name=excluded.brand_name,
+                target_engines=excluded.target_engines,
+                business_goal=excluded.business_goal,
+                service_tier=excluded.service_tier,
                 updated_at=excluded.updated_at
             """,
             (
@@ -558,6 +690,11 @@ def _db_upsert_task(task: dict) -> None:
                 task.get("owner"),
                 task.get("target_score"),
                 _json_dumps(task.get("todos", [])),
+                task.get("client_name"),
+                task.get("brand_name"),
+                _json_dumps(task.get("target_engines", [])),
+                task.get("business_goal"),
+                task.get("service_tier"),
                 task.get("created_at") or _now_iso(),
                 task.get("updated_at") or _now_iso(),
             ),
@@ -585,6 +722,11 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "owner": row["owner"],
         "target_score": row["target_score"],
         "todos": _json_loads(row["todos"], []),
+        "client_name": row["client_name"],
+        "brand_name": row["brand_name"],
+        "target_engines": _json_loads(row["target_engines"], []),
+        "business_goal": row["business_goal"],
+        "service_tier": row["service_tier"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1113,6 +1255,15 @@ def _project_view(
         todos = [next_action]
         if score < target_score:
             todos.append(f"将 GEO 分数从 {score} 提升到 {target_score}")
+    monitoring = _monitoring_summary(task["task_id"])
+    readiness_checks = [
+        bool(task.get("brand_name")),
+        bool(task.get("client_name")),
+        bool(task.get("target_engines")),
+        monitoring["active_query_count"] > 0,
+        bool(task.get("owner")),
+    ]
+    commercial_ready = all(readiness_checks)
     return {
         **task,
         "project_id": task["task_id"],
@@ -1128,6 +1279,23 @@ def _project_view(
         "latest_retest": latest_retest,
         "latest_publication": latest_publication,
         "pending_job": pending_verify_job or pending_retest_job,
+        "monitoring": monitoring,
+        "commercial_readiness": {
+            "ready": commercial_ready,
+            "completed": sum(readiness_checks),
+            "total": 5,
+            "missing": [
+                label
+                for value, label in [
+                    (task.get("brand_name"), "品牌名称"),
+                    (task.get("client_name"), "客户名称"),
+                    (task.get("target_engines"), "目标 AI 平台"),
+                    (monitoring["active_query_count"], "平台监测问题"),
+                    (task.get("owner"), "项目负责人"),
+                ]
+                if not value
+            ],
+        },
     }
 
 
@@ -1331,6 +1499,207 @@ def _db_llm_logs(task_id: str | None = None, limit: int = 100) -> list[dict]:
     ]
 
 
+def _db_monitor_queries(task_id: str | None = None, active_only: bool = False) -> list[dict]:
+    query = "SELECT * FROM monitor_queries"
+    filters: list[str] = []
+    params: list = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if active_only:
+        filters.append("active = 1")
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "query_id": row["query_id"], "task_id": row["task_id"],
+            "query_text": row["query_text"], "category": row["category"],
+            "competitor": row["competitor"], "engine": row["engine"],
+            "active": bool(row["active"]), "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def _db_source_observations(task_id: str | None = None) -> list[dict]:
+    query = "SELECT * FROM source_observations"
+    params: list[str] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY observed_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "observation_id": row["observation_id"], "task_id": row["task_id"],
+            "query_id": row["query_id"], "source_domain": row["source_domain"],
+            "source_url": row["source_url"], "page_type": row["page_type"],
+            "citation_count": row["citation_count"], "notes": row["notes"],
+            "observed_at": row["observed_at"],
+        }
+        for row in rows
+    ]
+
+
+def _db_trust_anchors(task_id: str | None = None) -> list[dict]:
+    query = "SELECT * FROM trust_anchor_tasks"
+    params: list[str] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _db_mention_checks(task_id: str | None = None) -> list[dict]:
+    query = "SELECT * FROM mention_checks"
+    params: list[str] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY checked_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            **dict(row),
+            "brand_mentioned": bool(row["brand_mentioned"]),
+        }
+        for row in rows
+    ]
+
+
+def _source_map(task_id: str) -> dict:
+    observations = _db_source_observations(task_id)
+    domain_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    for item in observations:
+        count = max(1, int(item.get("citation_count") or 1))
+        domain_counts[item["source_domain"]] = domain_counts.get(item["source_domain"], 0) + count
+        type_counts[item["page_type"]] = type_counts.get(item["page_type"], 0) + count
+    domains = [
+        {"domain": key, "citations": value}
+        for key, value in sorted(domain_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    page_types = [
+        {"page_type": key, "citations": value}
+        for key, value in sorted(type_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    recommendations: list[dict] = []
+    recommendation_map = {
+        "comparison": ("创建对比决策页", "加入对比表、适用边界、排除声明和采购检查清单。"),
+        "product": ("强化产品页结构", "补充 5-8 组 FAQ Schema，并链向至少 2 个问答或对比页。"),
+        "forum": ("建立真实行业回答任务", "选择高质量问题，由专家提供可验证回答；禁止伪装用户或虚构体验。"),
+        "media": ("准备行业媒体证据包", "整理数据、案例、专家观点与可核验来源，再开展媒体触达。"),
+        "blog": ("建设主题问答内容簇", "围绕高意图问题生产可直接引用的短答案、清单和内链。"),
+    }
+    for item in page_types[:3]:
+        title, action = recommendation_map.get(
+            item["page_type"],
+            ("复刻高频信源的信息结构", "分析高频来源的标题、证据和回答结构，生成对应页面任务。"),
+        )
+        recommendations.append({**item, "title": title, "action": action})
+    return {
+        "task_id": task_id,
+        "observation_count": len(observations),
+        "citation_total": sum(domain_counts.values()),
+        "domains": domains,
+        "page_types": page_types,
+        "recommendations": recommendations,
+    }
+
+
+def _monitoring_summary(task_id: str) -> dict:
+    queries = _db_monitor_queries(task_id)
+    checks = _db_mention_checks(task_id)
+    mentioned = [item for item in checks if item["brand_mentioned"]]
+    positions = [int(item["mention_position"]) for item in mentioned if item.get("mention_position")]
+    source_counts: dict[str, int] = {}
+    platform_counts: dict[str, dict] = {}
+    weekly: dict[str, dict] = {}
+    for item in checks:
+        platform = platform_counts.setdefault(
+            item["engine"],
+            {"engine": item["engine"], "checks": 0, "mentions": 0, "positions": []},
+        )
+        platform["checks"] += 1
+        platform["mentions"] += int(item["brand_mentioned"])
+        if item.get("mention_position"):
+            platform["positions"].append(int(item["mention_position"]))
+        source_type = item.get("source_type") or "unknown"
+        source_counts[source_type] = source_counts.get(source_type, 0) + 1
+        day = datetime.fromisoformat(item["checked_at"].replace("Z", "+00:00")).date()
+        week = (day - timedelta(days=day.weekday())).isoformat()
+        bucket = weekly.setdefault(week, {"week": week, "checks": 0, "mentions": 0})
+        bucket["checks"] += 1
+        bucket["mentions"] += int(item["brand_mentioned"])
+    weekly_series = sorted(weekly.values(), key=lambda item: item["week"])
+    for item in weekly_series:
+        item["mention_rate"] = round(item["mentions"] * 100 / item["checks"]) if item["checks"] else 0
+    platform_breakdown = []
+    for item in sorted(platform_counts.values(), key=lambda entry: entry["engine"]):
+        platform_breakdown.append(
+            {
+                "engine": item["engine"],
+                "checks": item["checks"],
+                "mentions": item["mentions"],
+                "mention_rate": round(item["mentions"] * 100 / item["checks"]) if item["checks"] else 0,
+                "average_position": round(sum(item["positions"]) / len(item["positions"]), 1) if item["positions"] else None,
+            }
+        )
+    return {
+        "task_id": task_id,
+        "query_count": len(queries),
+        "active_query_count": len([item for item in queries if item["active"]]),
+        "queries": queries,
+        "check_count": len(checks),
+        "mention_count": len(mentioned),
+        "mention_rate": round(len(mentioned) * 100 / len(checks)) if checks else 0,
+        "average_position": round(sum(positions) / len(positions), 1) if positions else None,
+        "source_distribution": [
+            {"source_type": key, "checks": value}
+            for key, value in sorted(source_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "platform_breakdown": platform_breakdown,
+        "weekly": weekly_series,
+        "latest_check": checks[0] if checks else None,
+        "source_map": _source_map(task_id),
+        "trust_anchors": _db_trust_anchors(task_id),
+    }
+
+
+def _seed_monitor_queries(task_id: str, brand_name: str, engines: list[str]) -> None:
+    now = _now_iso()
+    templates = [
+        ("category", f"What is {brand_name} and who is it for?"),
+        ("comparison", f"{brand_name} vs alternatives"),
+        ("recommendation", f"Best solutions like {brand_name}"),
+    ]
+    with _db() as conn:
+        for engine in engines:
+            normalized_engine = engine.strip().lower()
+            if not normalized_engine:
+                continue
+            for category, query_text in templates:
+                query_id = f"query_{hashlib.sha256(f'{task_id}:{normalized_engine}:{query_text}'.encode()).hexdigest()[:12]}"
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO monitor_queries (
+                        query_id, task_id, query_text, category, competitor, engine,
+                        active, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (query_id, task_id, query_text, category, None, normalized_engine, now, now),
+                )
+
+
 def _db_save_publication(publication: dict) -> None:
     with _db() as conn:
         conn.execute(
@@ -1507,6 +1876,10 @@ def _db_history() -> dict:
         "knowledge_items": _db_knowledge_items(limit=200),
         "feedback_entries": _db_feedback(limit=200),
         "llm_logs": _db_llm_logs(limit=200),
+        "monitor_queries": _db_monitor_queries(),
+        "source_observations": _db_source_observations(),
+        "trust_anchors": _db_trust_anchors(),
+        "mention_checks": _db_mention_checks(),
     }
 
 
@@ -2301,9 +2674,19 @@ def geo_analyze(request: GEOAnalyzeRequest):
         "title": title,
         "status": next_status,
         "latest_result": result,
+        "client_name": request.client_name or existing_task.get("client_name"),
+        "brand_name": request.brand_name or existing_task.get("brand_name") or title,
+        "target_engines": request.target_engines or existing_task.get("target_engines") or ["chatgpt", "perplexity"],
+        "business_goal": request.business_goal or existing_task.get("business_goal"),
+        "service_tier": existing_task.get("service_tier") or "growth",
         "created_at": existing_task.get("created_at") or _now_iso(),
         "updated_at": _now_iso(),
     })
+    _seed_monitor_queries(
+        task_id,
+        request.brand_name or existing_task.get("brand_name") or title,
+        request.target_engines or existing_task.get("target_engines") or ["chatgpt", "perplexity"],
+    )
     _db_add_audit(_current_actor(), "analyze", "task", task_id, task_id, detail={"url": url, "score": result["geo_score"]})
     return result
 
@@ -2783,8 +3166,20 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
         task["target_score"] = max(1, min(request.target_score, 100))
     if request.todos is not None:
         task["todos"] = [item.strip() for item in request.todos if item.strip()][:20]
+    if request.client_name is not None:
+        task["client_name"] = request.client_name.strip() or None
+    if request.brand_name is not None:
+        task["brand_name"] = request.brand_name.strip() or None
+    if request.target_engines is not None:
+        task["target_engines"] = list(dict.fromkeys(item.strip().lower() for item in request.target_engines if item.strip()))[:8]
+    if request.business_goal is not None:
+        task["business_goal"] = request.business_goal.strip() or None
+    if request.service_tier is not None:
+        task["service_tier"] = request.service_tier.strip() or None
     task["updated_at"] = _now_iso()
     _db_upsert_task(task)
+    if task.get("brand_name") and task.get("target_engines"):
+        _seed_monitor_queries(task_id, task["brand_name"], task["target_engines"])
     _db_add_audit(_current_actor(), "update_project", "task", task_id, task_id)
     history = _db_history()
     return _project_view(
@@ -2795,6 +3190,166 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
         _db_publications(task_id),
         [item for item in _db_jobs(limit=100) if item.get("payload", {}).get("task_id") == task_id],
     )
+
+
+@app.get("/geo/monitoring/queries")
+def geo_monitor_queries(task_id: str | None = None):
+    return {"items": _db_monitor_queries(task_id)}
+
+
+@app.post("/geo/monitoring/queries")
+def geo_monitor_query_save(request: GEOMonitorQueryRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    query_text = request.query_text.strip()
+    if not query_text:
+        raise HTTPException(status_code=400, detail="Query text is required.")
+    query_id = f"query_{hashlib.sha256(f'{request.task_id}:{request.engine}:{query_text}'.encode()).hexdigest()[:12]}"
+    now = _now_iso()
+    with _db() as conn:
+        existing = conn.execute("SELECT created_at FROM monitor_queries WHERE query_id = ?", (query_id,)).fetchone()
+        conn.execute(
+            """
+            INSERT INTO monitor_queries (
+                query_id, task_id, query_text, category, competitor, engine, active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(query_id) DO UPDATE SET
+                category=excluded.category, competitor=excluded.competitor,
+                engine=excluded.engine, active=excluded.active, updated_at=excluded.updated_at
+            """,
+            (
+                query_id, request.task_id, query_text, request.category.strip() or "comparison",
+                (request.competitor or "").strip() or None, request.engine.strip() or "perplexity",
+                int(request.active), existing["created_at"] if existing else now, now,
+            ),
+        )
+    _db_add_audit(_current_actor(), "save_monitor_query", "monitor_query", query_id, request.task_id)
+    return next(item for item in _db_monitor_queries(request.task_id) if item["query_id"] == query_id)
+
+
+@app.post("/geo/monitoring/sources")
+def geo_source_observation_save(request: GEOSourceObservationRequest):
+    query = next((item for item in _db_monitor_queries(request.task_id) if item["query_id"] == request.query_id), None)
+    if not query:
+        raise HTTPException(status_code=404, detail="Monitoring query not found.")
+    domain = request.source_domain.strip().lower()
+    if not domain:
+        raise HTTPException(status_code=400, detail="Source domain is required.")
+    observation = {
+        "observation_id": f"source_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "query_id": request.query_id,
+        "source_domain": domain,
+        "source_url": (request.source_url or "").strip() or None,
+        "page_type": request.page_type.strip().lower() or "unknown",
+        "citation_count": max(1, min(request.citation_count, 1000)),
+        "notes": (request.notes or "").strip() or None,
+        "observed_at": _now_iso(),
+    }
+    with _db() as conn:
+        conn.execute(
+            """INSERT INTO source_observations (
+                observation_id, task_id, query_id, source_domain, source_url, page_type,
+                citation_count, notes, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tuple(observation.values()),
+        )
+    _db_add_audit(_current_actor(), "save_source_observation", "source_observation", observation["observation_id"], request.task_id)
+    return observation
+
+
+@app.get("/geo/monitoring/source-map")
+def geo_source_map(task_id: str):
+    if not _db_get_task(task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return _source_map(task_id)
+
+
+@app.get("/geo/monitoring/trust-anchors")
+def geo_trust_anchors(task_id: str | None = None):
+    return {"items": _db_trust_anchors(task_id)}
+
+
+@app.post("/geo/monitoring/trust-anchors")
+def geo_trust_anchor_save(request: GEOTrustAnchorRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    now = _now_iso()
+    anchor = {
+        "anchor_id": f"anchor_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "channel": request.channel.strip().lower(),
+        "topic": request.topic.strip(),
+        "target_url": (request.target_url or "").strip() or None,
+        "owner": (request.owner or "").strip() or None,
+        "status": request.status.strip() or "planned",
+        "guidance": (request.guidance or "").strip() or "提供真实、可验证、有帮助的行业回答，不伪装用户或虚构体验。",
+        "evidence_url": (request.evidence_url or "").strip() or None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    with _db() as conn:
+        conn.execute(
+            """INSERT INTO trust_anchor_tasks (
+                anchor_id, task_id, channel, topic, target_url, owner, status,
+                guidance, evidence_url, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            tuple(anchor.values()),
+        )
+    _db_add_audit(_current_actor(), "save_trust_anchor", "trust_anchor", anchor["anchor_id"], request.task_id)
+    return anchor
+
+
+@app.get("/geo/monitoring/checks")
+def geo_mention_checks(task_id: str | None = None):
+    return {"items": _db_mention_checks(task_id)}
+
+
+@app.post("/geo/monitoring/checks")
+def geo_mention_check_save(request: GEOMentionCheckRequest):
+    query = next((item for item in _db_monitor_queries(request.task_id) if item["query_id"] == request.query_id), None)
+    if not query:
+        raise HTTPException(status_code=404, detail="Monitoring query not found.")
+    position = request.mention_position if request.brand_mentioned else None
+    if position is not None:
+        position = max(1, min(position, 100))
+    check = {
+        "check_id": f"check_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "query_id": request.query_id,
+        "engine": request.engine.strip() or query["engine"],
+        "brand_mentioned": bool(request.brand_mentioned),
+        "mention_position": position,
+        "source_type": (request.source_type or "").strip().lower() or None,
+        "source_url": (request.source_url or "").strip() or None,
+        "answer_excerpt": (request.answer_excerpt or "").strip()[:1000] or None,
+        "notes": (request.notes or "").strip() or None,
+        "checked_at": _now_iso(),
+    }
+    with _db() as conn:
+        conn.execute(
+            """INSERT INTO mention_checks (
+                check_id, task_id, query_id, engine, brand_mentioned, mention_position,
+                source_type, source_url, answer_excerpt, notes, checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                check["check_id"], check["task_id"], check["query_id"], check["engine"],
+                int(check["brand_mentioned"]), check["mention_position"], check["source_type"],
+                check["source_url"], check["answer_excerpt"], check["notes"], check["checked_at"],
+            ),
+        )
+    _db_add_audit(
+        _current_actor(), "save_mention_check", "mention_check", check["check_id"], request.task_id,
+        detail={"mentioned": check["brand_mentioned"], "position": check["mention_position"]},
+    )
+    return check
+
+
+@app.get("/geo/monitoring/summary")
+def geo_monitoring_summary(task_id: str):
+    if not _db_get_task(task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return _monitoring_summary(task_id)
 
 
 @app.get("/geo/knowledge")
@@ -3163,6 +3718,7 @@ def geo_task_detail(task_id: str):
         ),
         "publications": task_publications,
         "jobs": task_jobs,
+        "monitoring": _monitoring_summary(task_id),
     }
 
 

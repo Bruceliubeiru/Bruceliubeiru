@@ -49,6 +49,9 @@ def build_admin_overview(history: dict) -> dict:
     knowledge_items = history.get("knowledge_items") or []
     feedback_entries = history.get("feedback_entries") or []
     llm_logs = history.get("llm_logs") or []
+    monitor_queries = history.get("monitor_queries") or []
+    mention_checks = history.get("mention_checks") or []
+    trust_anchors = history.get("trust_anchors") or []
     summaries = [_task_summary(task, versions, injections, retests) for task in tasks]
 
     pending_versions = [item for item in versions if item.get("status") == "pending_review"]
@@ -87,6 +90,10 @@ def build_admin_overview(history: dict) -> dict:
             "knowledge_items": len(knowledge_items),
             "feedback_entries": len(feedback_entries),
             "llm_logs": len(llm_logs),
+            "monitor_queries": len(monitor_queries),
+            "mention_checks": len(mention_checks),
+            "brand_mentions": len([item for item in mention_checks if item.get("brand_mentioned")]),
+            "trust_anchors": len(trust_anchors),
         },
         "status_counts": dict(Counter(item["status"] for item in summaries)),
         "attention": {

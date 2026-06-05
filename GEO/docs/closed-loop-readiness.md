@@ -42,6 +42,25 @@ URL analysis
 | AI traceability | LLM call logs persist provider/model/status plus prompt/response excerpts for audit and quota tracking |
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
+| Commercial intake | URL projects retain customer, brand, business goal, service tier, owner, target score, and target AI platforms |
+| Multi-platform visibility | Projects seed ChatGPT/Perplexity/Gemini monitoring queries and persist brand mention, position, source type, and answer evidence |
+| AI source map | Citation domains and page types are aggregated into prioritized comparison, FAQ, content-cluster, media, and trust-anchor tasks |
+| Ethical trust anchors | External contribution tasks require accountable ownership and evidence; default guidance forbids impersonation and fabricated experience |
+
+## External Client Delivery Standard
+
+A project is ready to accept as a paid GEO engagement when it has:
+
+1. A public URL, customer name, brand name, owner, business goal, and target AI platforms.
+2. A baseline 100-point GEO diagnosis and at least three monitoring questions per target platform.
+3. An AI source map or an explicit first-week source observation plan.
+4. An approved content version, quality gate result, and traceable knowledge citations.
+5. A confirmed delivery target, live verification, scheduled retest, and AI-platform visibility checks.
+
+The system can now operate this workflow manually and persist its evidence. The remaining
+production gap is automated collection from each AI platform. Until official APIs and account
+credentials are connected, operators record answer excerpts, positions, and sources through
+the monitoring endpoints instead of relying on unreviewable scraping.
 
 ## External Production Dependencies
 

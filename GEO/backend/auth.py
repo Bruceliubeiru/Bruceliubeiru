@@ -76,6 +76,7 @@ def required_role(method: str, path: str) -> str | None:
         or path.startswith("/geo/projects/")
         or path.startswith("/geo/tasks/")
         or path.startswith("/geo/versions/")
+        or path.startswith("/geo/monitoring/")
     ):
         return "viewer"
     if path == "/geo/version/review":

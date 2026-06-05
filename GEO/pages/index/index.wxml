@@ -12,8 +12,9 @@
 
   <view wx:if="{{!hasAnalyzed}}" class="start-view">
     <view class="intro-band">
-      <text class="intro-kicker">URL ANALYSIS</text>
-      <text class="intro-title">新建 GEO 分析</text>
+      <text class="intro-kicker">GEO GROWTH SERVICE</text>
+      <text class="intro-title">让品牌进入 AI 的推荐答案</text>
+      <text class="intro-subtitle">提交网址，完成诊断、内容生成、人工审核、页面注入和多平台效果追踪。</text>
       <view class="intro-flow">
         <view class="flow-item active">
           <text class="flow-no">01</text>
@@ -37,6 +38,13 @@
       </view>
     </view>
 
+    <view class="service-menu">
+      <view class="service-menu-item"><text class="service-icon">诊</text><text>URL 诊断</text></view>
+      <view class="service-menu-item"><text class="service-icon">策</text><text>信源策略</text></view>
+      <view class="service-menu-item"><text class="service-icon">注</text><text>页面注入</text></view>
+      <view class="service-menu-item"><text class="service-icon">追</text><text>效果追踪</text></view>
+    </view>
+
     <view class="surface analysis-form">
       <view class="segmented">
         <button class="segment {{mode === 'url' ? 'active' : ''}}" data-mode="url" bindtap="switchMode">URL 分析</button>
@@ -44,10 +52,28 @@
       </view>
 
       <block wx:if="{{mode === 'url'}}">
+        <view class="form-section first">
+          <text class="form-section-title">客户项目</text>
+          <view class="client-grid">
+            <input class="business-input" value="{{clientName}}" placeholder="客户 / 公司名称" bindinput="onClientNameInput" />
+            <input class="business-input" value="{{brandName}}" placeholder="推广品牌名称" bindinput="onBrandNameInput" />
+          </view>
+          <input class="business-input goal-input" value="{{businessGoal}}" placeholder="本次业务目标" bindinput="onBusinessGoalInput" />
+        </view>
         <view class="field-block">
           <text class="field-label">目标 URL</text>
           <textarea class="main-input" value="{{url}}" placeholder="https://example.com/page" bindinput="onUrlInput" />
           <text class="field-hint">支持多个 URL 换行输入，单次最多 5 个</text>
+        </view>
+
+        <view class="form-section">
+          <text class="form-section-title">目标 AI 平台</text>
+          <view class="engine-grid">
+            <button class="engine-option {{selectedEngineMap[item.value] ? 'selected' : ''}}" wx:for="{{engineOptions}}" wx:key="value" data-engine="{{item.value}}" bindtap="toggleEngine">
+              <text class="engine-name">{{item.label}}</text>
+              <text class="engine-note">{{item.note}}</text>
+            </button>
+          </view>
         </view>
 
         <view class="form-section">
@@ -117,9 +143,9 @@
         <text class="quick-meta">任务、版本与复测</text>
       </button>
       <view class="quick-action static">
-        <text class="quick-icon">S</text>
-        <text class="quick-title">评分标准</text>
-        <text class="quick-meta">6 维 100 分细则</text>
+        <text class="quick-icon">交</text>
+        <text class="quick-title">标准交付</text>
+        <text class="quick-meta">诊断、注入、平台复测</text>
       </view>
     </view>
   </view>
@@ -159,6 +185,30 @@
         </view>
       </view>
     </scroll-view>
+
+    <view wx:if="{{monitoring}}" class="surface visibility-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">AI VISIBILITY</text>
+          <text class="section-title">多平台推荐追踪</text>
+        </view>
+        <text class="section-tag">{{monitoring.active_query_count || 0}} 个监测问题</text>
+      </view>
+      <view class="visibility-grid">
+        <view class="visibility-metric"><text class="visibility-value">{{monitoring.mention_rate || 0}}%</text><text class="visibility-label">品牌提及率</text></view>
+        <view class="visibility-metric"><text class="visibility-value">{{monitoring.average_position || '-'}}</text><text class="visibility-label">平均推荐位</text></view>
+        <view class="visibility-metric"><text class="visibility-value">{{monitoring.source_map.citation_total || 0}}</text><text class="visibility-label">信源引用</text></view>
+      </view>
+      <view class="engine-strip">
+        <view class="engine-pill" wx:for="{{project.target_engines}}" wx:key="*this">{{item}}</view>
+      </view>
+      <view wx:if="{{monitoring.source_map.recommendations.length}}" class="monitor-actions">
+        <view class="issue-row" wx:for="{{monitoring.source_map.recommendations}}" wx:key="title" wx:for-item="recommendation">
+          <view class="issue-mark">→</view><text>{{recommendation.title}}：{{recommendation.action}}</text>
+        </view>
+      </view>
+      <view wx:else class="status-note">下一步：每周在目标 AI 平台记录品牌是否出现、推荐位置和引用来源，建立可量化增长基线。</view>
+    </view>
 
     <view wx:if="{{taskList.length > 1}}" class="surface compact-surface">
       <view class="section-head">

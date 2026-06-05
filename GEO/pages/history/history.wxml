@@ -28,6 +28,7 @@
     <button class="tab {{activeTab === 'publications' ? 'active' : ''}}" data-tab="publications" bindtap="switchTab">发布</button>
     <button class="tab {{activeTab === 'retests' ? 'active' : ''}}" data-tab="retests" bindtap="switchTab">复测</button>
     <button class="tab {{activeTab === 'feedback' ? 'active' : ''}}" data-tab="feedback" bindtap="switchTab">反馈</button>
+    <button class="tab {{activeTab === 'visibility' ? 'active' : ''}}" data-tab="visibility" bindtap="switchTab">AI 可见度</button>
   </view>
 
   <text wx:if="{{error}}" class="error">{{error}}</text>
@@ -140,5 +141,24 @@
       <view class="card-footer"><text>{{entry.feedback_id}}</text><text class="resume-link" catchtap="resumeTask" data-task-id="{{entry.task_id}}">继续任务 ›</text></view>
     </view>
     <text wx:if="{{!displayFeedbackEntries.length && !loading}}" class="empty">暂无人工反馈</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'visibility'}}" class="list">
+    <view class="card" wx:for="{{displayMentionChecks}}" wx:key="check_id" wx:for-item="check">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{check.engine}}</text>
+          <text class="url">{{check.query_id}}</text>
+        </view>
+        <text class="status {{check.brand_mentioned ? 'completed' : 'failed'}}">{{check.brand_mentioned ? '已提及' : '未提及'}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">推荐位置</text><text class="meta-value">{{check.mention_position || '-'}}</text></view>
+        <view><text class="meta-label">引用来源</text><text class="meta-value">{{check.source_type || '-'}}</text></view>
+        <view><text class="meta-label">检查时间</text><text class="meta-value date">{{check.checked_at}}</text></view>
+      </view>
+      <text class="url">{{check.answer_excerpt || check.notes || '暂无答案摘录'}}</text>
+    </view>
+    <text wx:if="{{!displayMentionChecks.length && !loading}}" class="empty">暂无 AI 平台可见度记录</text>
   </view>
 </view>

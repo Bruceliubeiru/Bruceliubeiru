@@ -13,6 +13,8 @@ Page({
     displayPublications: [],
     feedbackEntries: [],
     displayFeedbackEntries: [],
+    mentionChecks: [],
+    displayMentionChecks: [],
     retestGroups: [],
     displayRetestGroups: [],
     selectedTaskId: "",
@@ -44,7 +46,8 @@ Page({
       displayInjections: this.data.injections.filter((injection) => injection.task_id === taskId),
       displayPublications: this.data.publications.filter((publication) => publication.task_id === taskId),
       displayRetestGroups: this.data.retestGroups.filter((group) => group.task_id === taskId),
-      displayFeedbackEntries: this.data.feedbackEntries.filter((entry) => entry.task_id === taskId)
+      displayFeedbackEntries: this.data.feedbackEntries.filter((entry) => entry.task_id === taskId),
+      displayMentionChecks: this.data.mentionChecks.filter((entry) => entry.task_id === taskId)
     })
   },
 
@@ -55,7 +58,8 @@ Page({
       displayInjections: this.data.injections,
       displayPublications: this.data.publications,
       displayRetestGroups: this.data.retestGroups,
-      displayFeedbackEntries: this.data.feedbackEntries
+      displayFeedbackEntries: this.data.feedbackEntries,
+      displayMentionChecks: this.data.mentionChecks
     })
   },
 
@@ -73,6 +77,7 @@ Page({
         items: retests[taskId]
       }))
       const feedbackEntries = history.feedback_entries || []
+      const mentionChecks = history.mention_checks || []
       this.setData({
         tasks: history.tasks || [],
         versions: history.versions || [],
@@ -83,6 +88,8 @@ Page({
         displayPublications: history.publications || [],
         feedbackEntries,
         displayFeedbackEntries: feedbackEntries,
+        mentionChecks,
+        displayMentionChecks: mentionChecks,
         retestGroups,
         displayRetestGroups: retestGroups,
         loading: false

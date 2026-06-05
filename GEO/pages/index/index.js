@@ -154,6 +154,13 @@ const marketOptions = [
   { label: "全球", value: "Global" }
 ]
 
+const engineOptions = [
+  { label: "ChatGPT", value: "chatgpt", note: "答案推荐与品牌提及" },
+  { label: "Perplexity", value: "perplexity", note: "引用信源与答案位置" },
+  { label: "Gemini", value: "gemini", note: "Google AI 答案可见度" },
+  { label: "AI Overview", value: "google_ai_overviews", note: "搜索摘要与引用" }
+]
+
 const resultTabs = [
   { label: "概要", value: "summary" },
   { label: "资产", value: "assets" },
@@ -378,6 +385,7 @@ Page({
     pageTypeOptions,
     languageOptions,
     marketOptions,
+    engineOptions,
     resultTabs,
     pageTypeIndex: 0,
     languageIndex: 0,
@@ -386,6 +394,11 @@ Page({
     generateSchema: true,
     generateConversionTips: true,
     useAi: false,
+    clientName: "",
+    brandName: "",
+    businessGoal: "提升 AI 推荐可见度与询盘",
+    selectedEngines: ["chatgpt", "perplexity"],
+    selectedEngineMap: { chatgpt: true, perplexity: true },
     activeTab: "summary",
     activeStep: "advise",
     stepPanel: buildStepPanel(defaultResult, "advise"),
@@ -394,6 +407,7 @@ Page({
     injection: null,
     retest: null,
     project: null,
+    monitoring: null,
     publications: [],
     selectedPublicationId: "",
     selectedPublication: null,
@@ -451,6 +465,7 @@ Page({
         injection: latestInjection,
         retest: latestRetest,
         project: detail.project || null,
+        monitoring: detail.monitoring || null,
         publications: detail.publications || []
       }
       const publicationState = buildPublicationState(detail.publications || [], this.data.selectedPublicationId)
@@ -465,6 +480,7 @@ Page({
         injection: latestInjection,
         retest: latestRetest,
         project: detail.project || null,
+        monitoring: detail.monitoring || null,
         publications: detail.publications || [],
         feedbackEntries: detail.feedback || [],
         ...publicationState,
@@ -522,6 +538,28 @@ Page({
   toggleOption(event) {
     const key = event.currentTarget.dataset.key
     this.setData({ [key]: !this.data[key] })
+  },
+
+  onClientNameInput(event) {
+    this.setData({ clientName: event.detail.value })
+  },
+
+  onBrandNameInput(event) {
+    this.setData({ brandName: event.detail.value })
+  },
+
+  onBusinessGoalInput(event) {
+    this.setData({ businessGoal: event.detail.value })
+  },
+
+  toggleEngine(event) {
+    const value = event.currentTarget.dataset.engine
+    const selected = this.data.selectedEngines.includes(value)
+      ? this.data.selectedEngines.filter((item) => item !== value)
+      : [...this.data.selectedEngines, value]
+    const selectedEngines = selected.length ? selected : [value]
+    const selectedEngineMap = selectedEngines.reduce((map, item) => ({ ...map, [item]: true }), {})
+    this.setData({ selectedEngines, selectedEngineMap })
   },
 
   setDeliveryTarget(event) {
@@ -590,7 +628,11 @@ Page({
           generate_schema: this.data.generateSchema,
           generate_conversion_tips: this.data.generateConversionTips,
           use_ai: this.data.useAi,
-          provider: "openai"
+          provider: "openai",
+          client_name: this.data.clientName.trim() || null,
+          brand_name: this.data.brandName.trim() || null,
+          target_engines: this.data.selectedEngines,
+          business_goal: this.data.businessGoal.trim()
         }
         const results = await Promise.all(urls.map((item) => analyzeUrl({ ...payloadBase, url: item })))
         result = results[0]
@@ -639,11 +681,21 @@ Page({
         selectedPublicationIndex: 0,
         feedbackEntries: [],
         project: mode === "url" ? {
+          client_name: this.data.clientName.trim() || null,
+          brand_name: this.data.brandName.trim() || result.title,
+          target_engines: this.data.selectedEngines,
+          business_goal: this.data.businessGoal.trim(),
           owner: "待分配",
           target_score: 80,
           current_stage: "analyzed",
           next_action: "生成改进内容",
           effectiveness: "尚未复测"
+        } : null,
+        monitoring: mode === "url" ? {
+          active_query_count: this.data.selectedEngines.length * 3,
+          mention_rate: 0,
+          average_position: null,
+          source_map: { recommendations: [], domains: [], page_types: [] }
         } : null,
         taskList,
         activeTab: "summary",

@@ -530,6 +530,95 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("geo_analyze", logs["items"][0]["action"])
         self.assertEqual("success", logs["items"][0]["status"])
 
+    def test_commercial_project_seeds_multi_platform_monitoring(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                client_name="Example Industrial",
+                brand_name="Example Machines",
+                target_engines=["chatgpt", "perplexity", "gemini"],
+            )
+        )
+        main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(owner="Bruce"),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("Example Industrial", detail["project"]["client_name"])
+        self.assertEqual(["chatgpt", "perplexity", "gemini"], detail["project"]["target_engines"])
+        self.assertEqual(9, detail["monitoring"]["active_query_count"])
+        self.assertTrue(detail["project"]["commercial_readiness"]["ready"])
+
+    def test_source_map_generates_page_and_trust_recommendations(self):
+        result = self._analyze()
+        query = main.geo_monitor_query_save(
+            main.GEOMonitorQueryRequest(
+                task_id=result["task_id"],
+                query_text="best GEO platform vs alternatives",
+                engine="perplexity",
+            )
+        )
+        main.geo_source_observation_save(
+            main.GEOSourceObservationRequest(
+                task_id=result["task_id"],
+                query_id=query["query_id"],
+                source_domain="industry.example",
+                page_type="comparison",
+                citation_count=4,
+            )
+        )
+        source_map = main.geo_source_map(result["task_id"])
+
+        self.assertEqual("industry.example", source_map["domains"][0]["domain"])
+        self.assertEqual("comparison", source_map["page_types"][0]["page_type"])
+        self.assertEqual("创建对比决策页", source_map["recommendations"][0]["title"])
+
+    def test_mention_tracking_calculates_platform_visibility(self):
+        result = self._analyze()
+        query = main.geo_monitor_query_save(
+            main.GEOMonitorQueryRequest(
+                task_id=result["task_id"],
+                query_text="best GEO growth tools",
+                engine="chatgpt",
+            )
+        )
+        main.geo_mention_check_save(
+            main.GEOMentionCheckRequest(
+                task_id=result["task_id"],
+                query_id=query["query_id"],
+                engine="chatgpt",
+                brand_mentioned=True,
+                mention_position=2,
+                source_type="official",
+            )
+        )
+        main.geo_mention_check_save(
+            main.GEOMentionCheckRequest(
+                task_id=result["task_id"],
+                query_id=query["query_id"],
+                engine="chatgpt",
+                brand_mentioned=False,
+            )
+        )
+        summary = main.geo_monitoring_summary(result["task_id"])
+
+        self.assertEqual(50, summary["mention_rate"])
+        self.assertEqual(2, summary["average_position"])
+        self.assertEqual(1, summary["mention_count"])
+
+    def test_trust_anchor_defaults_to_authentic_reviewable_guidance(self):
+        result = self._analyze()
+        anchor = main.geo_trust_anchor_save(
+            main.GEOTrustAnchorRequest(
+                task_id=result["task_id"],
+                channel="reddit",
+                topic="Answer a procurement question with verified evidence",
+            )
+        )
+        self.assertIn("不伪装用户", anchor["guidance"])
+        self.assertEqual("planned", anchor["status"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (
@@ -559,6 +648,7 @@ class AuthTest(unittest.TestCase):
         self.assertEqual("viewer", auth.required_role("GET", "/admin/api/overview"))
         self.assertEqual("operator", auth.required_role("POST", "/admin/api/jobs/run-due"))
         self.assertEqual("operator", auth.required_role("POST", "/geo/inject"))
+        self.assertEqual("viewer", auth.required_role("GET", "/geo/monitoring/summary"))
         self.assertEqual("reviewer", auth.required_role("POST", "/geo/version/review"))
         self.assertFalse(auth.has_role(viewer, "reviewer"))
         self.assertTrue(auth.has_role(reviewer, "operator"))

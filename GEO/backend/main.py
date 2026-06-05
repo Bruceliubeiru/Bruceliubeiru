@@ -241,6 +241,21 @@ def _init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor TEXT NOT NULL,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                task_id TEXT,
+                outcome TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         retest_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(retests)").fetchall()
         }
@@ -470,6 +485,80 @@ def _db_latest_successful_injection(task_id: str, version_id: str | None = None)
     with _db() as conn:
         row = conn.execute(query, params).fetchone()
     return _injection_from_row(row) if row else None
+
+
+def _db_add_audit(
+    actor: str,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    task_id: str | None = None,
+    outcome: str = "success",
+    detail: dict | None = None,
+) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_logs (
+                actor, action, entity_type, entity_id, task_id, outcome, detail, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                actor,
+                action,
+                entity_type,
+                entity_id,
+                task_id,
+                outcome,
+                _json_dumps(detail or {}),
+                _now_iso(),
+            ),
+        )
+
+
+def _db_audit_logs(
+    limit: int = 50,
+    task_id: str | None = None,
+    action: str | None = None,
+    outcome: str | None = None,
+    actor: str | None = None,
+) -> list[dict]:
+    query = "SELECT * FROM audit_logs"
+    params: list = []
+    filters: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if action:
+        filters.append("action = ?")
+        params.append(action)
+    if outcome:
+        filters.append("outcome = ?")
+        params.append(outcome)
+    if actor:
+        filters.append("actor = ?")
+        params.append(actor)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(max(1, min(limit, 500)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "actor": row["actor"],
+            "action": row["action"],
+            "entity_type": row["entity_type"],
+            "entity_id": row["entity_id"],
+            "task_id": row["task_id"],
+            "outcome": row["outcome"],
+            "detail": _json_loads(row["detail"], {}),
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
 
 
 def _db_history() -> dict:
@@ -1105,7 +1194,28 @@ def admin_tasks(status: str | None = None, q: str | None = None, limit: int = 50
 
 @app.get("/admin/api/tasks/{task_id}")
 def admin_task_detail(task_id: str):
-    return geo_task_detail(task_id)
+    detail = geo_task_detail(task_id)
+    detail["audit_logs"] = _db_audit_logs(limit=100, task_id=task_id)
+    return detail
+
+
+@app.get("/admin/api/audit-logs")
+def admin_audit_logs(
+    limit: int = 50,
+    task_id: str | None = None,
+    action: str | None = None,
+    outcome: str | None = None,
+    actor: str | None = None,
+):
+    return {
+        "items": _db_audit_logs(
+            limit=limit,
+            task_id=task_id,
+            action=action,
+            outcome=outcome,
+            actor=actor,
+        )
+    }
 
 
 @app.post("/geo/audit")
@@ -1186,6 +1296,7 @@ def geo_analyze(request: GEOAnalyzeRequest):
         "created_at": existing_task.get("created_at") or _now_iso(),
         "updated_at": _now_iso(),
     })
+    _db_add_audit("system", "analyze", "task", task_id, task_id, detail={"url": url, "score": result["geo_score"]})
     return result
 
 
@@ -1292,6 +1403,14 @@ def geo_version_save(request: GEOVersionSaveRequest):
     task["latest_workflow"] = workflow
     task["updated_at"] = _now_iso()
     _db_upsert_task(task)
+    _db_add_audit(
+        request.editor,
+        "save_version",
+        "version",
+        version_id,
+        request.task_id,
+        detail={"module_count": len(request.modules)},
+    )
 
     return version
 
@@ -1339,6 +1458,14 @@ def geo_version_review(request: GEOReviewRequest):
         task["latest_workflow"] = workflow
         task["updated_at"] = _now_iso()
         _db_upsert_task(task)
+    _db_add_audit(
+        request.reviewer,
+        request.action,
+        "version",
+        request.version_id,
+        task_id,
+        detail={"comment": request.comment, "status": status},
+    )
 
     return version
 
@@ -1403,6 +1530,15 @@ def geo_inject(request: GEOInjectRequest):
         injection["response_summary"] = str(exc)
         injection["completed_at"] = _now_iso()
         _db_save_injection(injection)
+        _db_add_audit(
+            "system",
+            "inject",
+            "injection",
+            injection_id,
+            version["task_id"],
+            outcome="failed",
+            detail={"target": request.target, "error": str(exc)},
+        )
         raise HTTPException(status_code=502, detail=f"Injection failed: {exc}") from exc
 
     _db_save_injection(injection)
@@ -1419,6 +1555,15 @@ def geo_inject(request: GEOInjectRequest):
         task["latest_workflow"] = workflow
         task["updated_at"] = _now_iso()
         _db_upsert_task(task)
+    _db_add_audit(
+        "system",
+        "inject",
+        "injection",
+        injection_id,
+        version["task_id"],
+        outcome=injection["status"],
+        detail={"target": request.target, "version_id": request.version_id},
+    )
     return injection
 
 
@@ -1479,6 +1624,14 @@ def geo_retest(request: GEORetestRequest):
         task["latest_workflow"] = _update_stage_status(workflow, "retest", "completed")
         task["updated_at"] = _now_iso()
         _db_upsert_task(task)
+    _db_add_audit(
+        "system",
+        "retest",
+        "task",
+        request.task_id,
+        request.task_id,
+        detail={"injection_id": injection.get("injection_id"), "score_delta": delta},
+    )
 
     return retest
 

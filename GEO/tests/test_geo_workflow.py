@@ -166,12 +166,34 @@ class GEOWorkflowTest(unittest.TestCase):
         overview = main.admin_overview()
         tasks = main.admin_tasks(status="retested", q="Test GEO", limit=20)
         detail = main.admin_task_detail(result["task_id"])
+        audit_logs = main.admin_audit_logs(limit=20, task_id=result["task_id"])
 
         self.assertEqual(1, overview["metrics"]["tasks"])
         self.assertEqual(1, overview["metrics"]["completed_injections"])
         self.assertEqual(1, overview["metrics"]["retests"])
         self.assertEqual(result["task_id"], tasks["items"][0]["task_id"])
         self.assertEqual(1, len(detail["injections"]))
+        self.assertGreaterEqual(len(audit_logs["items"]), 5)
+        self.assertEqual("retest", audit_logs["items"][0]["action"])
+        self.assertEqual(result["task_id"], audit_logs["items"][0]["task_id"])
+
+    def test_admin_audit_logs_support_filters(self):
+        result, approved = self._approved_version()
+        main.geo_inject(
+            main.GEOInjectRequest(version_id=approved["version_id"], target="json_file")
+        )
+
+        review_logs = main.admin_audit_logs(action="approve", actor="operator", limit=20)
+        failed_logs = main.admin_audit_logs(outcome="failed", limit=20)
+        task_logs = main.admin_audit_logs(task_id=result["task_id"], outcome="success", limit=20)
+
+        self.assertEqual(1, len(review_logs["items"]))
+        self.assertEqual("approve", review_logs["items"][0]["action"])
+        self.assertEqual("operator", review_logs["items"][0]["actor"])
+        self.assertEqual([], failed_logs["items"])
+        self.assertTrue(task_logs["items"])
+        self.assertTrue(all(item["task_id"] == result["task_id"] for item in task_logs["items"]))
+        self.assertTrue(all(item["outcome"] == "success" for item in task_logs["items"]))
 
 
 if __name__ == "__main__":

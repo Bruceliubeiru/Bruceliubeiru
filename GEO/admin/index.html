@@ -51,6 +51,9 @@
     .filters { display: flex; gap: 8px; }
     .filters input, .filters select { height: 34px; min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: #fff; padding: 0 9px; color: var(--text); }
     .filters input { width: 190px; }
+    .audit-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .audit-filters input, .audit-filters select { height: 34px; min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: #fff; padding: 0 9px; color: var(--text); }
+    .audit-filters input { width: 150px; }
     .table-wrap { overflow: auto; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 10px 8px; border-top: 1px solid #edf0f2; text-align: left; vertical-align: middle; }
@@ -127,6 +130,10 @@
           <div class="queue" id="attention"></div>
         </div>
       </section>
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head"><div><div class="panel-title">最近操作审计</div><div class="panel-meta">关键业务动作与执行结果</div></div><div class="audit-filters"><input id="auditActor" placeholder="筛选执行者"><select id="auditAction"><option value="">全部动作</option></select><select id="auditOutcome"><option value="">全部结果</option><option value="success">success</option><option value="completed">completed</option><option value="failed">failed</option><option value="approved">approved</option><option value="rejected">rejected</option></select></div></div>
+        <div class="table-wrap"><table><thead><tr><th>时间</th><th>执行者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+      </section>
     </main>
   </div>
   <dialog id="detailDialog">
@@ -136,6 +143,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let overview = null;
+    let audit = null;
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
     const formatTime = (value) => value ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "-";
@@ -167,6 +175,27 @@
       const items = groups.flatMap(([label, list, titleKey, metaKey]) => list.map((item) => `<div class="queue-item"><div class="queue-title">${label} · ${escapeHtml(item[titleKey])}</div><div class="queue-meta">${escapeHtml(item[metaKey])}</div></div>`));
       $("attention").innerHTML = items.length ? items.join("") : `<div class="empty">当前没有阻塞项</div>`;
     }
+    function renderAudit(items) {
+      $("auditRows").innerHTML = items.length ? items.map((item) => `<tr><td>${formatTime(item.created_at)}</td><td>${escapeHtml(item.actor)}</td><td><strong>${escapeHtml(item.action)}</strong></td><td><div class="task-title">${escapeHtml(item.entity_id)}</div><div class="task-url">${escapeHtml(item.task_id || item.entity_type)}</div></td><td>${badge(item.outcome)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">暂无操作记录</td></tr>`;
+    }
+    function populateAuditFilters(items) {
+      const actions = [...new Set(items.map((item) => item.action).filter(Boolean))];
+      const current = $("auditAction").value;
+      $("auditAction").innerHTML = `<option value="">全部动作</option>` + actions.map((action) => `<option value="${escapeHtml(action)}">${escapeHtml(action)}</option>`).join("");
+      $("auditAction").value = actions.includes(current) ? current : "";
+    }
+    async function loadAudit() {
+      const params = new URLSearchParams({limit: "20"});
+      const actor = $("auditActor").value.trim();
+      const action = $("auditAction").value;
+      const outcome = $("auditOutcome").value;
+      if (actor) params.set("actor", actor);
+      if (action) params.set("action", action);
+      if (outcome) params.set("outcome", outcome);
+      audit = await api(`/admin/api/audit-logs?${params.toString()}`);
+      renderAudit(audit.items);
+      populateAuditFilters(audit.items);
+    }
     async function applyFilters() {
       const query = $("query").value.trim().toLowerCase();
       const status = $("status").value;
@@ -181,7 +210,7 @@
     async function load() {
       $("error").hidden = true;
       try {
-        overview = await api("/admin/api/overview");
+        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit()]);
         renderMetrics(overview.metrics);
         renderTasks(overview.recent_tasks);
         renderAttention(overview.attention);
@@ -204,7 +233,8 @@
         const timelines = [
           ["版本", detail.versions, "version_id", "status", "updated_at"],
           ["交付", detail.injections, "injection_id", "status", "completed_at"],
-          ["复测", detail.retests, "injection_id", "status", "created_at"]
+          ["复测", detail.retests, "injection_id", "status", "created_at"],
+          ["审计", detail.audit_logs, "action", "outcome", "created_at"]
         ];
         $("detailBody").innerHTML = `<div class="detail-grid">${summary.map(([label,value]) => `<div class="detail-item"><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>` + timelines.map(([label,items,titleKey,statusKey,timeKey]) => `<section class="section"><h3>${label}记录</h3><div class="timeline">${items.length ? items.map((item) => `<div class="timeline-item"><strong>${label}</strong><span>${escapeHtml(item[titleKey] || "-")}</span><span>${badge(item[statusKey])}<br><small>${formatTime(item[timeKey])}</small></span></div>`).join("") : `<div class="empty">暂无${label}记录</div>`}</div></section>`).join("");
         $("detailDialog").showModal();
@@ -216,6 +246,9 @@
     $("refresh").addEventListener("click", load);
     $("query").addEventListener("input", applyFilters);
     $("status").addEventListener("change", applyFilters);
+    $("auditActor").addEventListener("input", loadAudit);
+    $("auditAction").addEventListener("change", loadAudit);
+    $("auditOutcome").addEventListener("change", loadAudit);
     $("closeDialog").addEventListener("click", () => $("detailDialog").close());
     document.querySelectorAll("nav button").forEach((button) => button.addEventListener("click", () => {
       document.querySelectorAll("nav button").forEach((item) => item.classList.toggle("active", item === button));

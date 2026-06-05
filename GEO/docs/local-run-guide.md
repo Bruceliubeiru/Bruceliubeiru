@@ -68,6 +68,7 @@ http://127.0.0.1:8000/admin
 | GET /admin/api/overview | Operational metrics and attention queues |
 | GET /admin/api/tasks | Search and filter task summaries |
 | GET /admin/api/tasks/{task_id} | Admin task detail |
+| GET /admin/api/audit-logs | Search recent critical operation audit records |
 | POST /geo/audit | GEO scoring |
 | POST /geo/url-audit | URL page fetch + GEO scoring + growth plan |
 | POST /geo/analyze | URL page fetch + GEO content package |

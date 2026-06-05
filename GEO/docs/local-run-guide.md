@@ -41,6 +41,20 @@ GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_API_KEY
 ```
 
+Production API authentication is optional and disabled by default for local
+development. Enable API Key authentication with:
+
+```bash
+export GEO_AUTH_REQUIRED=true
+export GEO_API_KEYS='{"viewer-token":{"name":"viewer@example.com","role":"viewer"},"operator-token":{"name":"operator@example.com","role":"operator"},"reviewer-token":{"name":"reviewer@example.com","role":"reviewer"},"admin-token":{"name":"admin@example.com","role":"admin"}}'
+```
+
+Clients can send either `Authorization: Bearer <token>` or
+`X-GEO-API-Key: <token>`. Roles are hierarchical: `viewer`, `operator`,
+`reviewer`, `admin`. Review approval requires `reviewer`; write workflows
+require `operator`; admin/history reads require `viewer`. The admin console
+stores its entered API Key in browser session storage only.
+
 ## 5. Run FastAPI
 
 ```bash

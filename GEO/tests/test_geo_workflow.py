@@ -1,11 +1,12 @@
 import tempfile
 import unittest
+from os import environ
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from backend import main
+from backend import auth, main
 
 
 SAMPLE_CONTENT = """
@@ -183,17 +184,75 @@ class GEOWorkflowTest(unittest.TestCase):
             main.GEOInjectRequest(version_id=approved["version_id"], target="json_file")
         )
 
-        review_logs = main.admin_audit_logs(action="approve", actor="operator", limit=20)
+        review_logs = main.admin_audit_logs(action="approve", actor="local-dev", limit=20)
         failed_logs = main.admin_audit_logs(outcome="failed", limit=20)
         task_logs = main.admin_audit_logs(task_id=result["task_id"], outcome="success", limit=20)
 
         self.assertEqual(1, len(review_logs["items"]))
         self.assertEqual("approve", review_logs["items"][0]["action"])
-        self.assertEqual("operator", review_logs["items"][0]["actor"])
+        self.assertEqual("local-dev", review_logs["items"][0]["actor"])
         self.assertEqual([], failed_logs["items"])
         self.assertTrue(task_logs["items"])
         self.assertTrue(all(item["task_id"] == result["task_id"] for item in task_logs["items"]))
         self.assertTrue(all(item["outcome"] == "success" for item in task_logs["items"]))
+
+    def test_authenticated_identity_is_used_for_audit_actor(self):
+        result = self._analyze()
+        workflow = main.geo_improve(main.GEOImproveRequest(result=result))
+        identity_token = auth.set_current_identity(auth.AuthIdentity("alice@example.com", "operator"))
+        try:
+            version = main.geo_version_save(
+                main.GEOVersionSaveRequest(
+                    task_id=result["task_id"],
+                    url=result["url"],
+                    modules=workflow["improved_modules"],
+                    workflow=workflow,
+                    editor="forged@example.com",
+                )
+            )
+        finally:
+            auth.reset_current_identity(identity_token)
+
+        logs = main.admin_audit_logs(action="save_version", limit=20)
+        self.assertEqual("alice@example.com", version["editor"])
+        self.assertEqual("alice@example.com", logs["items"][0]["actor"])
+        self.assertEqual("forged@example.com", logs["items"][0]["detail"]["claimed_editor"])
+
+
+class AuthTest(unittest.TestCase):
+    API_KEYS = (
+        '{"view-token":{"name":"view@example.com","role":"viewer"},'
+        '"op-token":{"name":"op@example.com","role":"operator"},'
+        '"review-token":{"name":"review@example.com","role":"reviewer"}}'
+    )
+
+    def test_local_development_defaults_to_admin(self):
+        with patch.dict(environ, {"GEO_AUTH_REQUIRED": "false", "GEO_API_KEYS": ""}, clear=False):
+            identity = auth.resolve_identity(None)
+        self.assertEqual(auth.AuthIdentity("local-dev", "admin"), identity)
+
+    def test_required_auth_resolves_configured_identity(self):
+        with patch.dict(
+            environ,
+            {"GEO_AUTH_REQUIRED": "true", "GEO_API_KEYS": self.API_KEYS},
+            clear=False,
+        ):
+            self.assertIsNone(auth.resolve_identity(None))
+            self.assertEqual("operator", auth.resolve_identity("op-token").role)
+
+    def test_role_matrix_protects_review_and_allows_hierarchy(self):
+        viewer = auth.AuthIdentity("view@example.com", "viewer")
+        reviewer = auth.AuthIdentity("review@example.com", "reviewer")
+
+        self.assertEqual("viewer", auth.required_role("GET", "/admin/api/overview"))
+        self.assertEqual("operator", auth.required_role("POST", "/geo/inject"))
+        self.assertEqual("reviewer", auth.required_role("POST", "/geo/version/review"))
+        self.assertFalse(auth.has_role(viewer, "reviewer"))
+        self.assertTrue(auth.has_role(reviewer, "operator"))
+
+    def test_api_key_header_extraction(self):
+        self.assertEqual("token-a", auth.extract_api_key("Bearer token-a", None))
+        self.assertEqual("token-b", auth.extract_api_key("Bearer token-a", "token-b"))
 
 
 if __name__ == "__main__":

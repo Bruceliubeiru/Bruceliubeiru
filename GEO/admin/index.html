@@ -37,6 +37,9 @@
     h1 { margin: 0; font-size: 24px; }
     .subtitle { margin-top: 4px; color: var(--muted); }
     .refresh { height: 36px; padding: 0 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #34414a; font-weight: 800; }
+    .top-actions { display: flex; gap: 8px; align-items: center; }
+    .key-input { width: 190px; height: 36px; border: 1px solid var(--line); border-radius: 6px; background: #fff; padding: 0 10px; color: var(--text); }
+    .identity { color: var(--muted); font-size: 11px; white-space: nowrap; }
     .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 22px; }
     .metric, .panel { border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
     .metric { padding: 16px; }
@@ -97,6 +100,8 @@
     @media (max-width: 600px) {
       .metrics, .detail-grid { grid-template-columns: 1fr; }
       .topbar, .panel-head { align-items: flex-start; flex-direction: column; }
+      .top-actions { width: 100%; flex-wrap: wrap; }
+      .key-input { flex: 1; min-width: 180px; }
       .filters { width: 100%; }
       .filters input, .filters select { flex: 1; width: auto; }
       th:nth-child(n+4), td:nth-child(n+4) { display: none; }
@@ -113,7 +118,7 @@
     <main>
       <header class="topbar">
         <div><h1>运营总览</h1><div class="subtitle">监控 GEO 任务从诊断到复测的完整状态</div></div>
-        <button class="refresh" id="refresh">刷新数据</button>
+        <div class="top-actions"><span class="identity" id="identity">本地开发身份</span><input class="key-input" id="apiKey" type="password" placeholder="生产环境 API Key"><button class="refresh" id="saveKey">应用密钥</button><button class="refresh" id="refresh">刷新数据</button></div>
       </header>
       <div id="error" class="error" hidden></div>
       <section class="metrics" id="metrics"></section>
@@ -144,11 +149,16 @@
     const $ = (id) => document.getElementById(id);
     let overview = null;
     let audit = null;
+    let apiKey = sessionStorage.getItem("geoApiKey") || "";
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
     const formatTime = (value) => value ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "-";
     async function api(path) {
-      const response = await fetch(path);
+      const headers = apiKey ? {"Authorization": `Bearer ${apiKey}`} : {};
+      const response = await fetch(path, {headers});
+      const actor = response.headers.get("X-GEO-Actor");
+      const role = response.headers.get("X-GEO-Role");
+      if (actor && role) $("identity").textContent = `${actor} · ${role}`;
       if (!response.ok) throw new Error((await response.json()).detail || `请求失败 ${response.status}`);
       return response.json();
     }
@@ -244,6 +254,13 @@
       }
     }
     $("refresh").addEventListener("click", load);
+    $("apiKey").value = apiKey;
+    $("saveKey").addEventListener("click", () => {
+      apiKey = $("apiKey").value.trim();
+      if (apiKey) sessionStorage.setItem("geoApiKey", apiKey);
+      else sessionStorage.removeItem("geoApiKey");
+      load();
+    });
     $("query").addEventListener("input", applyFilters);
     $("status").addEventListener("change", applyFilters);
     $("auditActor").addEventListener("input", loadAudit);

@@ -11,9 +11,9 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 try:
@@ -25,6 +25,27 @@ try:
     from backend.admin_service import build_admin_overview, filter_admin_tasks
 except ImportError:
     from admin_service import build_admin_overview, filter_admin_tasks
+
+try:
+    from backend.auth import (
+        current_identity,
+        extract_api_key,
+        has_role,
+        required_role,
+        reset_current_identity,
+        resolve_identity,
+        set_current_identity,
+    )
+except ImportError:
+    from auth import (
+        current_identity,
+        extract_api_key,
+        has_role,
+        required_role,
+        reset_current_identity,
+        resolve_identity,
+        set_current_identity,
+    )
 
 try:
     from backend.llm_providers import MultiLLMClient, LLMProviderError
@@ -49,6 +70,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_key_rbac(request: FastAPIRequest, call_next):
+    role = required_role(request.method, request.url.path)
+    if role is None:
+        return await call_next(request)
+
+    api_key = extract_api_key(
+        request.headers.get("authorization"),
+        request.headers.get("x-geo-api-key"),
+    )
+    try:
+        identity = resolve_identity(api_key)
+    except ValueError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    if identity is None:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "API key required."},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not has_role(identity, role):
+        try:
+            _db_add_audit(
+                identity.name,
+                "access_denied",
+                "endpoint",
+                request.url.path,
+                outcome="denied",
+                detail={"method": request.method, "required_role": role, "actor_role": identity.role},
+            )
+        except (OSError, sqlite3.Error):
+            pass
+        return JSONResponse(status_code=403, content={"detail": f"Role {role} or higher required."})
+
+    context_token = set_current_identity(identity)
+    try:
+        response = await call_next(request)
+        response.headers["X-GEO-Actor"] = identity.name
+        response.headers["X-GEO-Role"] = identity.role
+        return response
+    finally:
+        reset_current_identity(context_token)
 
 DB_PATH = Path(__file__).with_name("geo_growth.db")
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "exports"
@@ -147,6 +212,10 @@ class GEOFAQRequest(BaseModel):
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _current_actor() -> str:
+    return current_identity().name
 
 
 def _db() -> sqlite3.Connection:
@@ -1296,7 +1365,7 @@ def geo_analyze(request: GEOAnalyzeRequest):
         "created_at": existing_task.get("created_at") or _now_iso(),
         "updated_at": _now_iso(),
     })
-    _db_add_audit("system", "analyze", "task", task_id, task_id, detail={"url": url, "score": result["geo_score"]})
+    _db_add_audit(_current_actor(), "analyze", "task", task_id, task_id, detail={"url": url, "score": result["geo_score"]})
     return result
 
 
@@ -1371,6 +1440,7 @@ def geo_version_save(request: GEOVersionSaveRequest):
     if not request.modules:
         raise HTTPException(status_code=400, detail="No modules to save.")
 
+    actor = _current_actor()
     workflow = request.workflow or {}
     workflow = _update_stage_status(workflow, "review", "pending")
     version_id = _build_version_id(request.task_id)
@@ -1388,7 +1458,7 @@ def geo_version_save(request: GEOVersionSaveRequest):
         "task_id": request.task_id,
         "url": request.url,
         "status": "pending_review",
-        "editor": request.editor,
+        "editor": actor,
         "modules": request.modules,
         "workflow": workflow,
         "injection_payload": payload,
@@ -1404,12 +1474,12 @@ def geo_version_save(request: GEOVersionSaveRequest):
     task["updated_at"] = _now_iso()
     _db_upsert_task(task)
     _db_add_audit(
-        request.editor,
+        actor,
         "save_version",
         "version",
         version_id,
         request.task_id,
-        detail={"module_count": len(request.modules)},
+        detail={"module_count": len(request.modules), "claimed_editor": request.editor},
     )
 
     return version
@@ -1429,6 +1499,7 @@ def geo_version_review(request: GEOReviewRequest):
             detail=f"Version in status {version.get('status')} cannot be reviewed again.",
         )
 
+    actor = _current_actor()
     status = "approved" if request.action == "approve" else "rejected"
     workflow = version.get("workflow") or {}
     workflow = _update_stage_status(workflow, "review", "completed" if status == "approved" else "rejected")
@@ -1439,7 +1510,7 @@ def geo_version_review(request: GEOReviewRequest):
     version.update(
         {
             "status": status,
-            "reviewer": request.reviewer,
+            "reviewer": actor,
             "review_comment": request.comment,
             "approved_at": _now_iso() if status == "approved" else None,
             "workflow": workflow,
@@ -1459,12 +1530,12 @@ def geo_version_review(request: GEOReviewRequest):
         task["updated_at"] = _now_iso()
         _db_upsert_task(task)
     _db_add_audit(
-        request.reviewer,
+        actor,
         request.action,
         "version",
         request.version_id,
         task_id,
-        detail={"comment": request.comment, "status": status},
+        detail={"comment": request.comment, "status": status, "claimed_reviewer": request.reviewer},
     )
 
     return version
@@ -1531,7 +1602,7 @@ def geo_inject(request: GEOInjectRequest):
         injection["completed_at"] = _now_iso()
         _db_save_injection(injection)
         _db_add_audit(
-            "system",
+            _current_actor(),
             "inject",
             "injection",
             injection_id,
@@ -1556,7 +1627,7 @@ def geo_inject(request: GEOInjectRequest):
         task["updated_at"] = _now_iso()
         _db_upsert_task(task)
     _db_add_audit(
-        "system",
+        _current_actor(),
         "inject",
         "injection",
         injection_id,
@@ -1625,7 +1696,7 @@ def geo_retest(request: GEORetestRequest):
         task["updated_at"] = _now_iso()
         _db_upsert_task(task)
     _db_add_audit(
-        "system",
+        _current_actor(),
         "retest",
         "task",
         request.task_id,

@@ -29,6 +29,7 @@ URL analysis
 | Recovery | History page can restore a task into the workbench |
 | Operations | Web admin console shows task metrics, attention queues, and task timelines |
 | Audit | SQLite operation log records analysis, version, approval, injection, and retest actions |
+| Access control | Optional API Key authentication enforces viewer/operator/reviewer/admin roles and records trusted actors |
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
 
@@ -38,7 +39,7 @@ The application-side loop is complete. A production rollout still requires:
 
 - a deployed HTTPS backend domain configured in the WeChat request domain list;
 - a real CMS webhook contract and credentials;
-- production authentication, authorization, secret storage, and audit retention;
+- production secret storage, API key rotation, and audit retention;
 - a release process that confirms the CMS draft was published before retest;
 - monitoring for webhook failures and scheduled retest jobs.
 

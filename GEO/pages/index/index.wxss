@@ -623,6 +623,16 @@
   line-height: 1.45;
 }
 
+.primary-publish-guide {
+  margin-top: 16rpx;
+  border-color: #b9d8cf;
+  background: #eef8f5;
+}
+
+.primary-publish-guide .publish-guide-title {
+  color: #176b5b;
+}
+
 .section-head {
   gap: 14rpx;
   align-items: flex-start;

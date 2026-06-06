@@ -201,6 +201,14 @@
           </view>
         </view>
         <text class="step-note">{{stepPanel.note}}</text>
+        <view wx:if="{{activeStep === 'export' && result.task_id && result.is_url_task !== false}}" class="publish-guide primary-publish-guide">
+          <text class="publish-guide-title">当前发布状态</text>
+          <text wx:if="{{!selectedPublication}}" class="publish-guide-copy">还没有发布预览。点击下方主按钮会创建预览，成功后这里会变成“待确认发布”。</text>
+          <text wx:elif="{{selectedPublication.status === 'pending_confirmation'}}" class="publish-guide-copy">发布预览已创建。下一次点击主按钮会自动确认发布，不需要再到下面输入 PUBLISH。</text>
+          <text wx:elif="{{selectedPublication.status === 'published'}}" class="publish-guide-copy">内容已提交发布。下一次点击主按钮会做上线校验，确认页面已包含本次 GEO 内容。</text>
+          <text wx:elif="{{selectedPublication.status === 'verified_live'}}" class="publish-guide-copy">上线校验已通过。下一步进入收录推进，把公开 URL 纳入文章 Agent 和 AI 采样。</text>
+          <text wx:else class="publish-guide-copy">发布状态：{{selectedPublication.status}}。如果失败，请在下方手动区重试或查看错误。</text>
+        </view>
         <button class="primary-action compact" loading="{{improving || savingVersion || reviewing || publishing}}" disabled="{{improving || savingVersion || reviewing || publishing}}" bindtap="runStepAction">{{stepPanel.action}}</button>
       </view>
     </view>
@@ -500,7 +508,7 @@
           <button class="approve" loading="{{reviewing}}" disabled="{{reviewing}}" bindtap="approveVersion">审核通过</button>
         </view>
         <view wx:if="{{result.task_id && result.is_url_task !== false && cmsTargets.length}}" class="delivery-config">
-          <text class="delivery-title">CMS 发布目标</text>
+          <text class="delivery-title">手动发布工具</text>
           <view class="publish-guide">
             <text class="publish-guide-title">发布推进</text>
             <text wx:if="{{!selectedPublication}}" class="publish-guide-copy">当前还没有发布预览。下一步点击“创建发布预览”。</text>

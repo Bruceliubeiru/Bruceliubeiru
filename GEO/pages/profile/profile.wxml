@@ -1,0 +1,43 @@
+<view class="tab-page">
+  <view class="profile-card">
+    <view class="avatar">G</view>
+    <view>
+      <text class="title small">GEO Operator</text>
+      <text class="subtitle">项目、内容、发布、监测的统一入口。</text>
+    </view>
+  </view>
+
+  <view class="metric-grid">
+    <view class="metric"><text class="metric-value">{{stats.tasks}}</text><text class="metric-label">任务</text></view>
+    <view class="metric"><text class="metric-value">{{stats.versions}}</text><text class="metric-label">版本</text></view>
+    <view class="metric"><text class="metric-value">{{stats.publications}}</text><text class="metric-label">发布</text></view>
+    <view class="metric"><text class="metric-value">{{stats.reports}}</text><text class="metric-label">报告</text></view>
+  </view>
+
+  <text wx:if="{{error}}" class="error">{{error}}</text>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">系统入口</text>
+      <button class="ghost-button" bindtap="goHistory">完整历史</button>
+    </view>
+    <view class="entry-grid">
+      <view class="entry"><text class="entry-title">角色权限</text><text class="item-meta">Viewer / Operator / SEO / PM / Admin</text></view>
+      <view class="entry"><text class="entry-title">成本上限</text><text class="item-meta">AI 调用、采样量、审核工时</text></view>
+      <view class="entry"><text class="entry-title">质量问题</text><text class="item-meta">低置信度、低质量样本、发布异常</text></view>
+      <view class="entry"><text class="entry-title">报告导出</text><text class="item-meta">JSON / 周报 / 复盘材料</text></view>
+    </view>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">最近任务</text>
+    <view class="list-card" wx:for="{{recentTasks}}" wx:key="task_id" wx:for-item="task">
+      <view>
+        <text class="item-title">{{task.title || task.url}}</text>
+        <text class="item-meta">{{task.status}} · {{task.task_id}}</text>
+      </view>
+      <button class="pill-button" data-task-id="{{task.task_id}}" bindtap="resumeTask">继续</button>
+    </view>
+    <text wx:if="{{!recentTasks.length && !loading}}" class="empty">暂无任务</text>
+  </view>
+</view>

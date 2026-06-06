@@ -1,0 +1,94 @@
+<view class="tab-page">
+  <view class="tab-hero">
+    <text class="eyebrow">ANALYSIS</text>
+    <text class="title">AI 可见度分析</text>
+    <text class="subtitle">把 URL 诊断、AI Query、Sources 采样和信源地图从工作台里拆出来。</text>
+  </view>
+
+  <view class="metric-grid">
+    <view class="metric"><text class="metric-value">{{stats.taskCount}}</text><text class="metric-label">任务</text></view>
+    <view class="metric"><text class="metric-value">{{stats.mentionRate}}%</text><text class="metric-label">提及率</text></view>
+    <view class="metric"><text class="metric-value">{{stats.citationRate}}%</text><text class="metric-label">引用率</text></view>
+    <view class="metric"><text class="metric-value">{{stats.sourceCount}}</text><text class="metric-label">Sources</text></view>
+  </view>
+
+  <text wx:if="{{error}}" class="error">{{error}}</text>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">最近诊断项目</text>
+      <button class="ghost-button" bindtap="loadData">刷新</button>
+    </view>
+    <picker wx:if="{{tasks.length}}" mode="selector" range="{{tasks}}" range-key="title" value="{{selectedTaskIndex}}" bindchange="changeTask">
+      <view class="picker-field">
+        <text class="item-meta">当前任务</text>
+        <text class="item-title">{{selectedTask.title || selectedTask.url}}</text>
+      </view>
+    </picker>
+    <view class="list-card" wx:for="{{tasks}}" wx:key="task_id" wx:for-item="task">
+      <view>
+        <text class="item-title">{{task.title || task.url}}</text>
+        <text class="item-meta">{{task.url}}</text>
+      </view>
+      <button class="pill-button" data-task-id="{{task.task_id}}" bindtap="resumeTask">继续</button>
+    </view>
+    <text wx:if="{{!tasks.length && !loading}}" class="empty">暂无诊断任务</text>
+  </view>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">Sampling Tracker</text>
+      <button class="ghost-button" loading="{{generatingQueries}}" disabled="{{generatingQueries || !selectedTask}}" bindtap="generateQueries">生成 Query</button>
+    </view>
+    <view class="metric-grid mini" wx:if="{{monitoring}}">
+      <view class="metric"><text class="metric-value">{{monitoring.active_query_count}}</text><text class="metric-label">Query</text></view>
+      <view class="metric"><text class="metric-value">{{monitoring.check_count}}</text><text class="metric-label">采样</text></view>
+      <view class="metric"><text class="metric-value">{{monitoring.sampling.confidence_level}}</text><text class="metric-label">置信度</text></view>
+      <view class="metric"><text class="metric-value">{{monitoring.sampling.coverage_percent}}%</text><text class="metric-label">覆盖</text></view>
+    </view>
+    <picker wx:if="{{monitoringQueries.length}}" mode="selector" range="{{monitoringQueries}}" range-key="query_text" value="{{monitoringQueryIndex}}" bindchange="changeQuery">
+      <view class="picker-field">
+        <text class="item-meta">监测 Query</text>
+        <text class="item-title">{{monitoringQueries[monitoringQueryIndex].query_text}}</text>
+      </view>
+    </picker>
+    <picker mode="selector" range="{{platforms}}" range-key="label" value="{{platformIndex}}" bindchange="changePlatform">
+      <view class="picker-field">
+        <text class="item-meta">AI 平台</text>
+        <text class="item-title">{{platforms[platformIndex].label}}</text>
+      </view>
+    </picker>
+    <textarea class="tab-textarea" value="{{answerText}}" placeholder="粘贴 AI 回答正文，用于判断品牌提及、竞品出现和推荐位置。" bindinput="onAnswerInput" />
+    <textarea class="tab-textarea" value="{{sourcesText}}" placeholder="粘贴 Sources 链接或域名列表，用于抽取信源地图。" bindinput="onSourcesInput" />
+    <button class="primary-button" loading="{{parsingSources}}" disabled="{{parsingSources || !monitoringQueries.length}}" bindtap="parseSources">解析 Sources 并记录采样</button>
+    <view wx:if="{{parseResult}}" class="list-card">
+      <view>
+        <text class="item-title">解析完成：Source {{parseResult.parsed.source_count}} 个</text>
+        <text class="item-meta">品牌出现 {{parseResult.check.brand_mentioned ? '是' : '否'}} · 官网引用 {{parseResult.check.cited_our_domain ? '是' : '否'}}</text>
+        <text wx:if="{{parseCompetitorsText}}" class="item-meta">竞品出现：{{parseCompetitorsText}}</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">AI 平台采样</text>
+    <view class="list-card" wx:for="{{mentionChecks}}" wx:key="check_id" wx:for-item="check">
+      <view>
+        <text class="item-title">{{check.engine}} · {{check.brand_mentioned ? '已提及' : '未提及'}}</text>
+        <text class="item-meta">{{check.answer_excerpt || check.notes || check.query_id}}</text>
+      </view>
+      <text class="status">{{check.cited_our_domain ? '官网引用' : '未引用'}}</text>
+    </view>
+    <text wx:if="{{!mentionChecks.length && !loading}}" class="empty">暂无采样记录，可回工作台录入 Sources。</text>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">Top Sources</text>
+    <view class="list-card" wx:for="{{sourceObservations}}" wx:key="observation_id" wx:for-item="source">
+      <view>
+        <text class="item-title">{{source.source_domain}}</text>
+        <text class="item-meta">{{source.page_type}} · 引用 {{source.citation_count}} 次</text>
+      </view>
+    </view>
+  </view>
+</view>

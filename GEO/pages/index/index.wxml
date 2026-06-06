@@ -215,6 +215,51 @@
     <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
       <view class="section-head">
         <view>
+          <text class="section-eyebrow">SAMPLING TRACKER</text>
+          <text class="section-title">AI 回答与 Sources 采样</text>
+        </view>
+        <text class="section-tag">{{monitoringQueries.length}} 个 Query</text>
+      </view>
+      <view class="review-bar">
+        <button loading="{{generatingQueries}}" disabled="{{generatingQueries}}" bindtap="generateQueriesForMonitoring">生成 / 补齐 Query</button>
+        <button bindtap="refreshMonitoringSummary">刷新监测</button>
+      </view>
+      <picker wx:if="{{monitoringQueries.length}}" mode="selector" range="{{monitoringQueries}}" range-key="query_text" value="{{monitoringQueryIndex}}" bindchange="changeMonitoringQuery">
+        <view class="config-field">
+          <text class="config-label">监测 Query</text>
+          <text class="config-value">{{monitoringQueries[monitoringQueryIndex].query_text}}</text>
+        </view>
+      </picker>
+      <picker mode="selector" range="{{monitoringPlatforms}}" range-key="label" value="{{monitoringPlatformIndex}}" bindchange="changeMonitoringPlatform">
+        <view class="config-field">
+          <text class="config-label">AI 平台</text>
+          <text class="config-value">{{monitoringPlatforms[monitoringPlatformIndex].label}}</text>
+        </view>
+      </picker>
+      <textarea class="module-body-input" value="{{aiAnswerText}}" placeholder="粘贴 ChatGPT / Perplexity / Gemini 的回答正文，用于判断品牌是否出现、竞品是否出现、推荐位置。" bindinput="onAiAnswerInput" />
+      <textarea class="module-body-input" value="{{aiSourcesText}}" placeholder="粘贴 Sources 列表或引用链接。系统会抽取域名、识别 source_type，并记录 Citation。" bindinput="onAiSourcesInput" />
+      <view class="review-bar">
+        <button class="approve" loading="{{parsingSources}}" disabled="{{parsingSources || !monitoringQueries.length}}" bindtap="parseAiSources">解析 Sources 并记录采样</button>
+      </view>
+      <view wx:if="{{sourceParseResult}}" class="status-stack">
+        <view class="status-note">品牌出现：{{sourceParseResult.check.brand_mentioned ? '是' : '否'}} · 官网引用：{{sourceParseResult.check.cited_our_domain ? '是' : '否'}} · Source {{sourceParseResult.parsed.source_count}} 个</view>
+        <view wx:if="{{sourceParseCompetitorsText}}" class="status-note">竞品出现：{{sourceParseCompetitorsText}}</view>
+      </view>
+      <view wx:if="{{monitoring && monitoring.competitor_gap && monitoring.competitor_gap.length}}" class="status-stack">
+        <view class="status-note" wx:for="{{monitoring.competitor_gap}}" wx:key="competitor" wx:for-item="gap">
+          竞品差距：{{gap.competitor}} · {{gap.mentions}} 次出现
+        </view>
+      </view>
+      <view wx:if="{{monitoring && monitoring.source_distribution && monitoring.source_distribution.length}}" class="status-stack">
+        <view class="status-note" wx:for="{{monitoring.source_distribution}}" wx:key="source_type" wx:for-item="source">
+          信源类型：{{source.source_type}} · {{source.checks}} 次
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+      <view class="section-head">
+        <view>
           <text class="section-eyebrow">EXPERIMENTS</text>
           <text class="section-title">内容实验</text>
         </view>

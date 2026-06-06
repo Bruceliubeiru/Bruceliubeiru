@@ -141,6 +141,26 @@ function exportJson(payload) {
   return request("/geo/export/json", payload)
 }
 
+function getMonitoringQueries(taskId) {
+  return request(`/geo/monitoring/queries?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
+}
+
+function generateMonitoringQueries(payload) {
+  return request("/geo/monitoring/queries/generate", payload)
+}
+
+function parseMonitoringSources(payload) {
+  return request("/geo/monitoring/sources/parse", payload)
+}
+
+function getMonitoringSummary(taskId) {
+  return request(`/geo/monitoring/summary?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
+}
+
+function getSourceMap(taskId) {
+  return request(`/geo/monitoring/source-map?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
+}
+
 module.exports = {
   auditUrl,
   auditContent,
@@ -166,5 +186,10 @@ module.exports = {
   saveAttribution,
   generateReport,
   confirmReport,
-  exportJson
+  exportJson,
+  getMonitoringQueries,
+  generateMonitoringQueries,
+  parseMonitoringSources,
+  getMonitoringSummary,
+  getSourceMap
 }

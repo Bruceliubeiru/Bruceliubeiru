@@ -1,0 +1,58 @@
+<view class="tab-page">
+  <view class="tab-hero">
+    <text class="eyebrow">OPTIMIZATION</text>
+    <text class="title">内容改造与审核发布</text>
+    <text class="subtitle">承接原型里的差距诊断、内容包、CMS 映射、审核和回滚。</text>
+  </view>
+
+  <view class="metric-grid">
+    <view class="metric"><text class="metric-value">{{stats.versions}}</text><text class="metric-label">版本</text></view>
+    <view class="metric"><text class="metric-value">{{stats.publications}}</text><text class="metric-label">发布</text></view>
+    <view class="metric"><text class="metric-value">{{stats.feedback}}</text><text class="metric-label">反馈</text></view>
+    <view class="metric"><text class="metric-value">{{stats.blocked}}</text><text class="metric-label">阻断</text></view>
+  </view>
+
+  <text wx:if="{{error}}" class="error">{{error}}</text>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">内容改造包</text>
+      <button class="ghost-button" bindtap="loadData">刷新</button>
+    </view>
+    <view class="list-card" wx:for="{{versions}}" wx:key="version_id" wx:for-item="version">
+      <view>
+        <text class="item-title">{{version.version_id}}</text>
+        <text class="item-meta">{{version.status}} · 模块 {{version.modules.length}} 个 · {{version.url}}</text>
+      </view>
+      <view class="action-stack">
+        <button class="pill-button" data-index="{{index}}" bindtap="copyVersion">复制</button>
+        <button wx:if="{{version.status !== 'approved'}}" class="pill-button" loading="{{reviewingVersionId === version.version_id}}" disabled="{{reviewingVersionId}}" data-version-id="{{version.version_id}}" bindtap="approveVersion">审核</button>
+      </view>
+    </view>
+    <text wx:if="{{!versions.length && !loading}}" class="empty">暂无内容版本</text>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">审核与发布</text>
+    <view class="list-card" wx:for="{{publications}}" wx:key="publication_id" wx:for-item="publication">
+      <view>
+        <text class="item-title">{{publication.publication_id}}</text>
+        <text class="item-meta">{{publication.status}} · 上线校验 {{publication.live_status || 'pending'}}</text>
+      </view>
+      <button class="pill-button" data-task-id="{{publication.task_id}}" bindtap="resumeTask">处理</button>
+    </view>
+    <text wx:if="{{!publications.length && !loading}}" class="empty">暂无发布记录</text>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">人工反馈学习</text>
+    <view class="list-card" wx:for="{{feedbackEntries}}" wx:key="feedback_id" wx:for-item="entry">
+      <view>
+        <text class="item-title">{{entry.verdict}}</text>
+        <text class="item-meta">{{entry.notes}}</text>
+      </view>
+      <button class="pill-button" data-task-id="{{entry.task_id}}" bindtap="resumeTask">继续</button>
+    </view>
+    <text wx:if="{{!feedbackEntries.length && !loading}}" class="empty">暂无人工反馈</text>
+  </view>
+</view>

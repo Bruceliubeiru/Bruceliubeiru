@@ -1,0 +1,82 @@
+<view class="tab-page">
+  <view class="tab-hero">
+    <text class="eyebrow">MONITORING</text>
+    <text class="title">实验、归因与周报</text>
+    <text class="subtitle">持续追踪 Mention、Citation、实验结果和商业归因，避免只看一次性分数。</text>
+  </view>
+
+  <view class="metric-grid">
+    <view class="metric"><text class="metric-value">{{stats.mentionRate}}%</text><text class="metric-label">Mention</text></view>
+    <view class="metric"><text class="metric-value">{{stats.citationRate}}%</text><text class="metric-label">Citation</text></view>
+    <view class="metric"><text class="metric-value">{{stats.experiments}}</text><text class="metric-label">实验</text></view>
+    <view class="metric"><text class="metric-value">{{stats.revenue}}</text><text class="metric-label">归因</text></view>
+  </view>
+
+  <text wx:if="{{error}}" class="error">{{error}}</text>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">周报生成</text>
+      <button class="ghost-button" loading="{{generatingReport}}" disabled="{{generatingReport || !selectedTask}}" bindtap="buildReport">生成</button>
+    </view>
+    <picker wx:if="{{tasks.length}}" mode="selector" range="{{tasks}}" range-key="title" value="{{selectedTaskIndex}}" bindchange="changeTask">
+      <view class="picker-field">
+        <text class="item-meta">当前任务</text>
+        <text class="item-title">{{selectedTask.title || selectedTask.url}}</text>
+      </view>
+    </picker>
+    <input class="tab-input" value="{{reportPeriod}}" placeholder="报告周期，例如 2026-W23 / 近 30 天" bindinput="onReportPeriodInput" />
+  </view>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">AI 可见度周报</text>
+      <button class="ghost-button" bindtap="loadData">刷新</button>
+    </view>
+    <view class="list-card" wx:for="{{mentionChecks}}" wx:key="check_id" wx:for-item="check">
+      <view>
+        <text class="item-title">{{check.engine}} · {{check.brand_mentioned ? '已提及' : '未提及'}}</text>
+        <text class="item-meta">位置 {{check.mention_position || '-'}} · {{check.checked_at}}</text>
+      </view>
+      <text class="status">{{check.cited_our_domain ? '引用' : '未引用'}}</text>
+    </view>
+    <text wx:if="{{!mentionChecks.length && !loading}}" class="empty">暂无可见度采样</text>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">实验验证</text>
+    <view class="list-card" wx:for="{{experiments}}" wx:key="experiment_id" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.name}}</text>
+        <text class="item-meta">{{item.primary_metric}} · {{item.status}} · winner {{item.winner || '-'}}</text>
+      </view>
+      <button class="pill-button" data-task-id="{{item.task_id}}" bindtap="resumeTask">查看</button>
+    </view>
+    <text wx:if="{{!experiments.length && !loading}}" class="empty">暂无实验</text>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">ROI 与归因</text>
+    <view class="list-card" wx:for="{{attributions}}" wx:key="attribution_id" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.source_name}}</text>
+        <text class="item-meta">{{item.source_type}} · {{item.status}} · {{item.attributed_revenue}}</text>
+      </view>
+      <button class="pill-button" data-task-id="{{item.task_id}}" bindtap="resumeTask">查看</button>
+    </view>
+    <text wx:if="{{!attributions.length && !loading}}" class="empty">暂无线索归因</text>
+  </view>
+
+  <view class="surface">
+    <text class="section-title">效果报告</text>
+    <view class="list-card" wx:for="{{reports}}" wx:key="report_id" wx:for-item="report">
+      <view>
+        <text class="item-title">{{report.period_label}}</text>
+        <text class="item-meta">{{report.summary}}</text>
+      </view>
+      <button wx:if="{{report.status !== 'confirmed'}}" class="pill-button" loading="{{confirmingReportId === report.report_id}}" disabled="{{confirmingReportId}}" data-report-id="{{report.report_id}}" bindtap="confirmReport">确认</button>
+      <text wx:else class="status">{{report.status}}</text>
+    </view>
+    <text wx:if="{{!reports.length && !loading}}" class="empty">暂无报告</text>
+  </view>
+</view>

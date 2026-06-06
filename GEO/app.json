@@ -1,6 +1,10 @@
 {
   "pages": [
     "pages/index/index",
+    "pages/analysis/analysis",
+    "pages/optimize/optimize",
+    "pages/monitor/monitor",
+    "pages/profile/profile",
     "pages/history/history"
   ],
   "window": {
@@ -8,6 +12,34 @@
     "navigationBarBackgroundColor": "#f7f4f1",
     "navigationBarTextStyle": "black",
     "backgroundColor": "#f7f4f1"
+  },
+  "tabBar": {
+    "color": "#8a939c",
+    "selectedColor": "#a9342c",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "工作台"
+      },
+      {
+        "pagePath": "pages/analysis/analysis",
+        "text": "分析"
+      },
+      {
+        "pagePath": "pages/optimize/optimize",
+        "text": "优化"
+      },
+      {
+        "pagePath": "pages/monitor/monitor",
+        "text": "监测"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
   },
   "lazyCodeLoading": "requiredComponents",
   "style": "v2",

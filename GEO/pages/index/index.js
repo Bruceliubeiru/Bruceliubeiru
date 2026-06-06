@@ -19,8 +19,14 @@ const {
   confirmExperiment,
   saveAttribution,
   generateReport,
-  exportJson
+  confirmReport,
+  exportJson,
+  getMonitoringQueries,
+  generateMonitoringQueries,
+  parseMonitoringSources,
+  getMonitoringSummary
 } = require("../../utils/api")
+const { aiPlatformOptions } = require("../../utils/platforms")
 
 const dimensionLabels = {
   semantic_clarity: "语义清晰",
@@ -158,12 +164,7 @@ const marketOptions = [
   { label: "全球", value: "Global" }
 ]
 
-const engineOptions = [
-  { label: "ChatGPT", value: "chatgpt", note: "答案推荐与品牌提及" },
-  { label: "Perplexity", value: "perplexity", note: "引用信源与答案位置" },
-  { label: "Gemini", value: "gemini", note: "Google AI 答案可见度" },
-  { label: "AI Overview", value: "google_ai_overviews", note: "搜索摘要与引用" }
-]
+const engineOptions = aiPlatformOptions
 
 const resultTabs = [
   { label: "概要", value: "summary" },
@@ -401,8 +402,8 @@ Page({
     clientName: "",
     brandName: "",
     businessGoal: "提升 AI 推荐可见度与询盘",
-    selectedEngines: ["chatgpt", "perplexity"],
-    selectedEngineMap: { chatgpt: true, perplexity: true },
+    selectedEngines: ["chatgpt", "doubao", "deepseek", "perplexity"],
+    selectedEngineMap: { chatgpt: true, doubao: true, deepseek: true, perplexity: true },
     activeTab: "summary",
     activeStep: "advise",
     stepPanel: buildStepPanel(defaultResult, "advise"),
@@ -420,6 +421,14 @@ Page({
     experiments: [],
     attributions: [],
     reports: [],
+    monitoringQueries: [],
+    monitoringQueryIndex: 0,
+    monitoringPlatformIndex: 0,
+    monitoringPlatforms: aiPlatformOptions,
+    aiAnswerText: "",
+    aiSourcesText: "",
+    sourceParseResult: null,
+    sourceParseCompetitorsText: "",
     experimentName: "",
     experimentHypothesis: "",
     experimentVariantA: "",
@@ -445,6 +454,8 @@ Page({
     savingExperiment: false,
     savingAttribution: false,
     generatingReport: false,
+    generatingQueries: false,
+    parsingSources: false,
     deliveryTarget: "json_file",
     webhookUrl: "",
     retesting: false,
@@ -500,6 +511,8 @@ Page({
         retest: latestRetest,
         project: detail.project || null,
         monitoring: detail.monitoring || null,
+        monitoringQueries: (detail.monitoring && detail.monitoring.queries) || [],
+        monitoringQueryIndex: 0,
         publications: detail.publications || [],
         feedbackEntries: detail.feedback || [],
         experiments: detail.experiments || [],
@@ -640,6 +653,22 @@ Page({
     this.setData({ reportPeriod: event.detail.value })
   },
 
+  onAiAnswerInput(event) {
+    this.setData({ aiAnswerText: event.detail.value, error: "" })
+  },
+
+  onAiSourcesInput(event) {
+    this.setData({ aiSourcesText: event.detail.value, error: "" })
+  },
+
+  changeMonitoringQuery(event) {
+    this.setData({ monitoringQueryIndex: Number(event.detail.value), sourceParseResult: null })
+  },
+
+  changeMonitoringPlatform(event) {
+    this.setData({ monitoringPlatformIndex: Number(event.detail.value) })
+  },
+
   setFeedbackVerdict(event) {
     this.setData({ feedbackVerdict: event.currentTarget.dataset.verdict })
   },
@@ -750,16 +779,26 @@ Page({
         } : null,
         monitoring: mode === "url" ? {
           active_query_count: this.data.selectedEngines.length * 3,
+          queries: [],
+          query_count: 0,
+          check_count: 0,
           mention_rate: 0,
+          citation_rate: 0,
           average_position: null,
-          source_map: { recommendations: [], domains: [], page_types: [] }
+          sampling: { sample_target: this.data.selectedEngines.length * 9, sample_count: 0, confidence_level: "none", warning: "尚未录入 AI 平台采样。" },
+          source_map: { recommendations: [], domains: [], page_types: [] },
+          competitor_gap: []
         } : null,
+        monitoringQueries: [],
+        monitoringQueryIndex: 0,
+        sourceParseResult: null,
         taskList,
         activeTab: "summary",
         loading: false
       })
       if (mode === "url") {
         await this.loadCmsTargets()
+        await this.loadMonitoringQueries(true)
       }
     } catch (error) {
       this.setData({
@@ -789,6 +828,12 @@ Page({
       experiments: [],
       attributions: [],
       reports: [],
+      monitoringQueries: [],
+      monitoringQueryIndex: 0,
+      aiAnswerText: "",
+      aiSourcesText: "",
+      sourceParseResult: null,
+      sourceParseCompetitorsText: "",
       publishConfirmation: "",
       verifyTerms: "",
       feedbackNotes: "",
@@ -1148,14 +1193,115 @@ Page({
       injection: latestInjection,
       retest: latestRetest,
       project: detail.project || this.data.project,
+      monitoring: detail.monitoring || this.data.monitoring,
       publications: detail.publications || [],
       feedbackEntries: detail.feedback || [],
       experiments: detail.experiments || [],
       attributions: detail.attributions || [],
       reports: detail.reports || [],
+      monitoringQueries: (detail.monitoring && detail.monitoring.queries) || this.data.monitoringQueries || [],
       ...publicationState,
       stepPanel: buildStepPanel(result, this.data.activeStep)
     })
+  },
+
+  async refreshMonitoringSummary() {
+    if (!this.data.result.task_id || this.data.result.is_url_task === false) {
+      return
+    }
+    try {
+      const monitoring = await getMonitoringSummary(this.data.result.task_id)
+      this.setData({
+        monitoring,
+        monitoringQueries: monitoring.queries || [],
+        monitoringQueryIndex: Math.min(this.data.monitoringQueryIndex, Math.max((monitoring.queries || []).length - 1, 0))
+      })
+    } catch (error) {
+      this.setData({ error: error.message || "刷新监测数据失败" })
+    }
+  },
+
+  async loadMonitoringQueries(autoGenerate = false) {
+    if (!this.data.result.task_id || this.data.result.is_url_task === false) {
+      return
+    }
+    try {
+      const result = await getMonitoringQueries(this.data.result.task_id)
+      const queries = result.items || []
+      this.setData({ monitoringQueries: queries, monitoringQueryIndex: 0 })
+      if (!queries.length && autoGenerate) {
+        await this.generateQueriesForMonitoring()
+      } else {
+        await this.refreshMonitoringSummary()
+      }
+    } catch (error) {
+      this.setData({ error: error.message || "加载监测 Query 失败" })
+    }
+  },
+
+  async generateQueriesForMonitoring() {
+    if (!this.data.result.task_id || this.data.result.is_url_task === false) {
+      wx.showToast({ title: "请先完成 URL 分析", icon: "none" })
+      return
+    }
+    if (this.data.generatingQueries) {
+      return
+    }
+    this.setData({ generatingQueries: true, error: "" })
+    try {
+      const result = await generateMonitoringQueries({
+        task_id: this.data.result.task_id,
+        query_count: 12,
+        languages: [languageOptions[this.data.languageIndex].value],
+        include_competitors: true
+      })
+      this.setData({
+        monitoringQueries: result.items || [],
+        monitoringQueryIndex: 0,
+        generatingQueries: false
+      })
+      await this.refreshMonitoringSummary()
+      wx.showToast({ title: "Query 已生成", icon: "success" })
+    } catch (error) {
+      this.setData({ generatingQueries: false, error: error.message || "生成 Query 失败" })
+    }
+  },
+
+  async parseAiSources() {
+    const query = (this.data.monitoringQueries || [])[this.data.monitoringQueryIndex]
+    if (!this.data.result.task_id || !query) {
+      wx.showToast({ title: "请先生成监测 Query", icon: "none" })
+      return
+    }
+    if (!this.data.aiAnswerText.trim() && !this.data.aiSourcesText.trim()) {
+      wx.showToast({ title: "请粘贴 AI 回答或 Sources", icon: "none" })
+      return
+    }
+    this.setData({ parsingSources: true, error: "" })
+    try {
+      const parsed = await parseMonitoringSources({
+        task_id: this.data.result.task_id,
+        query_id: query.query_id,
+        platform: this.data.monitoringPlatforms[this.data.monitoringPlatformIndex].value,
+        answer_text: this.data.aiAnswerText.trim(),
+        sources_text: this.data.aiSourcesText.trim(),
+        brand_terms: [
+          this.data.brandName,
+          this.data.project && this.data.project.brand_name,
+          this.data.result.title
+        ].filter(Boolean),
+        competitors: ["Klook", "KKday", "Tripadvisor", "Japan Experience"]
+      })
+      this.setData({
+        sourceParseResult: parsed,
+        sourceParseCompetitorsText: ((parsed.parsed && parsed.parsed.competitor_mentions) || []).join("、"),
+        parsingSources: false
+      })
+      await this.refreshMonitoringSummary()
+      wx.showToast({ title: "采样已记录", icon: "success" })
+    } catch (error) {
+      this.setData({ parsingSources: false, error: error.message || "解析 Sources 失败" })
+    }
   },
 
   changeSelectedPublication(event) {

@@ -284,12 +284,14 @@ function buildStepPanel(result, activeStep) {
   if (step.key === "produce") {
     const workflow = result.workflow || defaultWorkflow
     const improved = workflow.improved_modules || []
+    const hasDraft = workflow.status === "draft_ready" || improved.length > 0
     return {
       ...step,
+      action: hasDraft ? "保存版本进入审核" : "生成改进",
       items: (improved.length ? improved : modules).slice(0, 4).map((item) => `${item.module_type}：${item.title}`),
-      note: workflow.status === "draft_ready"
+      note: hasDraft
         ? `已生成改进草稿，预计 GEO 分可提升 ${workflow.score_delta} 分。`
-        : (faqs.length ? `已生成 ${faqs.length} 条 FAQ，可继续生成改进草稿。` : "当前未生成 FAQ，可重新开启 FAQ 选项后分析。")
+        : (faqs.length ? `已生成 ${faqs.length} 条 FAQ。点击生成改进后，会进入保存版本和人工审核。` : "当前未生成 FAQ，可重新开启 FAQ 选项后分析。")
     }
   }
 
@@ -297,8 +299,13 @@ function buildStepPanel(result, activeStep) {
     const workflow = result.workflow || defaultWorkflow
     const version = result.version || {}
     const retest = result.retest || {}
+    const publication = result.selectedPublication || {}
+    let action = "保存版本"
+    if (version.status === "pending_review") action = "审核通过"
+    if (version.status === "approved") action = publication.publication_id ? "查看发布记录" : "创建发布预览"
     return {
       ...step,
+      action,
       items: workflow.retest_plan && workflow.retest_plan.length
         ? workflow.retest_plan
         : ["复制 JSON 给开发对接", "复制 Markdown 给运营审核", "页面发布后重新诊断同一 URL"],
@@ -984,11 +991,29 @@ Page({
   runStepAction() {
     const { activeStep } = this.data
     if (activeStep === "produce") {
+      const workflow = this.data.result.workflow || {}
+      if (workflow.status === "draft_ready" || (workflow.improved_modules || []).length) {
+        this.saveDraftVersion()
+        return
+      }
       this.runImproveWorkflow()
       return
     }
 
     if (activeStep === "export") {
+      const version = this.data.result.version || this.data.version || {}
+      if (!version.version_id) {
+        this.saveDraftVersion()
+        return
+      }
+      if (version.status !== "approved") {
+        this.approveVersion()
+        return
+      }
+      if ((this.data.cmsTargets || []).length && !this.data.selectedPublication) {
+        this.createCmsPreview()
+        return
+      }
       wx.pageScrollTo({ selector: ".package-surface", duration: 250 })
       return
     }
@@ -1039,11 +1064,12 @@ Page({
         injection: null,
         retest: null,
         stepPanel: buildStepPanel(updatedResult, "produce"),
+        loopSteps: buildLoopSteps({ ...this.data, result: updatedResult, workflow, version: null, retest: null }),
         activeTab: "modules",
         improving: false
       })
-      wx.pageScrollTo({ selector: ".next-section", duration: 250 })
-      wx.showToast({ title: "已生成草稿", icon: "success" })
+      wx.pageScrollTo({ selector: ".package-surface", duration: 250 })
+      wx.showToast({ title: "已生成，下一步保存版本", icon: "success" })
     } catch (error) {
       this.setData({
         error: error.message || "生成改进草稿失败",
@@ -1113,11 +1139,12 @@ Page({
           current_stage: "pending_review",
           next_action: version.quality_report && version.quality_report.status === "blocked" ? "修复内容质量问题" : "人工审核版本"
         },
-        stepPanel: buildStepPanel(result, this.data.activeStep),
+        stepPanel: buildStepPanel(result, "export"),
         loopSteps: buildLoopSteps({ ...this.data, result, version, workflow: result.workflow }),
+        activeStep: "export",
         savingVersion: false
       })
-      wx.showToast({ title: "版本已保存", icon: "success" })
+      wx.showToast({ title: "版本已保存，下一步审核", icon: "success" })
     } catch (error) {
       this.setData({
         error: error.message || "保存版本失败",

@@ -201,9 +201,7 @@
           </view>
         </view>
         <text class="step-note">{{stepPanel.note}}</text>
-        <button class="primary-action compact" loading="{{improving && activeStep === 'produce'}}" disabled="{{improving}}" bindtap="runStepAction">
-          {{improving && activeStep === 'produce' ? '正在生成' : stepPanel.action}}
-        </button>
+        <button class="primary-action compact" loading="{{improving || savingVersion || reviewing || publishing}}" disabled="{{improving || savingVersion || reviewing || publishing}}" bindtap="runStepAction">{{stepPanel.action}}</button>
       </view>
     </view>
 
@@ -393,9 +391,7 @@
           </view>
         </view>
         <text class="step-note">{{stepPanel.note}}</text>
-        <button class="primary-action compact" loading="{{improving && activeStep === 'produce'}}" disabled="{{improving}}" bindtap="runStepAction">
-          {{improving && activeStep === 'produce' ? '正在生成' : stepPanel.action}}
-        </button>
+        <button class="primary-action compact" loading="{{improving || savingVersion || reviewing || publishing}}" disabled="{{improving || savingVersion || reviewing || publishing}}" bindtap="runStepAction">{{stepPanel.action}}</button>
       </view>
     </view>
 

@@ -49,7 +49,7 @@
     <view class="list-card" wx:for="{{recentArticles}}" wx:key="article_id" wx:for-item="article">
       <view>
         <text class="item-title">{{article.title}}</text>
-        <text class="item-meta">{{article.status}} · {{article.created_at}}</text>
+        <text class="item-meta">{{article.index_status}} · {{article.created_at}}</text>
       </view>
       <button class="pill-button" data-index="{{index}}" bindtap="copyArticle">复制</button>
     </view>

@@ -75,16 +75,47 @@
       <text class="section-title">飞书文章 Agent</text>
       <button class="ghost-button" loading="{{creatingArticle}}" disabled="{{creatingArticle || !selectedTask}}" bindtap="createFeishuArticle">创建文章</button>
     </view>
-    <text class="item-meta">基于 GEO 五因素模型生成文章：时间性、媒体权重、关键词覆盖、互动信号、问题相关性，并尝试在本地飞书中创建文档。</text>
+    <text class="item-meta">先在飞书生成协作稿，再把定稿发布到可抓取公开页，随后提交收录并做 AI 平台引用复测。</text>
     <input class="tab-input" value="{{articleTitle}}" placeholder="文章标题（可选）" bindinput="onArticleTitleInput" />
     <input class="tab-input" value="{{articleFolderToken}}" placeholder="飞书文件夹 token（可选，留空则默认位置）" bindinput="onArticleFolderInput" />
+    <picker wx:if="{{taskArticles.length}}" mode="selector" range="{{taskArticles}}" range-key="title" value="{{selectedArticleIndex}}" bindchange="changeArticle">
+      <view class="picker-field">
+        <text class="item-meta">当前文章</text>
+        <text class="item-title">{{taskArticles[selectedArticleIndex].title}}</text>
+      </view>
+    </picker>
     <view wx:if="{{articleResult}}" class="list-card">
       <view>
         <text class="item-title">{{articleResult.title}}</text>
         <text class="item-meta">状态：{{articleResult.status}}</text>
         <text wx:if="{{articleResult.feishu_url}}" class="item-meta">飞书链接：{{articleResult.feishu_url}}</text>
+        <text wx:if="{{articleResult.public_url}}" class="item-meta">公开 URL：{{articleResult.public_url}}</text>
+        <text class="item-meta">收录状态：{{articleResult.index_status}}</text>
         <text wx:if="{{!articleResult.feishu_url}}" class="item-meta">本地草稿：{{articleResult.markdown_path}}</text>
         <text wx:if="{{articleResult.error}}" class="item-meta">飞书创建失败：{{articleResult.error}}</text>
+      </view>
+    </view>
+    <view wx:if="{{articleResult}}" class="article-index-box">
+      <picker mode="selector" range="{{articleIndexStatusOptions}}" range-key="label" value="{{articleIndexStatusIndex}}" bindchange="changeArticleIndexStatus">
+        <view class="picker-field">
+          <text class="item-meta">收录阶段</text>
+          <text class="item-title">{{articleIndexStatusOptions[articleIndexStatusIndex].label}}</text>
+        </view>
+      </picker>
+      <input class="tab-input" value="{{articlePublicUrl}}" placeholder="公开 URL，例如官网文章页 / 帮助中心页面" bindinput="onArticlePublicUrlInput" />
+      <textarea class="tab-textarea compact" value="{{articleIndexNotes}}" placeholder="收录备注：提交渠道、站内入口、外链、Search Console 记录等。" bindinput="onArticleIndexNotesInput" />
+      <view class="inline-actions">
+        <button class="primary-button inline" loading="{{updatingArticleIndexing}}" disabled="{{updatingArticleIndexing}}" bindtap="updateArticleIndexing">更新收录状态</button>
+        <button class="ghost-button inline" loading="{{copyingArticleChecklist}}" disabled="{{copyingArticleChecklist}}" bindtap="copyArticleChecklist">复制清单</button>
+      </view>
+      <view class="plan-list" wx:if="{{articlePlanItems.length}}">
+        <view class="plan-item" wx:for="{{articlePlanItems}}" wx:key="step" wx:for-item="step">
+          <text class="plan-status {{step.status}}">{{step.status}}</text>
+          <view>
+            <text class="item-title">{{step.title}}</text>
+            <text class="item-meta">{{step.detail}}</text>
+          </view>
+        </view>
       </view>
     </view>
   </view>

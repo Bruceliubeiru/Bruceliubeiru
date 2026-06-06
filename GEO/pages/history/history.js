@@ -157,7 +157,7 @@ Page({
       return
     }
     wx.setClipboardData({
-      data: article.feishu_url || article.markdown_path || article.article_id,
+      data: article.public_url || article.feishu_url || article.markdown_path || article.article_id,
       success() {
         wx.showToast({ title: "已复制", icon: "success" })
       }

@@ -10,3 +10,51 @@
   background: #fff4ef;
   color: #b6522e;
 }
+
+.article-index-box {
+  margin-top: 14rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx solid #edf0f2;
+}
+
+.tab-textarea.compact {
+  min-height: 150rpx;
+}
+
+.primary-button.inline,
+.ghost-button.inline {
+  flex: 1;
+  width: auto;
+  margin-top: 0;
+}
+
+.plan-list {
+  display: grid;
+  gap: 12rpx;
+  margin-top: 14rpx;
+}
+
+.plan-item {
+  display: flex;
+  gap: 12rpx;
+  align-items: flex-start;
+  padding: 14rpx;
+  border: 1rpx solid #e4e8eb;
+  border-radius: 10rpx;
+  background: #f8fafb;
+}
+
+.plan-status {
+  flex: 0 0 auto;
+  padding: 5rpx 10rpx;
+  border-radius: 999rpx;
+  background: #eef1f3;
+  color: #7f8992;
+  font-size: 18rpx;
+  font-weight: 900;
+}
+
+.plan-status.done {
+  background: #e5f5ef;
+  color: #176b5b;
+}

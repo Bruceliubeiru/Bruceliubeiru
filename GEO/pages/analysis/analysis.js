@@ -10,7 +10,9 @@ const {
   getGapActions,
   bootstrapGapActions,
   updateGapAction,
-  createGeoArticle
+  createGeoArticle,
+  updateGeoArticleIndexing,
+  getGeoArticleIndexingChecklist
 } = require("../../utils/api")
 const { aiPlatformOptions } = require("../../utils/platforms")
 
@@ -24,6 +26,14 @@ const connectorStatusOptions = [
   { label: "规划中", value: "planned" },
   { label: "已连通", value: "connected" },
   { label: "失败待修复", value: "failed" }
+]
+
+const articleIndexStatusOptions = [
+  { label: "飞书草稿", value: "feishu_created" },
+  { label: "已发布公开页", value: "published" },
+  { label: "已提交收录", value: "submitted" },
+  { label: "已收录", value: "indexed" },
+  { label: "AI 已引用", value: "ai_cited" }
 ]
 
 function summarize(history) {
@@ -58,6 +68,7 @@ Page({
     platforms: aiPlatformOptions,
     connectorTypeOptions,
     connectorStatusOptions,
+    articleIndexStatusOptions,
     connectorTypeIndex: 0,
     connectorStatusIndex: 0,
     connectorProviderName: "",
@@ -70,7 +81,16 @@ Page({
     gapActions: [],
     articleTitle: "",
     articleFolderToken: "",
+    articlePublicUrl: "",
+    articleIndexNotes: "",
+    articleIndexStatusIndex: 0,
+    selectedArticleIndex: 0,
+    allArticles: [],
+    taskArticles: [],
+    articlePlanItems: [],
     creatingArticle: false,
+    updatingArticleIndexing: false,
+    copyingArticleChecklist: false,
     articleResult: null,
     answerText: "",
     sourcesText: "",
@@ -93,10 +113,21 @@ Page({
       const history = await getHistory()
       const tasks = history.tasks || []
       const selectedTask = tasks[this.data.selectedTaskIndex] || tasks[0] || null
+      const allArticles = history.articles || []
+      const taskArticles = selectedTask ? allArticles.filter((item) => item.task_id === selectedTask.task_id) : []
+      const selectedArticle = taskArticles[0] || null
       this.setData({
         stats: summarize(history),
         tasks: tasks.slice(0, 20),
         selectedTask,
+        allArticles,
+        taskArticles,
+        articleResult: selectedArticle,
+        articlePlanItems: (selectedArticle && selectedArticle.indexing_plan) || [],
+        articlePublicUrl: (selectedArticle && selectedArticle.public_url) || "",
+        articleIndexNotes: (selectedArticle && selectedArticle.indexing_notes) || "",
+        articleIndexStatusIndex: selectedArticle ? Math.max(0, this.data.articleIndexStatusOptions.findIndex((item) => item.value === selectedArticle.index_status)) : 0,
+        selectedArticleIndex: 0,
         mentionChecks: (history.mention_checks || []).slice(0, 8),
         sourceObservations: (history.source_observations || []).slice(0, 8),
         loading: false
@@ -134,9 +165,18 @@ Page({
   async changeTask(event) {
     const selectedTaskIndex = Number(event.detail.value)
     const selectedTask = this.data.tasks[selectedTaskIndex] || null
+    const taskArticles = selectedTask ? this.data.allArticles.filter((item) => item.task_id === selectedTask.task_id) : []
+    const selectedArticle = taskArticles[0] || null
     this.setData({
       selectedTaskIndex,
       selectedTask,
+      taskArticles,
+      selectedArticleIndex: 0,
+      articleResult: selectedArticle,
+      articlePlanItems: (selectedArticle && selectedArticle.indexing_plan) || [],
+      articlePublicUrl: (selectedArticle && selectedArticle.public_url) || "",
+      articleIndexNotes: (selectedArticle && selectedArticle.indexing_notes) || "",
+      articleIndexStatusIndex: selectedArticle ? Math.max(0, this.data.articleIndexStatusOptions.findIndex((item) => item.value === selectedArticle.index_status)) : 0,
       parseResult: null,
       parseCompetitorsText: ""
     })
@@ -187,6 +227,34 @@ Page({
 
   onArticleFolderInput(event) {
     this.setData({ articleFolderToken: event.detail.value, error: "" })
+  },
+
+  onArticlePublicUrlInput(event) {
+    this.setData({ articlePublicUrl: event.detail.value, error: "" })
+  },
+
+  onArticleIndexNotesInput(event) {
+    this.setData({ articleIndexNotes: event.detail.value, error: "" })
+  },
+
+  changeArticleIndexStatus(event) {
+    this.setData({ articleIndexStatusIndex: Number(event.detail.value), error: "" })
+  },
+
+  changeArticle(event) {
+    const selectedArticleIndex = Number(event.detail.value)
+    const article = this.data.taskArticles[selectedArticleIndex] || null
+    const statusIndex = article
+      ? Math.max(0, this.data.articleIndexStatusOptions.findIndex((item) => item.value === article.index_status))
+      : 0
+    this.setData({
+      selectedArticleIndex,
+      articleResult: article,
+      articlePlanItems: (article && article.indexing_plan) || [],
+      articlePublicUrl: (article && article.public_url) || "",
+      articleIndexNotes: (article && article.indexing_notes) || "",
+      articleIndexStatusIndex: statusIndex
+    })
   },
 
   async generateQueries() {
@@ -352,7 +420,14 @@ Page({
       })
       this.setData({
         creatingArticle: false,
-        articleResult: article
+        articleResult: article,
+        articlePlanItems: article.indexing_plan || [],
+        allArticles: [article].concat(this.data.allArticles),
+        taskArticles: [article].concat(this.data.taskArticles),
+        selectedArticleIndex: 0,
+        articlePublicUrl: article.public_url || "",
+        articleIndexNotes: article.indexing_notes || "",
+        articleIndexStatusIndex: Math.max(0, this.data.articleIndexStatusOptions.findIndex((item) => item.value === article.index_status))
       })
       if (article.feishu_url) {
         wx.setClipboardData({
@@ -371,6 +446,55 @@ Page({
       })
     } catch (error) {
       this.setData({ creatingArticle: false, error: error.message || "创建飞书文章失败" })
+    }
+  },
+
+  async updateArticleIndexing() {
+    const article = this.data.articleResult || this.data.taskArticles[this.data.selectedArticleIndex]
+    if (!article) {
+      wx.showToast({ title: "请先选择文章", icon: "none" })
+      return
+    }
+    this.setData({ updatingArticleIndexing: true, error: "" })
+    try {
+      const updated = await updateGeoArticleIndexing(article.article_id, {
+        public_url: this.data.articlePublicUrl.trim() || null,
+        index_status: this.data.articleIndexStatusOptions[this.data.articleIndexStatusIndex].value,
+        notes: this.data.articleIndexNotes.trim() || null
+      })
+      const taskArticles = this.data.taskArticles.map((item) => (item.article_id === updated.article_id ? updated : item))
+      const allArticles = this.data.allArticles.map((item) => (item.article_id === updated.article_id ? updated : item))
+      this.setData({
+        updatingArticleIndexing: false,
+        articleResult: updated,
+        articlePlanItems: updated.indexing_plan || [],
+        allArticles,
+        taskArticles
+      })
+      wx.showToast({ title: "收录状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ updatingArticleIndexing: false, error: error.message || "更新收录状态失败" })
+    }
+  },
+
+  async copyArticleChecklist() {
+    const article = this.data.articleResult || this.data.taskArticles[this.data.selectedArticleIndex]
+    if (!article) {
+      wx.showToast({ title: "请先选择文章", icon: "none" })
+      return
+    }
+    this.setData({ copyingArticleChecklist: true, error: "" })
+    try {
+      const result = await getGeoArticleIndexingChecklist(article.article_id)
+      this.setData({ copyingArticleChecklist: false })
+      wx.setClipboardData({
+        data: result.markdown || "",
+        success() {
+          wx.showToast({ title: "清单已复制", icon: "success" })
+        }
+      })
+    } catch (error) {
+      this.setData({ copyingArticleChecklist: false, error: error.message || "复制收录清单失败" })
     }
   },
 

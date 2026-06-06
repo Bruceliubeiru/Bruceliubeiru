@@ -418,6 +418,13 @@ class GEOArticleCreateRequest(BaseModel):
     feishu_identity: str = "bot"
 
 
+class GEOArticleIndexingRequest(BaseModel):
+    public_url: str | None = None
+    index_status: str = "published"
+    notes: str | None = None
+    indexed_at: str | None = None
+
+
 class GEOMonitorConnectorRequest(BaseModel):
     task_id: str
     platform: str
@@ -880,12 +887,29 @@ def _init_db() -> None:
                 feishu_url TEXT,
                 feishu_token TEXT,
                 feishu_response TEXT,
+                public_url TEXT,
+                index_status TEXT,
+                indexing_notes TEXT,
+                indexing_plan TEXT,
+                indexed_at TEXT,
+                last_index_checked_at TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        article_columns = {row["name"] for row in conn.execute("PRAGMA table_info(geo_articles)").fetchall()}
+        for column, definition in {
+            "public_url": "TEXT",
+            "index_status": "TEXT",
+            "indexing_notes": "TEXT",
+            "indexing_plan": "TEXT",
+            "indexed_at": "TEXT",
+            "last_index_checked_at": "TEXT",
+        }.items():
+            if column not in article_columns:
+                conn.execute(f"ALTER TABLE geo_articles ADD COLUMN {column} {definition}")
         retest_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(retests)").fetchall()
         }
@@ -3043,10 +3067,22 @@ def _article_from_row(row: sqlite3.Row) -> dict:
         "feishu_url": row["feishu_url"],
         "feishu_token": row["feishu_token"],
         "feishu_response": _json_loads(row["feishu_response"], None),
+        "public_url": row["public_url"],
+        "index_status": row["index_status"] or "draft",
+        "indexing_notes": row["indexing_notes"],
+        "indexing_plan": _json_loads(row["indexing_plan"], []),
+        "indexed_at": row["indexed_at"],
+        "last_index_checked_at": row["last_index_checked_at"],
         "error": row["error"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _db_get_article(article_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM geo_articles WHERE article_id = ?", (article_id,)).fetchone()
+    return _article_from_row(row) if row else None
 
 
 def _db_articles(task_id: str | None = None) -> list[dict]:
@@ -3067,8 +3103,10 @@ def _db_save_article(item: dict) -> None:
             """
             INSERT INTO geo_articles (
                 article_id, task_id, title, status, markdown_path, feishu_url,
-                feishu_token, feishu_response, error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                feishu_token, feishu_response, public_url, index_status,
+                indexing_notes, indexing_plan, indexed_at, last_index_checked_at,
+                error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(article_id) DO UPDATE SET
                 title=excluded.title,
                 status=excluded.status,
@@ -3076,6 +3114,12 @@ def _db_save_article(item: dict) -> None:
                 feishu_url=excluded.feishu_url,
                 feishu_token=excluded.feishu_token,
                 feishu_response=excluded.feishu_response,
+                public_url=excluded.public_url,
+                index_status=excluded.index_status,
+                indexing_notes=excluded.indexing_notes,
+                indexing_plan=excluded.indexing_plan,
+                indexed_at=excluded.indexed_at,
+                last_index_checked_at=excluded.last_index_checked_at,
                 error=excluded.error,
                 updated_at=excluded.updated_at
             """,
@@ -3088,6 +3132,12 @@ def _db_save_article(item: dict) -> None:
                 item.get("feishu_url"),
                 item.get("feishu_token"),
                 _json_dumps(item.get("feishu_response")) if item.get("feishu_response") else None,
+                item.get("public_url"),
+                item.get("index_status") or "draft",
+                item.get("indexing_notes"),
+                _json_dumps(item.get("indexing_plan")) if item.get("indexing_plan") is not None else None,
+                item.get("indexed_at"),
+                item.get("last_index_checked_at"),
                 item.get("error"),
                 item["created_at"],
                 item["updated_at"],
@@ -5283,6 +5333,12 @@ def geo_article_create(request: GEOArticleCreateRequest):
         "feishu_url": None,
         "feishu_token": None,
         "feishu_response": None,
+        "public_url": None,
+        "index_status": "feishu_created" if request.publish_to_feishu else "draft",
+        "indexing_notes": None,
+        "indexing_plan": _article_indexing_plan(task, title, None),
+        "indexed_at": None,
+        "last_index_checked_at": None,
         "error": None,
         "created_at": now,
         "updated_at": now,
@@ -5294,9 +5350,12 @@ def geo_article_create(request: GEOArticleCreateRequest):
         article["feishu_token"] = feishu.get("token")
         if feishu.get("ok"):
             article["status"] = "feishu_created"
+            article["index_status"] = "feishu_created"
         else:
             article["status"] = "feishu_failed_local_draft"
+            article["index_status"] = "draft"
             article["error"] = feishu.get("error") or "Failed to create Feishu document."
+    article["indexing_plan"] = _article_indexing_plan(task, title, article.get("feishu_url"))
     _db_save_article(article)
     _db_add_audit(
         _current_actor(),
@@ -5310,9 +5369,110 @@ def geo_article_create(request: GEOArticleCreateRequest):
     return article
 
 
+@app.patch("/geo/articles/{article_id}/indexing")
+def geo_article_indexing_update(article_id: str, request: GEOArticleIndexingRequest):
+    article = _db_get_article(article_id)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found.")
+    task = _db_get_task(article["task_id"])
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    now = _now_iso()
+    status = request.index_status.strip() or "published"
+    article["public_url"] = (request.public_url or "").strip() or article.get("public_url")
+    article["index_status"] = status
+    article["indexing_notes"] = (request.notes or "").strip() or article.get("indexing_notes")
+    article["last_index_checked_at"] = now
+    if status in {"indexed", "ai_cited"}:
+        article["indexed_at"] = request.indexed_at or article.get("indexed_at") or now
+    article["updated_at"] = now
+    article["indexing_plan"] = _article_indexing_plan(task, article["title"], article.get("feishu_url"), article.get("public_url"), status)
+    _db_save_article(article)
+    _db_add_audit(
+        _current_actor(),
+        "update_article_indexing",
+        "article",
+        article_id,
+        article["task_id"],
+        outcome=status,
+        detail={"public_url": article.get("public_url"), "index_status": status},
+    )
+    return article
+
+
+@app.get("/geo/articles/{article_id}/indexing-checklist")
+def geo_article_indexing_checklist(article_id: str):
+    article = _db_get_article(article_id)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found.")
+    return {"article_id": article_id, "markdown": _article_indexing_markdown(article), "article": article}
+
+
 def _safe_file_stem(value: str) -> str:
     stem = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff_-]+", "_", value).strip("_")
     return stem[:80] or "geo_article"
+
+
+def _article_indexing_plan(
+    task: dict,
+    title: str,
+    feishu_url: str | None = None,
+    public_url: str | None = None,
+    index_status: str = "feishu_created",
+) -> list[dict]:
+    task_url = task.get("url") or ""
+    public_target = public_url or "待填写公开 URL"
+    feishu_target = feishu_url or "待创建飞书文档"
+    return [
+        {
+            "step": "feishu_draft",
+            "title": "飞书协作稿",
+            "status": "done" if feishu_url else "todo",
+            "detail": f"在飞书中完成《{title}》初稿、事实核对、图片和内部审阅。文档：{feishu_target}",
+        },
+        {
+            "step": "public_publish",
+            "title": "发布到可抓取公开页面",
+            "status": "done" if public_url else "todo",
+            "detail": "把飞书定稿发布到官网、博客、帮助中心或专题页。飞书私有文档通常不能直接被搜索引擎和大模型稳定抓取。",
+        },
+        {
+            "step": "technical_indexing",
+            "title": "提交收录信号",
+            "status": "done" if index_status in {"submitted", "indexed", "ai_cited"} else "todo",
+            "detail": f"将 {public_target} 加入 sitemap、站内入口、相关文章链接和 llms.txt / robots 可抓取路径，并在 Search Console 或站点发布系统中提交。",
+        },
+        {
+            "step": "authority_sources",
+            "title": "补强权威信源",
+            "status": "todo",
+            "detail": f"从原页面 {task_url}、官方说明、媒体报道和垂直社区反链到新文章，提升 Authority 与 Citation 机会。",
+        },
+        {
+            "step": "ai_sampling",
+            "title": "AI 平台采样复测",
+            "status": "done" if index_status == "ai_cited" else "todo",
+            "detail": "用 ChatGPT、豆包、DeepSeek、Kimi、Perplexity、Gemini 等平台运行目标 Query，记录 Mention、Citation、推荐位置和 Sources。",
+        },
+    ]
+
+
+def _article_indexing_markdown(article: dict) -> str:
+    lines = [
+        f"# {article.get('title')} 收录推进清单",
+        "",
+        f"- 飞书文档：{article.get('feishu_url') or '未创建'}",
+        f"- 公开 URL：{article.get('public_url') or '待发布'}",
+        f"- 当前状态：{article.get('index_status') or article.get('status')}",
+        "",
+    ]
+    for index, item in enumerate(article.get("indexing_plan") or [], 1):
+        marker = "x" if item.get("status") == "done" else " "
+        lines.extend([
+            f"{index}. [{'x' if marker == 'x' else ' '}] {item.get('title')}",
+            f"   - {item.get('detail')}",
+        ])
+    return "\n".join(lines)
 
 
 def _article_factor_rows(task: dict, result: dict, monitoring: dict) -> list[dict]:

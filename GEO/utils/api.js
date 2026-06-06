@@ -193,6 +193,14 @@ function createGeoArticle(payload) {
   return request("/geo/articles/create", payload)
 }
 
+function updateGeoArticleIndexing(articleId, payload) {
+  return request(`/geo/articles/${articleId}/indexing`, payload, "PATCH")
+}
+
+function getGeoArticleIndexingChecklist(articleId) {
+  return request(`/geo/articles/${articleId}/indexing-checklist`, {}, "GET")
+}
+
 module.exports = {
   auditUrl,
   auditContent,
@@ -231,5 +239,7 @@ module.exports = {
   bootstrapGapActions,
   saveGapAction,
   updateGapAction,
-  createGeoArticle
+  createGeoArticle,
+  updateGeoArticleIndexing,
+  getGeoArticleIndexingChecklist
 }

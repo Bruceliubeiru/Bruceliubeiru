@@ -302,7 +302,12 @@ function buildStepPanel(result, activeStep) {
     const publication = result.selectedPublication || {}
     let action = "保存版本"
     if (version.status === "pending_review") action = "审核通过"
-    if (version.status === "approved") action = publication.publication_id ? "查看发布记录" : "创建发布预览"
+    if (version.status === "approved") {
+      action = "创建发布预览"
+      if (publication.status === "pending_confirmation") action = "确认发布"
+      if (publication.status === "published" || publication.status === "verification_failed") action = "上线校验"
+      if (publication.live_status === "verified_live" || publication.status === "verified_live") action = "进入收录推进"
+    }
     return {
       ...step,
       action,
@@ -311,11 +316,17 @@ function buildStepPanel(result, activeStep) {
         : ["复制 JSON 给开发对接", "复制 Markdown 给运营审核", "页面发布后重新诊断同一 URL"],
       note: retest.current_score
         ? `已复测：${retest.previous_score} → ${retest.current_score}，变化 ${retest.score_delta} 分。`
-        : (version.status === "approved"
-          ? "版本已审核通过，可以复制注入 JSON 并上线后复测。"
+        : (publication.status === "pending_confirmation"
+          ? "发布预览已创建。点击主按钮会用 PUBLISH 确认发布，然后进入上线校验。"
+          : (publication.status === "published"
+            ? "已提交发布。下一步校验线上页面是否包含关键模块。"
+            : (publication.live_status === "verified_live" || publication.status === "verified_live"
+              ? "上线校验已通过。下一步进入收录推进和 AI 采样。"
+              : (version.status === "approved"
+                ? "版本已审核通过，下一步创建发布预览。"
           : workflow.injection_payload
             ? "已生成 CMS 字段映射，请先保存版本并审核通过。"
-            : "建议上线后目标提升 10 分以上，弱项至少提升一档。")
+                    : "建议上线后目标提升 10 分以上，弱项至少提升一档。"))))
     }
   }
 
@@ -1010,6 +1021,23 @@ Page({
         this.approveVersion()
         return
       }
+      const publication = this.data.selectedPublication
+      if (publication && publication.status === "pending_confirmation") {
+        this.confirmCmsPublish(true)
+        return
+      }
+      if (publication && ["published", "verification_failed"].includes(publication.status)) {
+        this.verifyCmsPublication()
+        return
+      }
+      if (publication && (publication.live_status === "verified_live" || publication.status === "verified_live")) {
+        this.setData({
+          activeStep: "index",
+          stepPanel: buildStepPanel(this.data.result, "index")
+        })
+        wx.switchTab({ url: "/pages/analysis/analysis" })
+        return
+      }
       if ((this.data.cmsTargets || []).length && !this.data.selectedPublication) {
         this.createCmsPreview()
         return
@@ -1326,6 +1354,7 @@ Page({
       result.injection_modules = latestVersion.modules
     }
     const publicationState = buildPublicationState(detail.publications || [], this.data.selectedPublicationId)
+    result.selectedPublication = publicationState.selectedPublication
     this.setData({
       result,
       workflow: result.workflow,
@@ -1460,10 +1489,14 @@ Page({
     const selectedPublicationIndex = Number(event.detail.value)
     const publications = this.data.publications || []
     const selectedPublication = publications[selectedPublicationIndex] || null
+    const result = { ...this.data.result, selectedPublication }
     this.setData({
+      result,
       selectedPublicationIndex,
       selectedPublicationId: selectedPublication ? selectedPublication.publication_id : "",
-      selectedPublication
+      selectedPublication,
+      stepPanel: buildStepPanel(result, this.data.activeStep),
+      loopSteps: buildLoopSteps({ ...this.data, result, selectedPublication })
     })
   },
 
@@ -1483,19 +1516,20 @@ Page({
       await createPublicationPreview({ version_id: version.version_id, target_id: target.target_id })
       await this.reloadCurrentTask()
       this.setData({ publishing: false })
-      wx.showToast({ title: "已创建预览", icon: "success" })
+      wx.showToast({ title: "预览已创建，下一步确认发布", icon: "success" })
     } catch (error) {
       this.setData({ publishing: false, error: error.message || "创建发布预览失败" })
     }
   },
 
-  async confirmCmsPublish() {
+  async confirmCmsPublish(autoConfirm = false) {
     const publication = this.data.selectedPublication
     if (!publication || publication.status !== "pending_confirmation") {
       wx.showToast({ title: "暂无待确认发布", icon: "none" })
       return
     }
-    if (this.data.publishConfirmation.trim() !== "PUBLISH") {
+    const confirmation = autoConfirm === true ? "PUBLISH" : this.data.publishConfirmation.trim()
+    if (confirmation !== "PUBLISH") {
       wx.showToast({ title: "请输入 PUBLISH", icon: "none" })
       return
     }
@@ -1503,11 +1537,11 @@ Page({
     try {
       await confirmPublication({
         publication_id: publication.publication_id,
-        confirmation: this.data.publishConfirmation.trim()
+        confirmation
       })
       await this.reloadCurrentTask()
       this.setData({ publishing: false, publishConfirmation: "" })
-      wx.showToast({ title: "已提交发布", icon: "success" })
+      wx.showToast({ title: "已发布，下一步上线校验", icon: "success" })
     } catch (error) {
       this.setData({ publishing: false, error: error.message || "确认发布失败" })
     }

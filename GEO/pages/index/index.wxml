@@ -501,6 +501,14 @@
         </view>
         <view wx:if="{{result.task_id && result.is_url_task !== false && cmsTargets.length}}" class="delivery-config">
           <text class="delivery-title">CMS 发布目标</text>
+          <view class="publish-guide">
+            <text class="publish-guide-title">发布推进</text>
+            <text wx:if="{{!selectedPublication}}" class="publish-guide-copy">当前还没有发布预览。下一步点击“创建发布预览”。</text>
+            <text wx:elif="{{selectedPublication.status === 'pending_confirmation'}}" class="publish-guide-copy">预览已创建，下一步确认发布。主按钮会自动带上 PUBLISH。</text>
+            <text wx:elif="{{selectedPublication.status === 'published'}}" class="publish-guide-copy">已提交发布，下一步做上线校验，确认页面真的包含本次 GEO 内容。</text>
+            <text wx:elif="{{selectedPublication.status === 'verified_live'}}" class="publish-guide-copy">上线校验已通过，下一步进入收录推进和 AI 平台采样。</text>
+            <text wx:else class="publish-guide-copy">当前发布状态：{{selectedPublication.status}}。如失败可重试发布。</text>
+          </view>
           <picker mode="selector" range="{{cmsTargets}}" range-key="name" value="{{cmsTargetIndex}}" bindchange="changeCmsTarget">
             <view class="config-field">
               <text class="config-label">发布目标</text>

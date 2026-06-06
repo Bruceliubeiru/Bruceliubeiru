@@ -597,6 +597,32 @@
   background: #ffffff;
 }
 
+.publish-guide {
+  margin: 12rpx 0;
+  padding: 16rpx;
+  border: 1rpx solid #eadbd7;
+  border-radius: 10rpx;
+  background: #fff8f6;
+}
+
+.publish-guide-title,
+.publish-guide-copy {
+  display: block;
+}
+
+.publish-guide-title {
+  color: #a9342c;
+  font-size: 21rpx;
+  font-weight: 900;
+}
+
+.publish-guide-copy {
+  margin-top: 7rpx;
+  color: #5f6972;
+  font-size: 22rpx;
+  line-height: 1.45;
+}
+
 .section-head {
   gap: 14rpx;
   align-items: flex-start;

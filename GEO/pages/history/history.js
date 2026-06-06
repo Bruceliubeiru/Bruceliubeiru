@@ -21,6 +21,8 @@ Page({
     displayAttributions: [],
     reports: [],
     displayReports: [],
+    articles: [],
+    displayArticles: [],
     retestGroups: [],
     displayRetestGroups: [],
     selectedTaskId: "",
@@ -56,7 +58,8 @@ Page({
       displayMentionChecks: this.data.mentionChecks.filter((entry) => entry.task_id === taskId),
       displayExperiments: this.data.experiments.filter((entry) => entry.task_id === taskId),
       displayAttributions: this.data.attributions.filter((entry) => entry.task_id === taskId),
-      displayReports: this.data.reports.filter((entry) => entry.task_id === taskId)
+      displayReports: this.data.reports.filter((entry) => entry.task_id === taskId),
+      displayArticles: this.data.articles.filter((entry) => entry.task_id === taskId)
     })
   },
 
@@ -71,7 +74,8 @@ Page({
       displayMentionChecks: this.data.mentionChecks,
       displayExperiments: this.data.experiments,
       displayAttributions: this.data.attributions,
-      displayReports: this.data.reports
+      displayReports: this.data.reports,
+      displayArticles: this.data.articles
     })
   },
 
@@ -93,6 +97,7 @@ Page({
       const experiments = history.experiments || []
       const attributions = history.attributions || []
       const reports = history.reports || []
+      const articles = history.articles || []
       this.setData({
         tasks: history.tasks || [],
         versions: history.versions || [],
@@ -111,6 +116,8 @@ Page({
         displayAttributions: attributions,
         reports,
         displayReports: reports,
+        articles,
+        displayArticles: articles,
         retestGroups,
         displayRetestGroups: retestGroups,
         loading: false
@@ -137,6 +144,20 @@ Page({
     }
     wx.setClipboardData({
       data: JSON.stringify(version.injection_payload || version, null, 2),
+      success() {
+        wx.showToast({ title: "已复制", icon: "success" })
+      }
+    })
+  },
+
+  copyArticle(event) {
+    const index = Number(event.currentTarget.dataset.index)
+    const article = this.data.displayArticles[index]
+    if (!article) {
+      return
+    }
+    wx.setClipboardData({
+      data: article.feishu_url || article.markdown_path || article.article_id,
       success() {
         wx.showToast({ title: "已复制", icon: "success" })
       }

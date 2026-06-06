@@ -11,7 +11,7 @@
     <view class="metric"><text class="metric-value">{{stats.tasks}}</text><text class="metric-label">任务</text></view>
     <view class="metric"><text class="metric-value">{{stats.versions}}</text><text class="metric-label">版本</text></view>
     <view class="metric"><text class="metric-value">{{stats.publications}}</text><text class="metric-label">发布</text></view>
-    <view class="metric"><text class="metric-value">{{stats.reports}}</text><text class="metric-label">报告</text></view>
+    <view class="metric"><text class="metric-value">{{stats.articles}}</text><text class="metric-label">文章</text></view>
   </view>
 
   <text wx:if="{{error}}" class="error">{{error}}</text>
@@ -39,5 +39,20 @@
       <button class="pill-button" data-task-id="{{task.task_id}}" bindtap="resumeTask">继续</button>
     </view>
     <text wx:if="{{!recentTasks.length && !loading}}" class="empty">暂无任务</text>
+  </view>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">最近文章</text>
+      <button class="ghost-button" bindtap="goHistory">查看历史</button>
+    </view>
+    <view class="list-card" wx:for="{{recentArticles}}" wx:key="article_id" wx:for-item="article">
+      <view>
+        <text class="item-title">{{article.title}}</text>
+        <text class="item-meta">{{article.status}} · {{article.created_at}}</text>
+      </view>
+      <button class="pill-button" data-index="{{index}}" bindtap="copyArticle">复制</button>
+    </view>
+    <text wx:if="{{!recentArticles.length && !loading}}" class="empty">暂无文章</text>
   </view>
 </view>

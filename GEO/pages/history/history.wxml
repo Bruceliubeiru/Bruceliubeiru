@@ -13,7 +13,7 @@
     <view class="stat"><text class="stat-value">{{versions.length}}</text><text class="stat-label">版本</text></view>
     <view class="stat"><text class="stat-value">{{injections.length}}</text><text class="stat-label">交付</text></view>
     <view class="stat"><text class="stat-value">{{retestGroups.length}}</text><text class="stat-label">复测</text></view>
-    <view class="stat"><text class="stat-value">{{feedbackEntries.length}}</text><text class="stat-label">反馈</text></view>
+    <view class="stat"><text class="stat-value">{{articles.length}}</text><text class="stat-label">文章</text></view>
   </view>
 
   <view wx:if="{{selectedTaskId}}" class="filter-bar">
@@ -32,6 +32,7 @@
     <button class="tab {{activeTab === 'experiments' ? 'active' : ''}}" data-tab="experiments" bindtap="switchTab">实验</button>
     <button class="tab {{activeTab === 'attributions' ? 'active' : ''}}" data-tab="attributions" bindtap="switchTab">归因</button>
     <button class="tab {{activeTab === 'reports' ? 'active' : ''}}" data-tab="reports" bindtap="switchTab">报告</button>
+    <button class="tab {{activeTab === 'articles' ? 'active' : ''}}" data-tab="articles" bindtap="switchTab">文章</button>
   </view>
 
   <text wx:if="{{error}}" class="error">{{error}}</text>
@@ -209,5 +210,24 @@
       <text class="url">{{item.summary}}</text>
     </view>
     <text wx:if="{{!displayReports.length && !loading}}" class="empty">暂无效果报告</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'articles'}}" class="list">
+    <view class="card" wx:for="{{displayArticles}}" wx:key="article_id" wx:for-item="item">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{item.title}}</text>
+          <text class="url">{{item.feishu_url || item.markdown_path || item.article_id}}</text>
+        </view>
+        <text class="status {{item.status}}">{{item.status}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">任务</text><text class="meta-value">{{item.task_id}}</text></view>
+        <view><text class="meta-label">创建时间</text><text class="meta-value date">{{item.created_at}}</text></view>
+        <view><text class="meta-label">交付位置</text><text class="meta-value">{{item.feishu_url ? '飞书文档' : '本地草稿'}}</text></view>
+      </view>
+      <button class="copy" data-index="{{index}}" bindtap="copyArticle">复制文章链接</button>
+    </view>
+    <text wx:if="{{!displayArticles.length && !loading}}" class="empty">暂无 GEO 文章，去分析页用飞书文章 Agent 创建。</text>
   </view>
 </view>

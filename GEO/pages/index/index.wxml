@@ -444,7 +444,7 @@
           <view class="status-note">{{project.assigned_package.name}} · {{project.assigned_package.tier}} · {{project.assigned_package.delivery_days}} 天 · ¥{{project.assigned_package.price_cny}}</view>
           <view wx:if="{{project.package_delivery && project.package_delivery.length}}" class="status-stack">
             <view class="status-note" wx:for="{{project.package_delivery}}" wx:key="feature" wx:for-item="item">
-              {{item.feature}} · {{item.status}}{{item.next_hint ? (' · ' + item.next_hint) : ''}}
+              <text>{{item.feature}} · {{item.status}}</text><text wx:if="{{item.next_hint}}"> · {{item.next_hint}}</text>
             </view>
           </view>
         </view>

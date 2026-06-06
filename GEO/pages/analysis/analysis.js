@@ -9,7 +9,8 @@ const {
   updateMonitoringConnector,
   getGapActions,
   bootstrapGapActions,
-  updateGapAction
+  updateGapAction,
+  createGeoArticle
 } = require("../../utils/api")
 const { aiPlatformOptions } = require("../../utils/platforms")
 
@@ -50,6 +51,7 @@ Page({
     selectedTask: null,
     monitoring: null,
     sourceMap: null,
+    sourceRecommendationCount: 0,
     monitoringQueries: [],
     monitoringQueryIndex: 0,
     platformIndex: 0,
@@ -66,6 +68,10 @@ Page({
     savingConnector: false,
     updatingConnectorId: "",
     gapActions: [],
+    articleTitle: "",
+    articleFolderToken: "",
+    creatingArticle: false,
+    articleResult: null,
     answerText: "",
     sourcesText: "",
     parseResult: null,
@@ -114,6 +120,7 @@ Page({
       this.setData({
         monitoring,
         sourceMap: sourceMapResult,
+        sourceRecommendationCount: ((sourceMapResult && sourceMapResult.recommendations) || []).length,
         monitoringQueries: monitoring.queries || [],
         monitoringQueryIndex: 0,
         connectors: connectorResult.items || [],
@@ -172,6 +179,14 @@ Page({
 
   onSourcesInput(event) {
     this.setData({ sourcesText: event.detail.value, error: "" })
+  },
+
+  onArticleTitleInput(event) {
+    this.setData({ articleTitle: event.detail.value, error: "" })
+  },
+
+  onArticleFolderInput(event) {
+    this.setData({ articleFolderToken: event.detail.value, error: "" })
   },
 
   async generateQueries() {
@@ -316,6 +331,46 @@ Page({
       wx.showToast({ title: "动作已更新", icon: "success" })
     } catch (error) {
       this.setData({ updatingConnectorId: "", error: error.message || "更新动作失败" })
+    }
+  },
+
+  async createFeishuArticle() {
+    const task = this.data.selectedTask
+    if (!task) {
+      wx.showToast({ title: "请先选择任务", icon: "none" })
+      return
+    }
+    this.setData({ creatingArticle: true, error: "" })
+    try {
+      const article = await createGeoArticle({
+        task_id: task.task_id,
+        title: this.data.articleTitle.trim() || `${task.title || "GEO"} 文章优化方案`,
+        folder_token: this.data.articleFolderToken.trim() || null,
+        use_ai: false,
+        publish_to_feishu: true,
+        feishu_identity: "bot"
+      })
+      this.setData({
+        creatingArticle: false,
+        articleResult: article
+      })
+      if (article.feishu_url) {
+        wx.setClipboardData({
+          data: article.feishu_url,
+          success() {
+            wx.showToast({ title: "飞书链接已复制", icon: "success" })
+          }
+        })
+        return
+      }
+      wx.setClipboardData({
+        data: article.markdown_path || "",
+        success() {
+          wx.showToast({ title: "本地草稿路径已复制", icon: "success" })
+        }
+      })
+    } catch (error) {
+      this.setData({ creatingArticle: false, error: error.message || "创建飞书文章失败" })
     }
   },
 

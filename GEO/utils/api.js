@@ -189,6 +189,10 @@ function updateGapAction(actionId, payload) {
   return request(`/geo/actions/${actionId}`, payload, "PATCH")
 }
 
+function createGeoArticle(payload) {
+  return request("/geo/articles/create", payload)
+}
+
 module.exports = {
   auditUrl,
   auditContent,
@@ -226,5 +230,6 @@ module.exports = {
   getGapActions,
   bootstrapGapActions,
   saveGapAction,
-  updateGapAction
+  updateGapAction,
+  createGeoArticle
 }

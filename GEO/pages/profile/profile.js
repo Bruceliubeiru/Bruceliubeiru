@@ -8,9 +8,10 @@ Page({
       tasks: 0,
       versions: 0,
       publications: 0,
-      reports: 0
+      articles: 0
     },
-    recentTasks: []
+    recentTasks: [],
+    recentArticles: []
   },
 
   onShow() {
@@ -27,9 +28,10 @@ Page({
           tasks: (history.tasks || []).length,
           versions: (history.versions || []).length,
           publications: (history.publications || []).length,
-          reports: (history.reports || []).length
+          articles: (history.articles || []).length
         },
         recentTasks: (history.tasks || []).slice(0, 6),
+        recentArticles: (history.articles || []).slice(0, 4),
         loading: false
       })
     } catch (error) {
@@ -45,5 +47,17 @@ Page({
     const taskId = event.currentTarget.dataset.taskId
     wx.setStorageSync("geo_resume_task", taskId)
     wx.switchTab({ url: "/pages/index/index" })
+  },
+
+  copyArticle(event) {
+    const index = Number(event.currentTarget.dataset.index)
+    const article = this.data.recentArticles[index]
+    if (!article) return
+    wx.setClipboardData({
+      data: article.feishu_url || article.markdown_path || article.article_id,
+      success() {
+        wx.showToast({ title: "已复制", icon: "success" })
+      }
+    })
   }
 })

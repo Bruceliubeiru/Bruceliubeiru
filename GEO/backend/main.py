@@ -3,8 +3,10 @@ import hashlib
 import ipaddress
 import os
 import re
+import shutil
 import socket
 import sqlite3
+import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -403,6 +405,17 @@ class GEOReportGenerateRequest(BaseModel):
 class GEOReportConfirmRequest(BaseModel):
     status: str = "confirmed"
     notes: str | None = None
+
+
+class GEOArticleCreateRequest(BaseModel):
+    task_id: str
+    title: str | None = None
+    folder_token: str | None = None
+    use_ai: bool = False
+    provider: str = "openai"
+    model: str | None = None
+    publish_to_feishu: bool = True
+    feishu_identity: str = "bot"
 
 
 class GEOMonitorConnectorRequest(BaseModel):
@@ -853,6 +866,23 @@ def _init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS geo_articles (
+                article_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                markdown_path TEXT,
+                feishu_url TEXT,
+                feishu_token TEXT,
+                feishu_response TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
             """
         )
@@ -3003,6 +3033,68 @@ def _run_job(job_id: str) -> dict:
     return job
 
 
+def _article_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "article_id": row["article_id"],
+        "task_id": row["task_id"],
+        "title": row["title"],
+        "status": row["status"],
+        "markdown_path": row["markdown_path"],
+        "feishu_url": row["feishu_url"],
+        "feishu_token": row["feishu_token"],
+        "feishu_response": _json_loads(row["feishu_response"], None),
+        "error": row["error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _db_articles(task_id: str | None = None) -> list[dict]:
+    query = "SELECT * FROM geo_articles"
+    params: list[str] = []
+    if task_id:
+        query += " WHERE task_id = ?"
+        params.append(task_id)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_article_from_row(row) for row in rows]
+
+
+def _db_save_article(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO geo_articles (
+                article_id, task_id, title, status, markdown_path, feishu_url,
+                feishu_token, feishu_response, error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(article_id) DO UPDATE SET
+                title=excluded.title,
+                status=excluded.status,
+                markdown_path=excluded.markdown_path,
+                feishu_url=excluded.feishu_url,
+                feishu_token=excluded.feishu_token,
+                feishu_response=excluded.feishu_response,
+                error=excluded.error,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["article_id"],
+                item["task_id"],
+                item["title"],
+                item["status"],
+                item.get("markdown_path"),
+                item.get("feishu_url"),
+                item.get("feishu_token"),
+                _json_dumps(item.get("feishu_response")) if item.get("feishu_response") else None,
+                item.get("error"),
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
+
+
 def _db_history() -> dict:
     with _db() as conn:
         task_rows = conn.execute("SELECT * FROM tasks ORDER BY updated_at DESC").fetchall()
@@ -3047,6 +3139,7 @@ def _db_history() -> dict:
         "experiments": _db_experiments(),
         "attributions": _db_attributions(),
         "reports": _db_reports(),
+        "articles": _db_articles(),
     }
 
 
@@ -5169,6 +5262,240 @@ def geo_history():
     return _db_history()
 
 
+@app.post("/geo/articles/create")
+def geo_article_create(request: GEOArticleCreateRequest):
+    task = _db_get_task(request.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    now = _now_iso()
+    result = task.get("latest_result") or {}
+    title = (request.title or "").strip() or f"{result.get('title') or task.get('title') or 'GEO'} 文章优化方案"
+    markdown = _build_geo_article_markdown(task, use_ai=request.use_ai, provider=request.provider, model=request.model)
+    article_id = f"article_{uuid.uuid4().hex[:12]}"
+    markdown_path = EXPORT_DIR / f"{_safe_file_stem(article_id + '_' + title)}.md"
+    markdown_path.write_text(markdown, encoding="utf-8")
+    article = {
+        "article_id": article_id,
+        "task_id": request.task_id,
+        "title": title,
+        "status": "local_draft",
+        "markdown_path": str(markdown_path),
+        "feishu_url": None,
+        "feishu_token": None,
+        "feishu_response": None,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    if request.publish_to_feishu:
+        feishu = _create_feishu_doc_with_lark_cli(title, markdown_path, request.folder_token, request.feishu_identity)
+        article["feishu_response"] = feishu.get("payload") or {"ok": feishu.get("ok")}
+        article["feishu_url"] = feishu.get("url")
+        article["feishu_token"] = feishu.get("token")
+        if feishu.get("ok"):
+            article["status"] = "feishu_created"
+        else:
+            article["status"] = "feishu_failed_local_draft"
+            article["error"] = feishu.get("error") or "Failed to create Feishu document."
+    _db_save_article(article)
+    _db_add_audit(
+        _current_actor(),
+        "create_geo_article",
+        "article",
+        article_id,
+        request.task_id,
+        outcome=article["status"],
+        detail={"feishu_url": article.get("feishu_url"), "markdown_path": article.get("markdown_path")},
+    )
+    return article
+
+
+def _safe_file_stem(value: str) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff_-]+", "_", value).strip("_")
+    return stem[:80] or "geo_article"
+
+
+def _article_factor_rows(task: dict, result: dict, monitoring: dict) -> list[dict]:
+    source_map = monitoring.get("source_map") or {}
+    domain_count = len(source_map.get("domains") or [])
+    mention_rate = monitoring.get("mention_rate") or 0
+    citation_rate = monitoring.get("citation_rate") or 0
+    recommendations = result.get("recommendations") or []
+    gaps = result.get("content_gaps") or []
+    assets = result.get("geo_assets") or {}
+    keywords = assets.get("keywords") or []
+    return [
+        {
+            "name": "时间性 Freshness",
+            "score": "高",
+            "diagnosis": "大模型更倾向引用能反映最新事实、政策、数据和观点的内容。",
+            "action": "在文章开头标注更新时间，并加入近期价格、规则、开放时间、市场变化或数据点。",
+        },
+        {
+            "name": "媒体权重 Authority",
+            "score": f"{domain_count} 个信源",
+            "diagnosis": "高权威来源、官方说明、垂直媒体和可验证出处能降低幻觉风险。",
+            "action": "补充官方来源、权威媒体、Trip.com 页面链接和可信引用，避免无来源结论。",
+        },
+        {
+            "name": "关键词覆盖 Keywords",
+            "score": f"{len(keywords)} 个关键词",
+            "diagnosis": "显性关键词、隐性关键词和语义相关词越完整，越容易被匹配到。",
+            "action": "围绕核心 Query 扩展对比词、场景词、价格词、使用词和替代方案词。",
+        },
+        {
+            "name": "互动信号 Engagement",
+            "score": f"Mention {mention_rate}%",
+            "diagnosis": "评论、收藏、分享、用户反馈和真实案例会提高内容被认可的概率。",
+            "action": "在文章中加入用户选择场景、常见误区、FAQ 和可验证案例，方便后续沉淀互动。",
+        },
+        {
+            "name": "问题相关性 Relevance",
+            "score": f"Citation {citation_rate}%",
+            "diagnosis": "内容越直接回答用户问题，越容易被大模型选作答案来源。",
+            "action": "用问答式标题、对比表和结论先行结构，逐条解决高意图 Query。",
+        },
+    ]
+
+
+def _build_geo_article_markdown(task: dict, use_ai: bool = False, provider: str = "openai", model: str | None = None) -> str:
+    result = task.get("latest_result") or {}
+    monitoring = _monitoring_summary(task["task_id"])
+    title = result.get("title") or task.get("title") or task.get("brand_name") or "GEO 文章"
+    url = task.get("url") or result.get("url") or ""
+    gaps = result.get("content_gaps") or result.get("recommendations") or []
+    recommendations = result.get("recommendations") or []
+    faq_items = result.get("faq_items") or []
+    modules = result.get("injection_modules") or []
+    factors = _article_factor_rows(task, result, monitoring)
+    query_lines = [
+        f"- {item.get('query_text')}（{item.get('engine')} / {item.get('priority') or 'P1'}）"
+        for item in (monitoring.get("queries") or [])[:8]
+    ]
+    factor_lines = [
+        f"### {index + 1}. {item['name']}\n\n"
+        f"- 当前信号：{item['score']}\n"
+        f"- 诊断：{item['diagnosis']}\n"
+        f"- 建议：{item['action']}"
+        for index, item in enumerate(factors)
+    ]
+    faq_lines = [
+        f"### {index + 1}. {item.get('question')}\n\n{item.get('answer')}"
+        for index, item in enumerate(faq_items[:8])
+    ]
+    module_lines = [
+        f"- **{item.get('module_type')}**：{item.get('title')}｜{item.get('target_position') or '页面模块'}"
+        for item in modules[:8]
+    ]
+    markdown = "\n\n".join([
+        f"# {title}：GEO 文章优化方案",
+        f"> 来源页面：{url}\n>\n> 目标：让文章满足大模型选择信源时的五个关键条件，而不是只追求被传统搜索收录。",
+        "## 一句话结论\n\n这篇文章需要同时补齐时间性、权威信源、关键词覆盖、互动信号和问题相关性，才能提高被 ChatGPT、豆包、DeepSeek、Kimi、Perplexity、Gemini 等 AI 平台引用的概率。",
+        "## 五大影响因子诊断\n\n" + "\n\n".join(factor_lines),
+        "## 高意图 Query 选题池\n\n" + ("\n".join(query_lines) if query_lines else "- 暂无监测 Query，请先在小程序中生成 Query。"),
+        "## 页面内容缺口\n\n" + ("\n".join([f"- {item}" for item in gaps]) if gaps else "- 暂无明显内容缺口。"),
+        "## 建议文章结构\n\n1. 最新更新时间与适用人群\n2. 核心问题的直接答案\n3. 官方规则与权威来源\n4. 产品/方案对比表\n5. 使用步骤与注意事项\n6. FAQ\n7. 相关 Trip.com 页面与外部可信来源",
+        "## 可注入模块\n\n" + ("\n".join(module_lines) if module_lines else "- 暂无模块草稿。"),
+        "## FAQ 草稿\n\n" + ("\n\n".join(faq_lines) if faq_lines else "- 暂无 FAQ 草稿。"),
+        "## 下步执行\n\n" + ("\n".join([f"- {item}" for item in recommendations[:8]]) if recommendations else "- 完成文章初稿后，回到小程序录入 AI 平台采样并复测 Mention / Citation。"),
+    ])
+    if not use_ai:
+        return markdown
+    try:
+        client = MultiLLMClient()
+        prompt = (
+            "你是 GEO 内容策略 Agent。请基于以下 Markdown，改写成适合飞书协作的中文文章方案。"
+            "保留五大影响因子结构，补充更清晰的小标题、行动清单和可复制段落，不要编造事实。\n\n"
+            f"{markdown}"
+        )
+        improved = client.generate_text(provider=provider, model=model, prompt=prompt, temperature=0.3)  # type: ignore[arg-type]
+        return improved.strip() or markdown
+    except Exception:
+        return markdown
+
+
+def _find_url_in_json(value) -> str | None:
+    if isinstance(value, str) and value.startswith("http"):
+        return value
+    if isinstance(value, dict):
+        for key in ("url", "doc_url", "document_url", "share_url"):
+            if isinstance(value.get(key), str) and value[key].startswith("http"):
+                return value[key]
+        for item in value.values():
+            found = _find_url_in_json(item)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_url_in_json(item)
+            if found:
+                return found
+    return None
+
+
+def _find_token_in_json(value) -> str | None:
+    if isinstance(value, dict):
+        for key in ("document_id", "doc_token", "token", "obj_token"):
+            if isinstance(value.get(key), str):
+                return value[key]
+        for item in value.values():
+            found = _find_token_in_json(item)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_token_in_json(item)
+            if found:
+                return found
+    return None
+
+
+def _create_feishu_doc_with_lark_cli(title: str, markdown_path: Path, folder_token: str | None = None, identity: str = "bot") -> dict:
+    lark_cli = shutil.which("lark-cli")
+    if not lark_cli:
+        return {"ok": False, "error": "lark-cli not found in PATH."}
+    command = [
+        lark_cli,
+        "docs",
+        "+create",
+        "--as",
+        "bot" if identity != "user" else "user",
+        "--title",
+        title,
+        "--markdown",
+        f"@{markdown_path.name}",
+    ]
+    if folder_token:
+        command.extend(["--folder-token", folder_token])
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(markdown_path.parent),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "lark-cli docs +create timed out."}
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "error": (completed.stderr or completed.stdout or "lark-cli docs +create failed.").strip(),
+        }
+    stdout = completed.stdout.strip()
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        payload = {"raw": stdout}
+    return {
+        "ok": True,
+        "payload": payload,
+        "url": _find_url_in_json(payload),
+        "token": _find_token_in_json(payload),
+    }
+
+
 @app.get("/geo/tasks/{task_id}")
 def geo_task_detail(task_id: str):
     task = _db_get_task(task_id)
@@ -5188,6 +5515,7 @@ def geo_task_detail(task_id: str):
     task_experiments = _db_experiments(task_id)
     task_attributions = _db_attributions(task_id)
     task_reports = _db_reports(task_id)
+    task_articles = _db_articles(task_id)
     task_gap_actions = _db_gap_actions(task_id)
     return {
         "task": task,
@@ -5212,6 +5540,7 @@ def geo_task_detail(task_id: str):
         "experiments": task_experiments,
         "attributions": task_attributions,
         "reports": task_reports,
+        "articles": task_articles,
         "gap_actions": task_gap_actions,
     }
 

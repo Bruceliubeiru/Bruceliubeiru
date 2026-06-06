@@ -66,6 +66,22 @@ production gap is automated collection from each AI platform. Until official API
 credentials are connected, operators record answer excerpts, positions, and sources through
 the monitoring endpoints instead of relying on unreviewable scraping.
 
+## V2.5 PRD Gap Priority
+
+| Priority | PRD capability | Current status |
+|---|---|---|
+| P0 | Query Generator with Best/Compare/Worth/How/Buy/Scenario/Risk/Local intents | Implemented as `/geo/monitoring/queries/generate`; stores intent, priority, sample target, language, and reason. |
+| P0 | Manual Source Parser for pasted AI answers and Sources | Implemented as `/geo/monitoring/sources/parse`; extracts brand mention, own-domain citation, competitor mentions, source domains, and source types. |
+| P0 | Visibility confidence and sampling plan | Implemented in monitoring summary and reports through sample target, sample count, coverage, confidence level, citation rate, and competitor gap. |
+| P0 | White-hat external trust anchor | Implemented; default guidance blocks impersonation and fabricated experience. |
+| P0 | Content quality guardrail and human review | Implemented; blocks unsupported claims and invalid Schema before approval/publish. |
+| P1 | Page type template library for travel verticals | Partially implemented through page-type inference and generic content generation; next step is dedicated JR Pass, attraction ticket, local activity, destination guide, and campaign templates. |
+| P1 | Compliant semi-automated platform collection | Not yet connected to OpenAI Web Search, Perplexity Sonar, or Gemini Grounding credentials; manual parser is the MVP-safe path. |
+| P1 | Feishu task/table export | Not yet implemented; JSON export and CMS webhook exist. |
+| P1 | Action workflow with accepted/in-progress/done/rollback for individual gap actions | Partially covered by experiments, versions, reviews, publications, and retests; dedicated `page_gap_action` table remains. |
+| P2 | Word report export for management | Not yet implemented; persistent effect report data exists and can be exported later. |
+| P2 | Analytics/BI integration for traffic, GMV, conversion, AOV | Not yet connected; lead attribution and revenue evidence are available as manual input. |
+
 ## External Production Dependencies
 
 The application-side loop is complete. A production rollout still requires:

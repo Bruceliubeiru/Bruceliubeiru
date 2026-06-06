@@ -146,6 +146,9 @@
       <section class="grid">
         <div class="panel">
           <div class="panel-head"><div><div class="panel-title">AI 平台可见度</div><div class="panel-meta">按 ChatGPT、Perplexity 等平台记录品牌提及与推荐位置</div></div></div>
+          <div class="form-row"><input id="queryTask" placeholder="任务 ID"><input id="queryCount" type="number" min="1" max="50" placeholder="Query 数 12"><input id="queryLanguages" placeholder="语言，逗号分隔"><span></span><button class="refresh" id="generateQueries">生成 Query 池</button></div>
+          <div class="form-row" style="margin-top:8px"><input id="parseTask" placeholder="任务 ID"><input id="parseQuery" placeholder="监测问题 ID"><select id="parsePlatform"><option>perplexity</option><option>chatgpt</option><option>gemini</option><option>google_ai_overviews</option></select><input id="parseCompetitors" placeholder="竞品，逗号分隔"><button class="refresh" id="parseSources">解析 Sources</button></div>
+          <div style="margin-top:8px"><textarea id="parseAnswer" placeholder="粘贴 AI answer 和 Sources，系统会抽取提及、引用域名、来源类型和竞品" style="width:100%;min-height:76px;border:1px solid var(--line);border-radius:5px;padding:8px 9px;resize:vertical"></textarea></div>
           <div class="form-row"><input id="mentionTask" placeholder="任务 ID"><input id="mentionQuery" placeholder="监测问题 ID"><select id="mentionEngine"><option>chatgpt</option><option>perplexity</option><option>gemini</option><option>google_ai_overviews</option></select><select id="mentionFound"><option value="true">已提及</option><option value="false">未提及</option></select><button class="refresh" id="saveMention">记录结果</button></div>
           <div class="form-row" style="margin-top:8px"><input id="mentionPosition" type="number" min="1" placeholder="推荐位置"><input id="mentionSource" placeholder="来源类型"><input id="mentionSourceUrl" placeholder="来源 URL"><input id="mentionExcerpt" placeholder="答案摘录"><span></span></div>
           <div class="table-wrap"><table><thead><tr><th>平台</th><th>品牌提及</th><th>推荐位置</th><th>来源类型</th><th>任务</th></tr></thead><tbody id="mentionRows"></tbody></table></div>
@@ -487,6 +490,20 @@
       try {
         await api("/geo/monitoring/checks", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("mentionTask").value, query_id:$("mentionQuery").value, engine:$("mentionEngine").value, brand_mentioned:$("mentionFound").value === "true", mention_position:Number($("mentionPosition").value) || null, source_type:$("mentionSource").value || null, source_url:$("mentionSourceUrl").value || null, answer_excerpt:$("mentionExcerpt").value || null})});
         $("mentionPosition").value = ""; $("mentionSource").value = ""; $("mentionSourceUrl").value = ""; $("mentionExcerpt").value = "";
+        await loadMonitoring();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("generateQueries").addEventListener("click", async () => {
+      try {
+        await api("/geo/monitoring/queries/generate", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("queryTask").value, query_count:Number($("queryCount").value) || 12, languages:$("queryLanguages").value.split(",").map((item) => item.trim()).filter(Boolean)})});
+        await loadMonitoring();
+        await load();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("parseSources").addEventListener("click", async () => {
+      try {
+        await api("/geo/monitoring/sources/parse", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("parseTask").value, query_id:$("parseQuery").value, platform:$("parsePlatform").value, answer_text:$("parseAnswer").value, sources_text:$("parseAnswer").value, competitors:$("parseCompetitors").value.split(",").map((item) => item.trim()).filter(Boolean)})});
+        $("parseAnswer").value = "";
         await loadMonitoring();
       } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
     });

@@ -292,6 +292,20 @@ class GEOMonitorQueryRequest(BaseModel):
     competitor: str | None = None
     engine: str = "perplexity"
     active: bool = True
+    query_type: str | None = None
+    intent_stage: str | None = None
+    priority: str | None = None
+    reason: str | None = None
+    sample_target: int = 3
+    language: str | None = None
+    status: str = "active"
+
+
+class GEOQueryGenerateRequest(BaseModel):
+    task_id: str
+    query_count: int = 12
+    languages: list[str] | None = None
+    include_competitors: bool = True
 
 
 class GEOSourceObservationRequest(BaseModel):
@@ -302,6 +316,16 @@ class GEOSourceObservationRequest(BaseModel):
     page_type: str = "unknown"
     citation_count: int = 1
     notes: str | None = None
+
+
+class GEOSourceParseRequest(BaseModel):
+    task_id: str
+    query_id: str
+    platform: str = "perplexity"
+    answer_text: str
+    sources_text: str = ""
+    brand_terms: list[str] | None = None
+    competitors: list[str] | None = None
 
 
 class GEOTrustAnchorRequest(BaseModel):
@@ -325,6 +349,9 @@ class GEOMentionCheckRequest(BaseModel):
     source_url: str | None = None
     answer_excerpt: str | None = None
     notes: str | None = None
+    cited_our_domain: bool = False
+    competitor_mentions: list[str] | None = None
+    confidence_weight: float = 1.0
 
 
 class GEOServicePackageRequest(BaseModel):
@@ -685,6 +712,13 @@ def _init_db() -> None:
                 competitor TEXT,
                 engine TEXT NOT NULL,
                 active INTEGER NOT NULL,
+                query_type TEXT,
+                intent_stage TEXT,
+                priority TEXT,
+                reason TEXT,
+                sample_target INTEGER,
+                language TEXT,
+                status TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -735,6 +769,9 @@ def _init_db() -> None:
                 source_url TEXT,
                 answer_excerpt TEXT,
                 notes TEXT,
+                cited_our_domain INTEGER,
+                competitor_mentions TEXT,
+                confidence_weight REAL,
                 checked_at TEXT NOT NULL
             )
             """
@@ -762,6 +799,26 @@ def _init_db() -> None:
         }.items():
             if column not in task_columns:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+        monitor_columns = {row["name"] for row in conn.execute("PRAGMA table_info(monitor_queries)").fetchall()}
+        for column, definition in {
+            "query_type": "TEXT",
+            "intent_stage": "TEXT",
+            "priority": "TEXT",
+            "reason": "TEXT",
+            "sample_target": "INTEGER",
+            "language": "TEXT",
+            "status": "TEXT",
+        }.items():
+            if column not in monitor_columns:
+                conn.execute(f"ALTER TABLE monitor_queries ADD COLUMN {column} {definition}")
+        mention_columns = {row["name"] for row in conn.execute("PRAGMA table_info(mention_checks)").fetchall()}
+        for column, definition in {
+            "cited_our_domain": "INTEGER",
+            "competitor_mentions": "TEXT",
+            "confidence_weight": "REAL",
+        }.items():
+            if column not in mention_columns:
+                conn.execute(f"ALTER TABLE mention_checks ADD COLUMN {column} {definition}")
         version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(versions)").fetchall()}
         if "quality_report" not in version_columns:
             conn.execute("ALTER TABLE versions ADD COLUMN quality_report TEXT")
@@ -1663,6 +1720,13 @@ def _db_monitor_queries(task_id: str | None = None, active_only: bool = False) -
             "query_text": row["query_text"], "category": row["category"],
             "competitor": row["competitor"], "engine": row["engine"],
             "active": bool(row["active"]), "created_at": row["created_at"],
+            "query_type": row["query_type"],
+            "intent_stage": row["intent_stage"],
+            "priority": row["priority"],
+            "reason": row["reason"],
+            "sample_target": row["sample_target"] or 3,
+            "language": row["language"],
+            "status": row["status"] or ("active" if row["active"] else "paused"),
             "updated_at": row["updated_at"],
         }
         for row in rows
@@ -1715,6 +1779,9 @@ def _db_mention_checks(task_id: str | None = None) -> list[dict]:
         {
             **dict(row),
             "brand_mentioned": bool(row["brand_mentioned"]),
+            "cited_our_domain": bool(row["cited_our_domain"]),
+            "competitor_mentions": _json_loads(row["competitor_mentions"], []),
+            "confidence_weight": row["confidence_weight"] if row["confidence_weight"] is not None else 1.0,
         }
         for row in rows
     ]
@@ -2012,6 +2079,227 @@ def _source_map(task_id: str) -> dict:
     }
 
 
+def _query_templates(brand_name: str, page_type: str, market: str, competitors: list[str]) -> list[dict]:
+    competitor = competitors[0] if competitors else "alternatives"
+    templates = [
+        ("best", "discover", "P0", f"Best {brand_name} options for {market} travelers", "判断 AI 是否把品牌纳入推荐答案。"),
+        ("compare", "compare", "P0", f"{brand_name} vs {competitor}", "覆盖 PRD 要求的竞品差距与对比决策。"),
+        ("worth", "decide", "P0", f"Is {brand_name} worth it for {market} travelers?", "覆盖价值判断与购买前疑问。"),
+        ("how", "use", "P1", f"How to use {brand_name} after booking?", "覆盖使用流程与政策说明。"),
+        ("buy", "buy", "P0", f"Where to buy {brand_name} online?", "覆盖高意图购买问题。"),
+        ("scenario", "compare", "P1", f"Best {page_type.replace('_', ' ')} for a first-time {market} trip", "覆盖具体场景与行程选择。"),
+        ("risk", "decide", "P1", f"What are the restrictions of {brand_name}?", "覆盖限制、退改和风险问题。"),
+        ("local", "discover", "P2", f"{brand_name} for {market} visitors", "覆盖本地市场表达。"),
+    ]
+    return [
+        {
+            "query_type": query_type,
+            "intent_stage": intent_stage,
+            "priority": priority,
+            "query_text": query_text,
+            "reason": reason,
+        }
+        for query_type, intent_stage, priority, query_text, reason in templates
+    ]
+
+
+def _infer_page_type_from_url(url: str | None) -> str:
+    path = (urlparse(url or "").path or "").lower()
+    if any(token in path for token in ["transport", "pass", "rail", "jr"]):
+        return "transport_ticket"
+    if any(token in path for token in ["things-to-do", "activity", "experience"]):
+        return "local_activity"
+    if any(token in path for token in ["ticket", "attraction"]):
+        return "attraction_ticket"
+    if any(token in path for token in ["guide", "travel", "itinerary"]):
+        return "destination_guide"
+    return "landing_page"
+
+
+def _generate_monitor_queries(task: dict, query_count: int, languages: list[str] | None = None) -> list[dict]:
+    brand = task.get("brand_name") or task.get("title") or "this offer"
+    engines = task.get("target_engines") or ["chatgpt", "perplexity"]
+    market = ((task.get("latest_result") or {}).get("page_summary") or {}).get("market") or "target market"
+    page_type = ((task.get("latest_result") or {}).get("page_summary") or {}).get("product_type") or _infer_page_type_from_url(task.get("url"))
+    competitors = []
+    for query in _db_monitor_queries(task["task_id"]):
+        if query.get("competitor"):
+            competitors.append(query["competitor"])
+    templates = _query_templates(brand, page_type, market, competitors)
+    selected_languages = languages or [((task.get("latest_result") or {}).get("page_summary") or {}).get("language") or "en"]
+    generated: list[dict] = []
+    now = _now_iso()
+    task_id = task["task_id"]
+    with _db() as conn:
+        for engine in engines:
+            for language in selected_languages:
+                for template in templates:
+                    if len(generated) >= max(1, min(query_count, 50)):
+                        break
+                    query_text = template["query_text"]
+                    query_id = f"query_{hashlib.sha256(f'{task_id}:{engine}:{language}:{query_text}'.encode()).hexdigest()[:12]}"
+                    conn.execute(
+                        """
+                        INSERT INTO monitor_queries (
+                            query_id, task_id, query_text, category, competitor, engine,
+                            active, query_type, intent_stage, priority, reason,
+                            sample_target, language, status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(query_id) DO UPDATE SET
+                            query_type=excluded.query_type,
+                            intent_stage=excluded.intent_stage,
+                            priority=excluded.priority,
+                            reason=excluded.reason,
+                            sample_target=excluded.sample_target,
+                            language=excluded.language,
+                            status=excluded.status,
+                            active=excluded.active,
+                            updated_at=excluded.updated_at
+                        """,
+                        (
+                            query_id,
+                            task_id,
+                            query_text,
+                            template["query_type"],
+                            None,
+                            engine,
+                            template["query_type"],
+                            template["intent_stage"],
+                            template["priority"],
+                            template["reason"],
+                            3,
+                            language,
+                            "active",
+                            now,
+                            now,
+                        ),
+                    )
+                    generated.append(query_id)
+    all_queries = _db_monitor_queries(task["task_id"])
+    return [item for item in all_queries if item["query_id"] in set(generated)]
+
+
+def _domain_from_url(value: str) -> str | None:
+    parsed = urlparse(value.strip())
+    if parsed.hostname:
+        return parsed.hostname.lower()
+    return None
+
+
+def _infer_source_type(domain: str, url: str | None = None) -> str:
+    text = f"{domain} {url or ''}".lower()
+    if any(token in text for token in ["reddit", "quora", "forum", "community"]):
+        return "forum"
+    if any(token in text for token in ["news", "media", "magazine", "blog"]):
+        return "media" if "blog" not in text else "blog"
+    if any(token in text for token in ["support", "help", "official"]):
+        return "official"
+    if any(token in text for token in ["product", "ticket", "pass", "tour"]):
+        return "product"
+    if any(token in text for token in ["guide", "itinerary", "things-to-do"]):
+        return "guide"
+    return "unknown"
+
+
+def _parse_ai_sources(request: GEOSourceParseRequest, query: dict, task: dict) -> dict:
+    answer = request.answer_text or ""
+    sources_text = request.sources_text or ""
+    brand_terms = [term.lower() for term in (request.brand_terms or []) if term.strip()]
+    if task.get("brand_name"):
+        brand_terms.append(task["brand_name"].lower())
+    if task.get("url"):
+        hostname = urlparse(task["url"]).hostname
+        if hostname:
+            brand_terms.append(hostname.lower())
+    brand_terms = list(dict.fromkeys(brand_terms))
+    competitors = [item for item in (request.competitors or []) if item.strip()]
+    answer_lower = answer.lower()
+    brand_mentioned = any(term and term in answer_lower for term in brand_terms)
+    competitor_mentions = [item for item in competitors if item.lower() in answer_lower]
+
+    urls = re.findall(r"""https?://[^\s\]\)>"']+""", sources_text + "\n" + answer)
+    domains_seen: dict[str, dict] = {}
+    for url in urls:
+        cleaned = url.rstrip(".,;，。)")
+        domain = _domain_from_url(cleaned)
+        if not domain:
+            continue
+        item = domains_seen.setdefault(
+            domain,
+            {"domain": domain, "url": cleaned, "count": 0, "page_type": _infer_source_type(domain, cleaned)},
+        )
+        item["count"] += 1
+    for raw_line in sources_text.splitlines():
+        line = raw_line.strip()
+        if not line or "http" in line:
+            continue
+        domain_match = re.search(r"([a-z0-9-]+(?:\.[a-z0-9-]+)+)", line.lower())
+        if domain_match:
+            domain = domain_match.group(1)
+            item = domains_seen.setdefault(
+                domain,
+                {"domain": domain, "url": None, "count": 0, "page_type": _infer_source_type(domain)},
+            )
+            item["count"] += 1
+
+    now = _now_iso()
+    observations = []
+    with _db() as conn:
+        for source in domains_seen.values():
+            observation = {
+                "observation_id": f"source_{uuid.uuid4().hex[:12]}",
+                "task_id": request.task_id,
+                "query_id": request.query_id,
+                "source_domain": source["domain"],
+                "source_url": source["url"],
+                "page_type": source["page_type"],
+                "citation_count": max(1, source["count"]),
+                "notes": f"Parsed from {request.platform} answer.",
+                "observed_at": now,
+            }
+            conn.execute(
+                """INSERT INTO source_observations (
+                    observation_id, task_id, query_id, source_domain, source_url, page_type,
+                    citation_count, notes, observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                tuple(observation.values()),
+            )
+            observations.append(observation)
+
+    own_host = urlparse(task.get("url") or "").hostname or ""
+    cited_our_domain = any(own_host and own_host.lower() in item["source_domain"] for item in observations)
+    mention_position = None
+    if brand_mentioned:
+        first_index = min(
+            [answer_lower.find(term) for term in brand_terms if term and answer_lower.find(term) >= 0],
+            default=0,
+        )
+        mention_position = max(1, answer[:first_index].count("\n") + 1)
+    check = GEOMentionCheckRequest(
+        task_id=request.task_id,
+        query_id=request.query_id,
+        engine=request.platform,
+        brand_mentioned=brand_mentioned,
+        mention_position=mention_position,
+        source_type="official" if cited_our_domain else (observations[0]["page_type"] if observations else None),
+        source_url=observations[0]["source_url"] if observations else None,
+        answer_excerpt=answer[:1000],
+        notes="Parsed from pasted AI answer and sources.",
+        cited_our_domain=cited_our_domain,
+        competitor_mentions=competitor_mentions,
+        confidence_weight=1.0 if observations else 0.6,
+    )
+    return {
+        "check": geo_mention_check_save(check),
+        "source_observations": observations,
+        "parsed": {
+            "brand_terms": brand_terms,
+            "competitor_mentions": competitor_mentions,
+            "source_count": len(observations),
+        },
+    }
+
+
 def _monitoring_summary(task_id: str) -> dict:
     queries = _db_monitor_queries(task_id)
     checks = _db_mention_checks(task_id)
@@ -2019,8 +2307,12 @@ def _monitoring_summary(task_id: str) -> dict:
     positions = [int(item["mention_position"]) for item in mentioned if item.get("mention_position")]
     source_counts: dict[str, int] = {}
     platform_counts: dict[str, dict] = {}
+    cited_own = [item for item in checks if item.get("cited_our_domain")]
+    competitor_counter: dict[str, int] = {}
     weekly: dict[str, dict] = {}
     for item in checks:
+        for competitor in item.get("competitor_mentions") or []:
+            competitor_counter[competitor] = competitor_counter.get(competitor, 0) + 1
         platform = platform_counts.setdefault(
             item["engine"],
             {"engine": item["engine"], "checks": 0, "mentions": 0, "positions": []},
@@ -2050,6 +2342,16 @@ def _monitoring_summary(task_id: str) -> dict:
                 "average_position": round(sum(item["positions"]) / len(item["positions"]), 1) if item["positions"] else None,
             }
         )
+    sample_target = sum(max(1, int(item.get("sample_target") or 3)) for item in queries if item["active"])
+    coverage = round(len(checks) * 100 / sample_target) if sample_target else 0
+    if len(checks) >= sample_target and len(checks) >= 9:
+        confidence_level = "high"
+    elif len(checks) >= max(3, sample_target // 2):
+        confidence_level = "medium"
+    elif checks:
+        confidence_level = "low"
+    else:
+        confidence_level = "none"
     return {
         "task_id": task_id,
         "query_count": len(queries),
@@ -2058,7 +2360,19 @@ def _monitoring_summary(task_id: str) -> dict:
         "check_count": len(checks),
         "mention_count": len(mentioned),
         "mention_rate": round(len(mentioned) * 100 / len(checks)) if checks else 0,
+        "citation_rate": round(len(cited_own) * 100 / len(checks)) if checks else 0,
         "average_position": round(sum(positions) / len(positions), 1) if positions else None,
+        "sampling": {
+            "sample_target": sample_target,
+            "sample_count": len(checks),
+            "coverage_percent": coverage,
+            "confidence_level": confidence_level,
+            "warning": "样本不足，周报只能作为方向参考。" if confidence_level in {"none", "low"} else None,
+        },
+        "competitor_gap": [
+            {"competitor": key, "mentions": value}
+            for key, value in sorted(competitor_counter.items(), key=lambda item: (-item[1], item[0]))
+        ],
         "source_distribution": [
             {"source_type": key, "checks": value}
             for key, value in sorted(source_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -2084,8 +2398,9 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
     latest_retest = retests[0] if retests else task.get("latest_retest") or {}
     delta = int(latest_retest.get("score_delta") or 0)
     findings = [
-        f"AI 平台品牌提及率 {monitoring['mention_rate']}%，累计监测 {monitoring['check_count']} 次。",
-        f"已确认线索 {len(confirmed_attributions)} 条，归因收入 {total_revenue:.2f}。",
+            f"AI 平台品牌提及率 {monitoring['mention_rate']}%，累计监测 {monitoring['check_count']} 次。",
+            f"官网引用率 {monitoring['citation_rate']}%，采样可信度 {monitoring['sampling']['confidence_level']}。",
+            f"已确认线索 {len(confirmed_attributions)} 条，归因收入 {total_revenue:.2f}。",
         f"内容实验完结 {len(won_experiments)} 个，当前 GEO 分数变化 {delta:+d}。",
     ]
     next_actions = [
@@ -2103,6 +2418,9 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
             "mention_rate": monitoring["mention_rate"],
             "mention_count": monitoring["mention_count"],
             "check_count": monitoring["check_count"],
+            "citation_rate": monitoring["citation_rate"],
+            "confidence_level": monitoring["sampling"]["confidence_level"],
+            "sample_target": monitoring["sampling"]["sample_target"],
             "confirmed_leads": len(confirmed_attributions),
             "attributed_revenue": total_revenue,
             "won_experiments": len(won_experiments),
@@ -3783,6 +4101,27 @@ def geo_monitor_queries(task_id: str | None = None):
     return {"items": _db_monitor_queries(task_id)}
 
 
+@app.post("/geo/monitoring/queries/generate")
+def geo_monitor_queries_generate(request: GEOQueryGenerateRequest):
+    task = _db_get_task(request.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    queries = _generate_monitor_queries(
+        task,
+        request.query_count,
+        request.languages,
+    )
+    _db_add_audit(
+        _current_actor(),
+        "generate_queries",
+        "task",
+        request.task_id,
+        request.task_id,
+        detail={"count": len(queries), "languages": request.languages or []},
+    )
+    return {"items": queries, "count": len(queries)}
+
+
 @app.post("/geo/monitoring/queries")
 def geo_monitor_query_save(request: GEOMonitorQueryRequest):
     if not _db_get_task(request.task_id):
@@ -3797,16 +4136,31 @@ def geo_monitor_query_save(request: GEOMonitorQueryRequest):
         conn.execute(
             """
             INSERT INTO monitor_queries (
-                query_id, task_id, query_text, category, competitor, engine, active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                query_id, task_id, query_text, category, competitor, engine,
+                active, query_type, intent_stage, priority, reason, sample_target,
+                language, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(query_id) DO UPDATE SET
                 category=excluded.category, competitor=excluded.competitor,
-                engine=excluded.engine, active=excluded.active, updated_at=excluded.updated_at
+                engine=excluded.engine, active=excluded.active,
+                query_type=excluded.query_type,
+                intent_stage=excluded.intent_stage,
+                priority=excluded.priority,
+                reason=excluded.reason,
+                sample_target=excluded.sample_target,
+                language=excluded.language,
+                status=excluded.status,
+                updated_at=excluded.updated_at
             """,
             (
                 query_id, request.task_id, query_text, request.category.strip() or "comparison",
                 (request.competitor or "").strip() or None, request.engine.strip() or "perplexity",
-                int(request.active), existing["created_at"] if existing else now, now,
+                int(request.active), request.query_type or request.category.strip() or "comparison",
+                request.intent_stage or "compare", request.priority or "P1",
+                (request.reason or "").strip() or None,
+                max(1, min(request.sample_target, 30)), request.language,
+                request.status.strip() or ("active" if request.active else "paused"),
+                existing["created_at"] if existing else now, now,
             ),
         )
     _db_add_audit(_current_actor(), "save_monitor_query", "monitor_query", query_id, request.task_id)
@@ -3842,6 +4196,28 @@ def geo_source_observation_save(request: GEOSourceObservationRequest):
         )
     _db_add_audit(_current_actor(), "save_source_observation", "source_observation", observation["observation_id"], request.task_id)
     return observation
+
+
+@app.post("/geo/monitoring/sources/parse")
+def geo_source_answer_parse(request: GEOSourceParseRequest):
+    task = _db_get_task(request.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    query = next((item for item in _db_monitor_queries(request.task_id) if item["query_id"] == request.query_id), None)
+    if not query:
+        raise HTTPException(status_code=404, detail="Monitoring query not found.")
+    if not request.answer_text.strip() and not request.sources_text.strip():
+        raise HTTPException(status_code=400, detail="Answer text or sources text is required.")
+    parsed = _parse_ai_sources(request, query, task)
+    _db_add_audit(
+        _current_actor(),
+        "parse_ai_sources",
+        "monitor_query",
+        request.query_id,
+        request.task_id,
+        detail={"platform": request.platform, "source_count": len(parsed["source_observations"])},
+    )
+    return parsed
 
 
 @app.get("/geo/monitoring/source-map")
@@ -3910,23 +4286,34 @@ def geo_mention_check_save(request: GEOMentionCheckRequest):
         "source_url": (request.source_url or "").strip() or None,
         "answer_excerpt": (request.answer_excerpt or "").strip()[:1000] or None,
         "notes": (request.notes or "").strip() or None,
+        "cited_our_domain": bool(request.cited_our_domain),
+        "competitor_mentions": [item.strip() for item in (request.competitor_mentions or []) if item.strip()],
+        "confidence_weight": max(0.1, min(float(request.confidence_weight or 1), 1.0)),
         "checked_at": _now_iso(),
     }
     with _db() as conn:
         conn.execute(
             """INSERT INTO mention_checks (
                 check_id, task_id, query_id, engine, brand_mentioned, mention_position,
-                source_type, source_url, answer_excerpt, notes, checked_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                source_type, source_url, answer_excerpt, notes, cited_our_domain,
+                competitor_mentions, confidence_weight, checked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 check["check_id"], check["task_id"], check["query_id"], check["engine"],
                 int(check["brand_mentioned"]), check["mention_position"], check["source_type"],
-                check["source_url"], check["answer_excerpt"], check["notes"], check["checked_at"],
+                check["source_url"], check["answer_excerpt"], check["notes"],
+                int(check["cited_our_domain"]), _json_dumps(check["competitor_mentions"]),
+                check["confidence_weight"], check["checked_at"],
             ),
         )
     _db_add_audit(
         _current_actor(), "save_mention_check", "mention_check", check["check_id"], request.task_id,
-        detail={"mentioned": check["brand_mentioned"], "position": check["mention_position"]},
+        detail={
+            "mentioned": check["brand_mentioned"],
+            "position": check["mention_position"],
+            "cited_our_domain": check["cited_our_domain"],
+            "competitors": check["competitor_mentions"],
+        },
     )
     return check
 

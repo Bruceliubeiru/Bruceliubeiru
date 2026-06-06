@@ -687,6 +687,62 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertIn("不伪装用户", anchor["guidance"])
         self.assertEqual("planned", anchor["status"])
 
+    def test_query_generator_creates_prd_intent_pool(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="JR Pass",
+                target_engines=["chatgpt"],
+            )
+        )
+        generated = main.geo_monitor_queries_generate(
+            main.GEOQueryGenerateRequest(task_id=result["task_id"], query_count=8, languages=["en"])
+        )
+        query_types = {item["query_type"] for item in generated["items"]}
+        priorities = {item["priority"] for item in generated["items"]}
+
+        self.assertEqual(8, generated["count"])
+        self.assertIn("best", query_types)
+        self.assertIn("compare", query_types)
+        self.assertIn("worth", query_types)
+        self.assertIn("P0", priorities)
+        self.assertTrue(all(item["sample_target"] == 3 for item in generated["items"]))
+
+    def test_source_parser_records_mentions_sources_citations_and_confidence(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="GEO Growth OS",
+                target_engines=["perplexity"],
+            )
+        )
+        generated = main.geo_monitor_queries_generate(
+            main.GEOQueryGenerateRequest(task_id=result["task_id"], query_count=2, languages=["en"])
+        )
+        query_id = generated["items"][0]["query_id"]
+        parsed = main.geo_source_answer_parse(
+            main.GEOSourceParseRequest(
+                task_id=result["task_id"],
+                query_id=query_id,
+                platform="perplexity",
+                answer_text=(
+                    "GEO Growth OS is a useful option. CompetitorX is also mentioned.\n"
+                    "Sources: https://example.com/geo and https://media.example/guide"
+                ),
+                sources_text="https://example.com/geo\nhttps://media.example/guide",
+                competitors=["CompetitorX"],
+            )
+        )
+        summary = main.geo_monitoring_summary(result["task_id"])
+
+        self.assertTrue(parsed["check"]["brand_mentioned"])
+        self.assertTrue(parsed["check"]["cited_our_domain"])
+        self.assertEqual(["CompetitorX"], parsed["check"]["competitor_mentions"])
+        self.assertGreaterEqual(len(parsed["source_observations"]), 2)
+        self.assertEqual(100, summary["citation_rate"])
+        self.assertEqual("low", summary["sampling"]["confidence_level"])
+        self.assertEqual(1, summary["competitor_gap"][0]["mentions"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (

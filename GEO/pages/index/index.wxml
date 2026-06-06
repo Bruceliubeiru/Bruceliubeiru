@@ -196,9 +196,11 @@
       </view>
       <view class="visibility-grid">
         <view class="visibility-metric"><text class="visibility-value">{{monitoring.mention_rate || 0}}%</text><text class="visibility-label">品牌提及率</text></view>
+        <view class="visibility-metric"><text class="visibility-value">{{monitoring.citation_rate || 0}}%</text><text class="visibility-label">官网引用率</text></view>
         <view class="visibility-metric"><text class="visibility-value">{{monitoring.average_position || '-'}}</text><text class="visibility-label">平均推荐位</text></view>
-        <view class="visibility-metric"><text class="visibility-value">{{monitoring.source_map.citation_total || 0}}</text><text class="visibility-label">信源引用</text></view>
+        <view class="visibility-metric"><text class="visibility-value">{{monitoring.sampling.confidence_level || 'none'}}</text><text class="visibility-label">采样可信度</text></view>
       </view>
+      <view wx:if="{{monitoring.sampling.warning}}" class="status-note">{{monitoring.sampling.warning}} 当前 {{monitoring.sampling.sample_count || 0}}/{{monitoring.sampling.sample_target || 0}} 样本。</view>
       <view class="engine-strip">
         <view class="engine-pill" wx:for="{{project.target_engines}}" wx:key="*this">{{item}}</view>
       </view>

@@ -176,17 +176,38 @@
       </view>
     </view>
 
-    <scroll-view class="workflow-rail" scroll-x>
-      <view class="workflow-row">
-        <view class="workflow-step {{stage.status}}" wx:for="{{workflow.stages}}" wx:key="key" wx:for-item="stage">
-          <view class="workflow-dot"></view>
-          <text class="workflow-name">{{stage.name}}</text>
-          <text class="workflow-status">{{stage.status}}</text>
+    <view class="surface loop-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">NEXT ACTION</text>
+          <text class="section-title">按顺序完成 GEO 闭环</text>
         </view>
+        <text class="section-tag">{{stepPanel.phase}}</text>
       </view>
-    </scroll-view>
+      <view class="loop-steps">
+        <button class="loop-step {{step.status}}" wx:for="{{loopSteps}}" wx:key="key" wx:for-item="step" data-step="{{step.targetStep}}" bindtap="switchStep">
+          <text class="loop-index">{{index + 1}}</text>
+          <text class="loop-name">{{step.name}}</text>
+          <text class="loop-hint">{{step.hint}}</text>
+        </button>
+      </view>
+      <view class="active-step-panel loop-panel">
+        <text class="active-step-title">{{stepPanel.title}}</text>
+        <text class="active-step-detail">{{stepPanel.detail}}</text>
+        <view class="check-list">
+          <view class="check-row" wx:for="{{stepPanel.items}}" wx:key="*this" wx:for-item="todo">
+            <view class="check-mark">✓</view>
+            <text class="check-copy">{{todo}}</text>
+          </view>
+        </view>
+        <text class="step-note">{{stepPanel.note}}</text>
+        <button class="primary-action compact" loading="{{improving && activeStep === 'produce'}}" disabled="{{improving}}" bindtap="runStepAction">
+          {{improving && activeStep === 'produce' ? '正在生成' : stepPanel.action}}
+        </button>
+      </view>
+    </view>
 
-    <view wx:if="{{monitoring}}" class="surface visibility-surface">
+    <view wx:if="{{monitoring && activeStep === 'sample'}}" class="surface visibility-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">AI VISIBILITY</text>
@@ -212,7 +233,7 @@
       <view wx:else class="status-note">下一步：每周在目标 AI 平台记录品牌是否出现、推荐位置和引用来源，建立可量化增长基线。</view>
     </view>
 
-    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+    <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'sample'}}" class="surface compact-surface sampling-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">SAMPLING TRACKER</text>
@@ -257,7 +278,7 @@
       </view>
     </view>
 
-    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+    <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'report'}}" class="surface compact-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">EXPERIMENTS</text>
@@ -278,7 +299,7 @@
       </view>
     </view>
 
-    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+    <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'report'}}" class="surface compact-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">ATTRIBUTION</text>
@@ -297,7 +318,7 @@
       </view>
     </view>
 
-    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+    <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'report'}}" class="surface compact-surface report-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">REPORTING</text>
@@ -348,7 +369,7 @@
       </view>
     </view>
 
-    <view class="surface execution-surface">
+    <view wx:if="{{false}}" class="surface execution-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">ACTION PLAN</text>

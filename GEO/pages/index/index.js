@@ -227,26 +227,50 @@ function buildNextSteps(result) {
     {
       key: "advise",
       phase: "第 1 步",
-      title: "给出优化建议",
-      detail: `优先处理 ${focus}，先把页面改到能被 AI 准确引用。`,
+      title: "诊断依据",
+      detail: `优先处理 ${focus}，先确认页面为什么不容易被 AI 准确引用。`,
       output: "页面修改清单",
       action: "复制建议"
     },
     {
       key: "produce",
       phase: "第 2 步",
-      title: "生成注入内容",
+      title: "生成内容包",
       detail: "生成 Hero、AI Summary、Who Should Buy、How to Use、FAQ 和 Schema 草稿。",
       output: "可注入模块文案",
-      action: "查看注入"
+      action: "生成改进"
     },
     {
       key: "export",
       phase: "第 3 步",
-      title: "导出并复测",
-      detail: "把内容包交给运营或开发审核上线，再用同一 URL 复测分数变化。",
-      output: "JSON / Markdown / 复测任务",
+      title: "审核发布",
+      detail: "保存版本、人工审核、创建发布预览，确认上线后再校验页面。",
+      output: "版本 / 发布记录",
       action: "复制内容包"
+    },
+    {
+      key: "index",
+      phase: "第 4 步",
+      title: "收录推进",
+      detail: "把飞书文章或内容包发布到公开 URL，提交 sitemap、站内入口和 llms.txt。",
+      output: "公开 URL / 收录清单",
+      action: "去文章 Agent"
+    },
+    {
+      key: "sample",
+      phase: "第 5 步",
+      title: "AI 采样",
+      detail: "用目标 Query 到 ChatGPT、豆包、DeepSeek、Perplexity 等平台采样，记录 Mention、Citation 和 Sources。",
+      output: "采样记录 / 信源地图",
+      action: "生成 Query"
+    },
+    {
+      key: "report",
+      phase: "第 6 步",
+      title: "复测报告",
+      detail: "上线后复测同一 URL，并生成周报沉淀提及率、引用率、分数变化和下一轮动作。",
+      output: "复测结果 / 周报",
+      action: "生成报告"
     }
   ]
 }
@@ -285,6 +309,30 @@ function buildStepPanel(result, activeStep) {
           : workflow.injection_payload
             ? "已生成 CMS 字段映射，请先保存版本并审核通过。"
             : "建议上线后目标提升 10 分以上，弱项至少提升一档。")
+    }
+  }
+
+  if (step.key === "index") {
+    return {
+      ...step,
+      items: ["创建飞书文章草稿", "发布到可抓取公开页面", "填写公开 URL 并提交收录", "记录收录状态后进入 AI 采样"],
+      note: "飞书适合协作，不等于公开收录。必须有官网、博客、帮助中心或专题页 URL 才能进入稳定收录。"
+    }
+  }
+
+  if (step.key === "sample") {
+    return {
+      ...step,
+      items: ["生成或补齐监测 Query", "选择 AI 平台并粘贴回答正文", "粘贴 Sources 链接", "解析后刷新 Mention / Citation"],
+      note: "建议每个平台每周至少采 3 条核心 Query，样本不足时只能作为方向参考。"
+    }
+  }
+
+  if (step.key === "report") {
+    return {
+      ...step,
+      items: ["立即复测同一 URL", "记录 AI 平台采样", "登记线索或转化证据", "生成并确认效果报告"],
+      note: "闭环完成的标准不是页面写完，而是能看到分数、收录、Mention、Citation 或线索归因的变化。"
     }
   }
 
@@ -392,6 +440,20 @@ function normalizeAnalyzeError(error) {
   return message
 }
 
+function buildLoopSteps(data) {
+  const monitoring = data.monitoring || {}
+  const sampling = monitoring.sampling || {}
+  const publication = data.selectedPublication || {}
+  return [
+    { key: "diagnose", targetStep: "advise", name: "诊断", status: data.result && data.result.task_id ? "done" : "todo", hint: "已得到 GEO 分数和弱项" },
+    { key: "produce", targetStep: "produce", name: "生成", status: data.version ? "done" : "current", hint: data.version ? "已有版本草稿" : "保存改进版本" },
+    { key: "review", targetStep: "export", name: "审核", status: data.version && data.version.status === "approved" ? "done" : (data.version ? "current" : "todo"), hint: "人工确认可上线内容" },
+    { key: "publish", targetStep: "export", name: "发布", status: publication.live_status === "verified_live" ? "done" : (data.selectedPublication ? "current" : "todo"), hint: "创建预览并完成上线校验" },
+    { key: "sample", targetStep: "sample", name: "采样", status: sampling.sample_count > 0 ? "done" : "todo", hint: `${sampling.sample_count || 0}/${sampling.sample_target || 0} 样本` },
+    { key: "report", targetStep: "report", name: "报告", status: data.reports && data.reports.length ? "done" : "todo", hint: "复测与周报确认" }
+  ]
+}
+
 Page({
   data: {
     hasAnalyzed: false,
@@ -419,6 +481,7 @@ Page({
     activeStep: "advise",
     stepPanel: buildStepPanel(defaultResult, "advise"),
     workflow: defaultWorkflow,
+    loopSteps: buildLoopSteps({ result: defaultResult, workflow: defaultWorkflow, reports: [] }),
     version: null,
     injection: null,
     retest: null,
@@ -696,6 +759,10 @@ Page({
     })
   },
 
+  refreshLoopSteps(extra = {}) {
+    this.setData({ loopSteps: buildLoopSteps({ ...this.data, ...extra }) })
+  },
+
   async runAudit() {
     const { mode, url, content, pageTypeIndex, languageIndex, marketIndex } = this.data
     const value = mode === "url" ? url.trim() : content.trim()
@@ -766,6 +833,16 @@ Page({
         nextSteps: buildNextSteps(normalized),
         stepPanel: buildStepPanel(normalized, this.data.activeStep),
         workflow: normalized.workflow,
+        loopSteps: buildLoopSteps({
+          result: normalized,
+          workflow: normalized.workflow,
+          version: null,
+          selectedPublication: null,
+          monitoring: mode === "url" ? {
+            sampling: { sample_target: this.data.selectedEngines.length * 9, sample_count: 0 }
+          } : null,
+          reports: []
+        }),
         version: null,
         injection: null,
         retest: null,
@@ -846,6 +923,7 @@ Page({
       reports: [],
       monitoringQueries: [],
       monitoringQueryIndex: 0,
+      loopSteps: buildLoopSteps({ result: defaultResult, workflow: defaultWorkflow, reports: [] }),
       aiAnswerText: "",
       aiSourcesText: "",
       sourceParseResult: null,
@@ -911,7 +989,22 @@ Page({
     }
 
     if (activeStep === "export") {
-      this.copyJson()
+      wx.pageScrollTo({ selector: ".package-surface", duration: 250 })
+      return
+    }
+
+    if (activeStep === "index") {
+      wx.switchTab({ url: "/pages/analysis/analysis" })
+      return
+    }
+
+    if (activeStep === "sample") {
+      wx.pageScrollTo({ selector: ".sampling-surface", duration: 250 })
+      return
+    }
+
+    if (activeStep === "report") {
+      wx.pageScrollTo({ selector: ".report-surface", duration: 250 })
       return
     }
 
@@ -1021,6 +1114,7 @@ Page({
           next_action: version.quality_report && version.quality_report.status === "blocked" ? "修复内容质量问题" : "人工审核版本"
         },
         stepPanel: buildStepPanel(result, this.data.activeStep),
+        loopSteps: buildLoopSteps({ ...this.data, result, version, workflow: result.workflow }),
         savingVersion: false
       })
       wx.showToast({ title: "版本已保存", icon: "success" })
@@ -1056,6 +1150,7 @@ Page({
         workflow: result.workflow,
         project: { ...(this.data.project || {}), current_stage: "approved", next_action: "创建发布预览" },
         stepPanel: buildStepPanel(result, "export"),
+        loopSteps: buildLoopSteps({ ...this.data, result, version, workflow: result.workflow }),
         activeStep: "export",
         reviewing: false
       })
@@ -1101,6 +1196,7 @@ Page({
         result,
         retest,
         stepPanel: buildStepPanel(result, "export"),
+        loopSteps: buildLoopSteps({ ...this.data, result, retest }),
         activeStep: "export",
         retesting: false
       })
@@ -1172,6 +1268,7 @@ Page({
         workflow,
         project: { ...(this.data.project || {}), current_stage: "injected", next_action: "安排发布后复测" },
         stepPanel: buildStepPanel(result, "export"),
+        loopSteps: buildLoopSteps({ ...this.data, result, injection, workflow }),
         activeStep: "export",
         injecting: false
       })
@@ -1217,6 +1314,17 @@ Page({
       reports: detail.reports || [],
       monitoringQueries: (detail.monitoring && detail.monitoring.queries) || this.data.monitoringQueries || [],
       ...publicationState,
+      loopSteps: buildLoopSteps({
+        ...this.data,
+        result,
+        workflow: result.workflow,
+        version: latestVersion,
+        injection: latestInjection,
+        retest: latestRetest,
+        selectedPublication: publicationState.selectedPublication,
+        monitoring: detail.monitoring || this.data.monitoring,
+        reports: detail.reports || []
+      }),
       stepPanel: buildStepPanel(result, this.data.activeStep)
     })
   },
@@ -1230,6 +1338,7 @@ Page({
       this.setData({
         monitoring,
         monitoringQueries: monitoring.queries || [],
+        loopSteps: buildLoopSteps({ ...this.data, monitoring }),
         monitoringQueryIndex: Math.min(this.data.monitoringQueryIndex, Math.max((monitoring.queries || []).length - 1, 0))
       })
     } catch (error) {

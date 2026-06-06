@@ -521,6 +521,82 @@
   font-weight: 700;
 }
 
+.loop-surface {
+  border-color: #d5e2df;
+  background: #fbfdfc;
+}
+
+.loop-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10rpx;
+}
+
+.loop-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-height: 116rpx;
+  padding: 14rpx;
+  border: 1rpx solid #e1e6e9;
+  border-radius: 10rpx;
+  background: #ffffff;
+  text-align: left;
+}
+
+.loop-step.done {
+  border-color: #b9d8cf;
+  background: #eef8f5;
+}
+
+.loop-step.current {
+  border-color: #b83d32;
+  background: #fff7f5;
+}
+
+.loop-index {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30rpx;
+  height: 30rpx;
+  border-radius: 50%;
+  background: #edf1f3;
+  color: #68737d;
+  font-size: 17rpx;
+  font-weight: 900;
+}
+
+.loop-step.done .loop-index {
+  background: #2a937d;
+  color: #ffffff;
+}
+
+.loop-step.current .loop-index {
+  background: #b83d32;
+  color: #ffffff;
+}
+
+.loop-name {
+  margin-top: 10rpx;
+  color: #222b32;
+  font-size: 23rpx;
+  font-weight: 900;
+}
+
+.loop-hint {
+  margin-top: 5rpx;
+  color: #7f8992;
+  font-size: 18rpx;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.loop-panel {
+  border-color: #d7e4e0;
+  background: #ffffff;
+}
+
 .section-head {
   gap: 14rpx;
   align-items: flex-start;

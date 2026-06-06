@@ -71,6 +71,41 @@
   </view>
 
   <view class="surface">
+    <view class="section-head">
+      <text class="section-title">官方 / 可审计监测接入</text>
+      <button class="ghost-button" loading="{{bootstrappingActions}}" disabled="{{bootstrappingActions || !selectedTask}}" bindtap="bootstrapActions">生成动作</button>
+    </view>
+    <picker mode="selector" range="{{connectorTypeOptions}}" range-key="label" value="{{connectorTypeIndex}}" bindchange="changeConnectorType">
+      <view class="picker-field">
+        <text class="item-meta">接入类型</text>
+        <text class="item-title">{{connectorTypeOptions[connectorTypeIndex].label}}</text>
+      </view>
+    </picker>
+    <picker mode="selector" range="{{connectorStatusOptions}}" range-key="label" value="{{connectorStatusIndex}}" bindchange="changeConnectorStatus">
+      <view class="picker-field">
+        <text class="item-meta">当前状态</text>
+        <text class="item-title">{{connectorStatusOptions[connectorStatusIndex].label}}</text>
+      </view>
+    </picker>
+    <input class="tab-input" value="{{connectorProviderName}}" placeholder="接入名称，例如 OpenAI Responses API / Perplexity Export" bindinput="onConnectorProviderInput" />
+    <input class="tab-input" value="{{connectorCredentialEnv}}" placeholder="凭证环境变量（可选）" bindinput="onConnectorCredentialInput" />
+    <input class="tab-input" value="{{connectorEvidenceUrl}}" placeholder="审计链接或导出记录（可选）" bindinput="onConnectorEvidenceInput" />
+    <button class="primary-button" loading="{{savingConnector}}" disabled="{{savingConnector || !selectedTask}}" bindtap="saveConnector">保存接入</button>
+    <view class="list-card" wx:for="{{connectors}}" wx:key="connector_id" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.platform}} · {{item.provider_name}}</text>
+        <text class="item-meta">{{item.connector_type}} · {{item.status}} · {{item.verification_method}}</text>
+        <text class="item-meta">{{item.credential_env_var ? (item.credential_configured ? '凭证已配置' : '凭证待配置') : '无需凭证'}}{{item.last_error ? (' · ' + item.last_error) : ''}}</text>
+      </view>
+      <view class="inline-actions">
+        <button class="pill-button" loading="{{updatingConnectorId === item.connector_id}}" disabled="{{updatingConnectorId}}" data-connector-id="{{item.connector_id}}" data-status="connected" bindtap="updateConnector">连通</button>
+        <button class="pill-button warn" loading="{{updatingConnectorId === item.connector_id}}" disabled="{{updatingConnectorId}}" data-connector-id="{{item.connector_id}}" data-status="failed" bindtap="updateConnector">失败</button>
+      </view>
+    </view>
+    <text wx:if="{{!connectors.length && !loading}}" class="empty">暂无监测接入，建议先录入官方 API、官方导出或人工审计方案。</text>
+  </view>
+
+  <view class="surface">
     <text class="section-title">AI 平台采样</text>
     <view class="list-card" wx:for="{{mentionChecks}}" wx:key="check_id" wx:for-item="check">
       <view>
@@ -90,5 +125,37 @@
         <text class="item-meta">{{source.page_type}} · 引用 {{source.citation_count}} 次</text>
       </view>
     </view>
+  </view>
+
+  <view class="surface" wx:if="{{sourceMap}}">
+    <view class="section-head">
+      <text class="section-title">信源地图动作</text>
+      <text class="status">{{gapActions.length}} 个</text>
+    </view>
+    <view class="metric-grid mini">
+      <view class="metric"><text class="metric-value">{{sourceMap.observation_count}}</text><text class="metric-label">观察</text></view>
+      <view class="metric"><text class="metric-value">{{sourceMap.citation_total}}</text><text class="metric-label">引用</text></view>
+      <view class="metric"><text class="metric-value">{{(sourceMap.recommendations || []).length}}</text><text class="metric-label">建议</text></view>
+      <view class="metric"><text class="metric-value">{{gapActions.length}}</text><text class="metric-label">动作</text></view>
+    </view>
+    <view class="list-card" wx:for="{{sourceMap.recommendations}}" wx:key="title" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.title}}</text>
+        <text class="item-meta">{{item.page_type}} · 引用 {{item.citations}} 次</text>
+        <text class="item-meta">{{item.action}}</text>
+      </view>
+    </view>
+    <view class="list-card" wx:for="{{gapActions}}" wx:key="action_id" wx:for-item="action">
+      <view>
+        <text class="item-title">{{action.title}}</text>
+        <text class="item-meta">{{action.priority}} · {{action.status}} · {{action.source}}</text>
+        <text wx:if="{{action.notes}}" class="item-meta">{{action.notes}}</text>
+      </view>
+      <view class="inline-actions">
+        <button class="pill-button" loading="{{updatingConnectorId === action.action_id}}" disabled="{{updatingConnectorId}}" data-action-id="{{action.action_id}}" data-status="in_progress" bindtap="updateAction">推进</button>
+        <button class="pill-button" loading="{{updatingConnectorId === action.action_id}}" disabled="{{updatingConnectorId}}" data-action-id="{{action.action_id}}" data-status="done" bindtap="updateAction">完成</button>
+      </view>
+    </view>
+    <text wx:if="{{!gapActions.length && !loading}}" class="empty">先点击“生成动作”，把信源建议落成可追踪执行项。</text>
   </view>
 </view>

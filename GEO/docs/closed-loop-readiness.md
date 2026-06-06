@@ -50,6 +50,9 @@ URL analysis
 | Content experiments | Mini-program and admin can register hypotheses, A/B content variants, confirm winning structures, and persist outcomes |
 | Lead attribution | Operators can store attributable leads, evidence links, revenue, and confirmation state per project |
 | Effect reporting | Projects can generate and confirm persistent GEO effect reports from monitoring, experiments, retests, and attributable revenue |
+| Auditable monitoring connectors | Projects can register official API, official export, or human-audited monitoring connectors per AI platform and track connectivity, credentials, evidence, and failures |
+| Source-map action workflow | High-frequency source observations can be converted into persistent gap actions with accepted/in-progress/done/rollback states |
+| Package delivery tracking | Bound service packages expose checklist-level delivery progress, pending hints, and action completion in the mini-program and project detail |
 
 ## External Client Delivery Standard
 
@@ -76,9 +79,9 @@ the monitoring endpoints instead of relying on unreviewable scraping.
 | P0 | White-hat external trust anchor | Implemented; default guidance blocks impersonation and fabricated experience. |
 | P0 | Content quality guardrail and human review | Implemented; blocks unsupported claims and invalid Schema before approval/publish. |
 | P1 | Page type template library for travel verticals | Partially implemented through page-type inference and generic content generation; next step is dedicated JR Pass, attraction ticket, local activity, destination guide, and campaign templates. |
-| P1 | Compliant semi-automated platform collection | Not yet connected to OpenAI Web Search, Perplexity Sonar, or Gemini Grounding credentials; manual parser is the MVP-safe path. |
+| P1 | Compliant semi-automated platform collection | Connector registry is implemented for official API / export / audited manual paths; real provider credentials and calling jobs still need production secrets and per-platform adapters. |
 | P1 | Feishu task/table export | Not yet implemented; JSON export and CMS webhook exist. |
-| P1 | Action workflow with accepted/in-progress/done/rollback for individual gap actions | Partially covered by experiments, versions, reviews, publications, and retests; dedicated `page_gap_action` table remains. |
+| P1 | Action workflow with accepted/in-progress/done/rollback for individual gap actions | Implemented through persistent `page_gap_actions`, source-map bootstrapping, and mini-program execution tracking. |
 | P2 | Word report export for management | Not yet implemented; persistent effect report data exists and can be exported later. |
 | P2 | Analytics/BI integration for traffic, GMV, conversion, AOV | Not yet connected; lead attribution and revenue evidence are available as manual input. |
 

@@ -2,9 +2,28 @@ const {
   getHistory,
   generateMonitoringQueries,
   parseMonitoringSources,
-  getMonitoringSummary
+  getMonitoringSummary,
+  getSourceMap,
+  getMonitoringConnectors,
+  saveMonitoringConnector,
+  updateMonitoringConnector,
+  getGapActions,
+  bootstrapGapActions,
+  updateGapAction
 } = require("../../utils/api")
 const { aiPlatformOptions } = require("../../utils/platforms")
+
+const connectorTypeOptions = [
+  { label: "官方 API", value: "official_api" },
+  { label: "官方导出", value: "manual_export" },
+  { label: "人工审计", value: "manual_audit" }
+]
+
+const connectorStatusOptions = [
+  { label: "规划中", value: "planned" },
+  { label: "已连通", value: "connected" },
+  { label: "失败待修复", value: "failed" }
+]
 
 function summarize(history) {
   const checks = history.mention_checks || []
@@ -30,10 +49,23 @@ Page({
     selectedTaskIndex: 0,
     selectedTask: null,
     monitoring: null,
+    sourceMap: null,
     monitoringQueries: [],
     monitoringQueryIndex: 0,
     platformIndex: 0,
     platforms: aiPlatformOptions,
+    connectorTypeOptions,
+    connectorStatusOptions,
+    connectorTypeIndex: 0,
+    connectorStatusIndex: 0,
+    connectorProviderName: "",
+    connectorCredentialEnv: "",
+    connectorEvidenceUrl: "",
+    connectors: [],
+    bootstrappingActions: false,
+    savingConnector: false,
+    updatingConnectorId: "",
+    gapActions: [],
     answerText: "",
     sourcesText: "",
     parseResult: null,
@@ -73,11 +105,19 @@ Page({
 
   async loadMonitoring(taskId) {
     try {
-      const monitoring = await getMonitoringSummary(taskId)
+      const [monitoring, sourceMapResult, connectorResult, actionResult] = await Promise.all([
+        getMonitoringSummary(taskId),
+        getSourceMap(taskId),
+        getMonitoringConnectors(taskId),
+        getGapActions(taskId)
+      ])
       this.setData({
         monitoring,
+        sourceMap: sourceMapResult,
         monitoringQueries: monitoring.queries || [],
-        monitoringQueryIndex: 0
+        monitoringQueryIndex: 0,
+        connectors: connectorResult.items || [],
+        gapActions: actionResult.items || []
       })
     } catch (error) {
       this.setData({ error: error.message || "加载监测详情失败" })
@@ -104,6 +144,26 @@ Page({
 
   changePlatform(event) {
     this.setData({ platformIndex: Number(event.detail.value) })
+  },
+
+  changeConnectorType(event) {
+    this.setData({ connectorTypeIndex: Number(event.detail.value) })
+  },
+
+  changeConnectorStatus(event) {
+    this.setData({ connectorStatusIndex: Number(event.detail.value) })
+  },
+
+  onConnectorProviderInput(event) {
+    this.setData({ connectorProviderName: event.detail.value })
+  },
+
+  onConnectorCredentialInput(event) {
+    this.setData({ connectorCredentialEnv: event.detail.value })
+  },
+
+  onConnectorEvidenceInput(event) {
+    this.setData({ connectorEvidenceUrl: event.detail.value })
   },
 
   onAnswerInput(event) {
@@ -171,6 +231,91 @@ Page({
       wx.showToast({ title: "采样已记录", icon: "success" })
     } catch (error) {
       this.setData({ parsingSources: false, error: error.message || "解析 Sources 失败" })
+    }
+  },
+
+  async saveConnector() {
+    const task = this.data.selectedTask
+    if (!task) {
+      wx.showToast({ title: "请先选择任务", icon: "none" })
+      return
+    }
+    if (!this.data.connectorProviderName.trim()) {
+      wx.showToast({ title: "请输入接入名称", icon: "none" })
+      return
+    }
+    this.setData({ savingConnector: true, error: "" })
+    try {
+      await saveMonitoringConnector({
+        task_id: task.task_id,
+        platform: this.data.platforms[this.data.platformIndex].value,
+        connector_type: this.data.connectorTypeOptions[this.data.connectorTypeIndex].value,
+        provider_name: this.data.connectorProviderName.trim(),
+        status: this.data.connectorStatusOptions[this.data.connectorStatusIndex].value,
+        credential_env_var: this.data.connectorCredentialEnv.trim() || null,
+        evidence_url: this.data.connectorEvidenceUrl.trim() || null
+      })
+      await this.loadMonitoring(task.task_id)
+      this.setData({
+        savingConnector: false,
+        connectorProviderName: "",
+        connectorCredentialEnv: "",
+        connectorEvidenceUrl: ""
+      })
+      wx.showToast({ title: "接入已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingConnector: false, error: error.message || "保存接入失败" })
+    }
+  },
+
+  async bootstrapActions() {
+    const task = this.data.selectedTask
+    if (!task) {
+      wx.showToast({ title: "请先选择任务", icon: "none" })
+      return
+    }
+    this.setData({ bootstrappingActions: true, error: "" })
+    try {
+      await bootstrapGapActions(task.task_id)
+      await this.loadMonitoring(task.task_id)
+      this.setData({ bootstrappingActions: false })
+      wx.showToast({ title: "动作已生成", icon: "success" })
+    } catch (error) {
+      this.setData({ bootstrappingActions: false, error: error.message || "生成动作失败" })
+    }
+  },
+
+  async updateConnector(event) {
+    const connectorId = event.currentTarget.dataset.connectorId
+    const status = event.currentTarget.dataset.status
+    if (!connectorId || !status) return
+    this.setData({ updatingConnectorId: connectorId, error: "" })
+    try {
+      await updateMonitoringConnector(connectorId, { status })
+      if (this.data.selectedTask) {
+        await this.loadMonitoring(this.data.selectedTask.task_id)
+      }
+      this.setData({ updatingConnectorId: "" })
+      wx.showToast({ title: "状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ updatingConnectorId: "", error: error.message || "更新接入失败" })
+    }
+  },
+
+  async updateAction(event) {
+    const actionId = event.currentTarget.dataset.actionId
+    const status = event.currentTarget.dataset.status
+    if (!actionId || !status) return
+    this.setData({ updatingConnectorId: actionId, error: "" })
+    try {
+      await updateGapAction(actionId, { status })
+      if (this.data.selectedTask) {
+        await this.loadMonitoring(this.data.selectedTask.task_id)
+      }
+      this.setData({ updatingConnectorId: "" })
+      wx.showToast({ title: "动作已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ updatingConnectorId: "", error: error.message || "更新动作失败" })
     }
   },
 

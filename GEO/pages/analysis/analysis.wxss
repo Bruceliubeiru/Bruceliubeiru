@@ -1,1 +1,12 @@
 @import "../profile/profile.wxss";
+
+.inline-actions {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+}
+
+.pill-button.warn {
+  background: #fff4ef;
+  color: #b6522e;
+}

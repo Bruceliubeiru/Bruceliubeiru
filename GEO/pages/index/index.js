@@ -775,7 +775,10 @@ Page({
           target_score: 80,
           current_stage: "analyzed",
           next_action: "生成改进内容",
-          effectiveness: "尚未复测"
+          effectiveness: "尚未复测",
+          package_delivery: [],
+          gap_actions: [],
+          action_progress: { total: 0, done: 0, active: 0, blocked: 0, completion_percent: 0 }
         } : null,
         monitoring: mode === "url" ? {
           active_query_count: this.data.selectedEngines.length * 3,
@@ -787,7 +790,9 @@ Page({
           average_position: null,
           sampling: { sample_target: this.data.selectedEngines.length * 9, sample_count: 0, confidence_level: "none", warning: "尚未录入 AI 平台采样。" },
           source_map: { recommendations: [], domains: [], page_types: [] },
-          competitor_gap: []
+          competitor_gap: [],
+          connectors: [],
+          connector_status: { count: 0, connected: 0, failed: 0, planned: 0, auditable: 0 }
         } : null,
         monitoringQueries: [],
         monitoringQueryIndex: 0,

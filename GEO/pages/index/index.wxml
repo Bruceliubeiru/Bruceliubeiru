@@ -439,6 +439,33 @@
             <view class="issue-mark">•</view><text>{{todo}}</text>
           </view>
         </view>
+        <view wx:if="{{project && project.assigned_package}}" class="delivery-config">
+          <text class="delivery-title">服务套餐</text>
+          <view class="status-note">{{project.assigned_package.name}} · {{project.assigned_package.tier}} · {{project.assigned_package.delivery_days}} 天 · ¥{{project.assigned_package.price_cny}}</view>
+          <view wx:if="{{project.package_delivery && project.package_delivery.length}}" class="status-stack">
+            <view class="status-note" wx:for="{{project.package_delivery}}" wx:key="feature" wx:for-item="item">
+              {{item.feature}} · {{item.status}}{{item.next_hint ? (' · ' + item.next_hint) : ''}}
+            </view>
+          </view>
+        </view>
+        <view wx:if="{{project && project.action_progress}}" class="delivery-config">
+          <text class="delivery-title">执行动作</text>
+          <view class="status-note">完成 {{project.action_progress.done}} / {{project.action_progress.total}} · 进行中 {{project.action_progress.active}} · 阻塞 {{project.action_progress.blocked}}</view>
+          <view wx:if="{{project.gap_actions && project.gap_actions.length}}" class="status-stack">
+            <view class="status-note" wx:for="{{project.gap_actions}}" wx:key="action_id" wx:for-item="item">
+              {{item.priority}} · {{item.status}} · {{item.title}}
+            </view>
+          </view>
+        </view>
+        <view wx:if="{{monitoring && monitoring.connector_status}}" class="delivery-config">
+          <text class="delivery-title">监测接入</text>
+          <view class="status-note">接入 {{monitoring.connector_status.count}} 个 · 已连通 {{monitoring.connector_status.connected}} 个 · 失败 {{monitoring.connector_status.failed}} 个</view>
+          <view wx:if="{{monitoring.connectors && monitoring.connectors.length}}" class="status-stack">
+            <view class="status-note" wx:for="{{monitoring.connectors}}" wx:key="connector_id" wx:for-item="item">
+              {{item.platform}} · {{item.provider_name}} · {{item.status}}
+            </view>
+          </view>
+        </view>
         <view class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
           <view class="module-head">
             <text class="module-type">{{module.module_type}}</text>

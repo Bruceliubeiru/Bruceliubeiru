@@ -161,6 +161,34 @@ function getSourceMap(taskId) {
   return request(`/geo/monitoring/source-map?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
 }
 
+function getMonitoringConnectors(taskId) {
+  return request(`/geo/monitoring/connectors?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
+}
+
+function saveMonitoringConnector(payload) {
+  return request("/geo/monitoring/connectors", payload)
+}
+
+function updateMonitoringConnector(connectorId, payload) {
+  return request(`/geo/monitoring/connectors/${connectorId}`, payload, "PATCH")
+}
+
+function getGapActions(taskId) {
+  return request(`/geo/actions?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
+}
+
+function bootstrapGapActions(taskId) {
+  return request(`/geo/actions/bootstrap?task_id=${encodeURIComponent(taskId)}`, {}, "POST")
+}
+
+function saveGapAction(payload) {
+  return request("/geo/actions", payload)
+}
+
+function updateGapAction(actionId, payload) {
+  return request(`/geo/actions/${actionId}`, payload, "PATCH")
+}
+
 module.exports = {
   auditUrl,
   auditContent,
@@ -191,5 +219,12 @@ module.exports = {
   generateMonitoringQueries,
   parseMonitoringSources,
   getMonitoringSummary,
-  getSourceMap
+  getSourceMap,
+  getMonitoringConnectors,
+  saveMonitoringConnector,
+  updateMonitoringConnector,
+  getGapActions,
+  bootstrapGapActions,
+  saveGapAction,
+  updateGapAction
 }

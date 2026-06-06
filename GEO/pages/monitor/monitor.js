@@ -1,7 +1,8 @@
 const {
   getHistory,
   generateReport,
-  confirmReport: confirmReportApi
+  confirmReport: confirmReportApi,
+  getTaskDetail
 } = require("../../utils/api")
 
 function buildStats(history) {
@@ -32,7 +33,8 @@ Page({
     experiments: [],
     attributions: [],
     reports: [],
-    mentionChecks: []
+    mentionChecks: [],
+    selectedProject: null
   },
 
   onShow() {
@@ -56,6 +58,9 @@ Page({
         mentionChecks: (history.mention_checks || []).slice(0, 6),
         loading: false
       })
+      if (selectedTask) {
+        await this.loadProjectDetail(selectedTask.task_id)
+      }
     } catch (error) {
       this.setData({ loading: false, error: error.message || "加载监测数据失败" })
     }
@@ -67,6 +72,18 @@ Page({
       selectedTaskIndex,
       selectedTask: this.data.tasks[selectedTaskIndex] || null
     })
+    if (this.data.tasks[selectedTaskIndex]) {
+      this.loadProjectDetail(this.data.tasks[selectedTaskIndex].task_id)
+    }
+  },
+
+  async loadProjectDetail(taskId) {
+    try {
+      const detail = await getTaskDetail(taskId)
+      this.setData({ selectedProject: detail.project || null })
+    } catch (error) {
+      this.setData({ error: error.message || "加载项目详情失败" })
+    }
   },
 
   onReportPeriodInput(event) {

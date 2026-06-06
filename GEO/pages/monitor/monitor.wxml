@@ -28,6 +28,22 @@
     <input class="tab-input" value="{{reportPeriod}}" placeholder="报告周期，例如 2026-W23 / 近 30 天" bindinput="onReportPeriodInput" />
   </view>
 
+  <view class="surface" wx:if="{{selectedProject}}">
+    <view class="section-head">
+      <text class="section-title">项目闭环状态</text>
+      <text class="status">{{selectedProject.next_action_key}}</text>
+    </view>
+    <text class="item-meta">下一步：{{selectedProject.next_action}} · 成效：{{selectedProject.effectiveness}}</text>
+    <text class="item-meta">动作完成 {{selectedProject.action_progress.done}} / {{selectedProject.action_progress.total}} · 连通接入 {{selectedProject.monitoring.connector_status.connected}} / {{selectedProject.monitoring.connector_status.count}}</text>
+    <view wx:if="{{selectedProject.package_delivery && selectedProject.package_delivery.length}}" class="list-card">
+      <view>
+        <text class="item-title">套餐交付清单</text>
+        <text class="item-meta">{{selectedProject.package_name || '未绑定套餐'}}</text>
+      </view>
+      <text class="status">{{selectedProject.package_delivery.length}} 项</text>
+    </view>
+  </view>
+
   <view class="surface">
     <view class="section-head">
       <text class="section-title">AI 可见度周报</text>
@@ -73,6 +89,8 @@
       <view>
         <text class="item-title">{{report.period_label}}</text>
         <text class="item-meta">{{report.summary}}</text>
+        <text wx:if="{{report.findings && report.findings.length}}" class="item-meta">{{report.findings[0]}}</text>
+        <text wx:if="{{report.next_actions && report.next_actions.length}}" class="item-meta">后续：{{report.next_actions[0]}}</text>
       </view>
       <button wx:if="{{report.status !== 'confirmed'}}" class="pill-button" loading="{{confirmingReportId === report.report_id}}" disabled="{{confirmingReportId}}" data-report-id="{{report.report_id}}" bindtap="confirmReport">确认</button>
       <text wx:else class="status">{{report.status}}</text>

@@ -743,6 +743,88 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("low", summary["sampling"]["confidence_level"])
         self.assertEqual(1, summary["competitor_gap"][0]["mentions"])
 
+    def test_monitor_connector_and_gap_actions_are_persisted_and_bootstrapped(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="GEO Growth OS",
+                target_engines=["chatgpt", "perplexity"],
+            )
+        )
+        connector = main.geo_monitor_connector_save(
+            main.GEOMonitorConnectorRequest(
+                task_id=result["task_id"],
+                platform="chatgpt",
+                connector_type="official_api",
+                provider_name="OpenAI Responses API",
+                status="connected",
+                credential_env_var="OPENAI_API_KEY",
+            )
+        )
+        actions = main.geo_gap_actions_bootstrap(result["task_id"])["items"]
+        updated = main.geo_gap_action_update(
+            actions[0]["action_id"],
+            main.GEOGapActionUpdateRequest(status="done", evidence_url="https://example.com/evidence"),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("connected", connector["status"])
+        self.assertTrue(detail["monitoring"]["connectors"])
+        self.assertEqual(1, detail["project"]["action_progress"]["done"])
+        self.assertTrue(any(item["action_type"] == "connector_setup" for item in actions))
+        self.assertEqual("done", updated["status"])
+
+    def test_effect_report_includes_connector_and_action_metrics(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="GEO Growth OS",
+                target_engines=["chatgpt"],
+            )
+        )
+        query = main.geo_monitor_query_save(
+            main.GEOMonitorQueryRequest(
+                task_id=result["task_id"],
+                query_text="best GEO growth tools",
+                engine="chatgpt",
+            )
+        )
+        main.geo_mention_check_save(
+            main.GEOMentionCheckRequest(
+                task_id=result["task_id"],
+                query_id=query["query_id"],
+                engine="chatgpt",
+                brand_mentioned=True,
+                mention_position=1,
+                cited_our_domain=True,
+            )
+        )
+        main.geo_monitor_connector_save(
+            main.GEOMonitorConnectorRequest(
+                task_id=result["task_id"],
+                platform="chatgpt",
+                connector_type="official_api",
+                provider_name="OpenAI Responses API",
+                status="connected",
+            )
+        )
+        action = main.geo_gap_action_save(
+            main.GEOGapActionRequest(
+                task_id=result["task_id"],
+                title="同步高频信源结构",
+                action_type="source_map",
+                status="done",
+            )
+        )
+        report = main.geo_report_generate(
+            main.GEOReportGenerateRequest(task_id=result["task_id"], period_label="近 7 天")
+        )
+
+        self.assertEqual(1, report["metrics"]["connected_connectors"])
+        self.assertEqual(100, report["metrics"]["gap_action_completion"])
+        self.assertIn("已接入 1 个监测连接", report["findings"][2])
+        self.assertEqual("done", action["status"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (

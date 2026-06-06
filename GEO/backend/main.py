@@ -405,6 +405,46 @@ class GEOReportConfirmRequest(BaseModel):
     notes: str | None = None
 
 
+class GEOMonitorConnectorRequest(BaseModel):
+    task_id: str
+    platform: str
+    connector_type: str = "manual_audit"
+    provider_name: str
+    status: str = "planned"
+    credential_env_var: str | None = None
+    evidence_url: str | None = None
+    verification_method: str = "human_recorded"
+    notes: str | None = None
+
+
+class GEOMonitorConnectorStatusRequest(BaseModel):
+    status: str
+    evidence_url: str | None = None
+    last_error: str | None = None
+    notes: str | None = None
+    verification_method: str | None = None
+
+
+class GEOGapActionRequest(BaseModel):
+    task_id: str
+    title: str
+    action_type: str = "content_gap"
+    source: str = "manual"
+    priority: str = "P1"
+    status: str = "accepted"
+    owner: str | None = None
+    related_object_id: str | None = None
+    notes: str | None = None
+    evidence_url: str | None = None
+
+
+class GEOGapActionUpdateRequest(BaseModel):
+    status: str | None = None
+    owner: str | None = None
+    notes: str | None = None
+    evidence_url: str | None = None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -773,6 +813,46 @@ def _init_db() -> None:
                 competitor_mentions TEXT,
                 confidence_weight REAL,
                 checked_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS monitor_connectors (
+                connector_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                connector_type TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                credential_env_var TEXT,
+                evidence_url TEXT,
+                verification_method TEXT NOT NULL,
+                notes TEXT,
+                last_error TEXT,
+                last_checked_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS page_gap_actions (
+                action_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                status TEXT NOT NULL,
+                owner TEXT,
+                related_object_id TEXT,
+                notes TEXT,
+                evidence_url TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
             )
             """
         )
@@ -1449,6 +1529,9 @@ def _project_view(
     experiments = _db_experiments(task["task_id"])
     attributions = _db_attributions(task["task_id"])
     reports = _db_reports(task["task_id"])
+    gap_actions = _db_gap_actions(task["task_id"])
+    package_delivery = _package_delivery_view(task, assigned_package, monitoring, gap_actions, experiments, attributions, reports)
+    action_progress = _gap_action_progress(gap_actions)
     readiness_checks = [
         bool(task.get("brand_name")),
         bool(task.get("client_name")),
@@ -1475,6 +1558,9 @@ def _project_view(
         "confirmed_lead_count": len([item for item in attributions if item.get("status") == "confirmed"]),
         "report_count": len(reports),
         "effectiveness": effect,
+        "gap_actions": gap_actions,
+        "action_progress": action_progress,
+        "package_delivery": package_delivery,
         "latest_version": latest_version,
         "latest_injection": latest_injection,
         "latest_retest": latest_retest,
@@ -1787,6 +1873,175 @@ def _db_mention_checks(task_id: str | None = None) -> list[dict]:
     ]
 
 
+def _monitor_connector_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "connector_id": row["connector_id"],
+        "task_id": row["task_id"],
+        "platform": row["platform"],
+        "connector_type": row["connector_type"],
+        "provider_name": row["provider_name"],
+        "status": row["status"],
+        "credential_env_var": row["credential_env_var"],
+        "credential_configured": bool(row["credential_env_var"] and os.getenv(row["credential_env_var"])),
+        "evidence_url": row["evidence_url"],
+        "verification_method": row["verification_method"],
+        "notes": row["notes"],
+        "last_error": row["last_error"],
+        "last_checked_at": row["last_checked_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _db_monitor_connectors(task_id: str | None = None, platform: str | None = None) -> list[dict]:
+    query = "SELECT * FROM monitor_connectors"
+    filters: list[str] = []
+    params: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if platform:
+        filters.append("platform = ?")
+        params.append(platform.strip().lower())
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_monitor_connector_from_row(row) for row in rows]
+
+
+def _db_get_monitor_connector(connector_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM monitor_connectors WHERE connector_id = ?", (connector_id,)).fetchone()
+    return _monitor_connector_from_row(row) if row else None
+
+
+def _db_save_monitor_connector(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO monitor_connectors (
+                connector_id, task_id, platform, connector_type, provider_name, status,
+                credential_env_var, evidence_url, verification_method, notes, last_error,
+                last_checked_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(connector_id) DO UPDATE SET
+                platform=excluded.platform,
+                connector_type=excluded.connector_type,
+                provider_name=excluded.provider_name,
+                status=excluded.status,
+                credential_env_var=excluded.credential_env_var,
+                evidence_url=excluded.evidence_url,
+                verification_method=excluded.verification_method,
+                notes=excluded.notes,
+                last_error=excluded.last_error,
+                last_checked_at=excluded.last_checked_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["connector_id"],
+                item["task_id"],
+                item["platform"],
+                item["connector_type"],
+                item["provider_name"],
+                item["status"],
+                item.get("credential_env_var"),
+                item.get("evidence_url"),
+                item["verification_method"],
+                item.get("notes"),
+                item.get("last_error"),
+                item.get("last_checked_at"),
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
+
+
+def _gap_action_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "action_id": row["action_id"],
+        "task_id": row["task_id"],
+        "title": row["title"],
+        "action_type": row["action_type"],
+        "source": row["source"],
+        "priority": row["priority"],
+        "status": row["status"],
+        "owner": row["owner"],
+        "related_object_id": row["related_object_id"],
+        "notes": row["notes"],
+        "evidence_url": row["evidence_url"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "completed_at": row["completed_at"],
+    }
+
+
+def _db_gap_actions(task_id: str | None = None, status: str | None = None) -> list[dict]:
+    query = "SELECT * FROM page_gap_actions"
+    filters: list[str] = []
+    params: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 ELSE 2 END, updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_gap_action_from_row(row) for row in rows]
+
+
+def _db_get_gap_action(action_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM page_gap_actions WHERE action_id = ?", (action_id,)).fetchone()
+    return _gap_action_from_row(row) if row else None
+
+
+def _db_save_gap_action(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO page_gap_actions (
+                action_id, task_id, title, action_type, source, priority, status,
+                owner, related_object_id, notes, evidence_url, created_at, updated_at,
+                completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(action_id) DO UPDATE SET
+                title=excluded.title,
+                action_type=excluded.action_type,
+                source=excluded.source,
+                priority=excluded.priority,
+                status=excluded.status,
+                owner=excluded.owner,
+                related_object_id=excluded.related_object_id,
+                notes=excluded.notes,
+                evidence_url=excluded.evidence_url,
+                updated_at=excluded.updated_at,
+                completed_at=excluded.completed_at
+            """,
+            (
+                item["action_id"],
+                item["task_id"],
+                item["title"],
+                item["action_type"],
+                item["source"],
+                item["priority"],
+                item["status"],
+                item.get("owner"),
+                item.get("related_object_id"),
+                item.get("notes"),
+                item.get("evidence_url"),
+                item["created_at"],
+                item["updated_at"],
+                item.get("completed_at"),
+            ),
+        )
+
+
 def _package_from_row(row: sqlite3.Row) -> dict:
     return {
         "package_id": row["package_id"],
@@ -2037,6 +2292,54 @@ def _db_save_report(item: dict) -> None:
                 item.get("notes"),
             ),
         )
+
+
+def _gap_action_progress(actions: list[dict]) -> dict:
+    total = len(actions)
+    done = len([item for item in actions if item.get("status") == "done"])
+    active = len([item for item in actions if item.get("status") == "in_progress"])
+    blocked = len([item for item in actions if item.get("status") in {"rollback", "blocked"}])
+    return {
+        "total": total,
+        "done": done,
+        "active": active,
+        "blocked": blocked,
+        "completion_percent": round(done * 100 / total) if total else 0,
+    }
+
+
+def _package_delivery_view(
+    task: dict,
+    assigned_package: dict | None,
+    monitoring: dict,
+    gap_actions: list[dict],
+    experiments: list[dict],
+    attributions: list[dict],
+    reports: list[dict],
+) -> list[dict]:
+    if not assigned_package:
+        return []
+    feature_state = {
+        "监测": monitoring["check_count"] > 0,
+        "实验": bool(experiments),
+        "归因": bool(attributions),
+        "报告": bool(reports),
+        "CMS": bool(task.get("latest_result")) and bool(task.get("package_id")),
+        "发布": task.get("status") in {"approved", "injected", "retested"},
+        "复测": task.get("status") == "retested",
+    }
+    active_action_titles = {item["title"] for item in gap_actions if item.get("status") != "done"}
+    checklist = []
+    for feature in assigned_package.get("features") or []:
+        matched = next((value for key, value in feature_state.items() if key in feature or feature in key), False)
+        checklist.append(
+            {
+                "feature": feature,
+                "status": "done" if matched else "pending",
+                "next_hint": None if matched else ("已有待办跟进" if active_action_titles else "建议创建执行动作"),
+            }
+        )
+    return checklist
 
 
 def _source_map(task_id: str) -> dict:
@@ -2303,6 +2606,7 @@ def _parse_ai_sources(request: GEOSourceParseRequest, query: dict, task: dict) -
 def _monitoring_summary(task_id: str) -> dict:
     queries = _db_monitor_queries(task_id)
     checks = _db_mention_checks(task_id)
+    connectors = _db_monitor_connectors(task_id)
     mentioned = [item for item in checks if item["brand_mentioned"]]
     positions = [int(item["mention_position"]) for item in mentioned if item.get("mention_position")]
     source_counts: dict[str, int] = {}
@@ -2352,6 +2656,9 @@ def _monitoring_summary(task_id: str) -> dict:
         confidence_level = "low"
     else:
         confidence_level = "none"
+    connector_status_counts: dict[str, int] = {}
+    for item in connectors:
+        connector_status_counts[item["status"]] = connector_status_counts.get(item["status"], 0) + 1
     return {
         "task_id": task_id,
         "query_count": len(queries),
@@ -2368,6 +2675,14 @@ def _monitoring_summary(task_id: str) -> dict:
             "coverage_percent": coverage,
             "confidence_level": confidence_level,
             "warning": "样本不足，周报只能作为方向参考。" if confidence_level in {"none", "low"} else None,
+        },
+        "connectors": connectors,
+        "connector_status": {
+            "count": len(connectors),
+            "connected": connector_status_counts.get("connected", 0),
+            "failed": connector_status_counts.get("failed", 0),
+            "planned": connector_status_counts.get("planned", 0),
+            "auditable": len([item for item in connectors if item["connector_type"] in {"official_api", "manual_export", "manual_audit"}]),
         },
         "competitor_gap": [
             {"competitor": key, "mentions": value}
@@ -2392,21 +2707,25 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
     attributions = _db_attributions(task_id)
     experiments = _db_experiments(task_id)
     reports = _db_reports(task_id)
+    gap_actions = _db_gap_actions(task_id)
     confirmed_attributions = [item for item in attributions if item.get("status") == "confirmed"]
     total_revenue = round(sum(float(item.get("attributed_revenue") or 0) for item in confirmed_attributions), 2)
     won_experiments = [item for item in experiments if item.get("status") == "won"]
     latest_retest = retests[0] if retests else task.get("latest_retest") or {}
     delta = int(latest_retest.get("score_delta") or 0)
     findings = [
-            f"AI 平台品牌提及率 {monitoring['mention_rate']}%，累计监测 {monitoring['check_count']} 次。",
-            f"官网引用率 {monitoring['citation_rate']}%，采样可信度 {monitoring['sampling']['confidence_level']}。",
-            f"已确认线索 {len(confirmed_attributions)} 条，归因收入 {total_revenue:.2f}。",
+        f"AI 平台品牌提及率 {monitoring['mention_rate']}%，累计监测 {monitoring['check_count']} 次。",
+        f"官网引用率 {monitoring['citation_rate']}%，采样可信度 {monitoring['sampling']['confidence_level']}。",
+        f"已接入 {monitoring['connector_status']['count']} 个监测连接，已连通 {monitoring['connector_status']['connected']} 个。",
+        f"已确认线索 {len(confirmed_attributions)} 条，归因收入 {total_revenue:.2f}。",
         f"内容实验完结 {len(won_experiments)} 个，当前 GEO 分数变化 {delta:+d}。",
     ]
+    source_actions = monitoring["source_map"]["recommendations"][:2]
+    action_progress = _gap_action_progress(gap_actions)
     next_actions = [
         "补录待确认线索的证据链接并完成人工确认。",
         "将赢面实验的内容结构同步到主站和 CMS 模板。",
-        "继续补充高频信源页型，提升目标 AI 平台提及率。",
+        *(item["title"] for item in source_actions),
     ]
     return {
         "report_id": f"report_{uuid.uuid4().hex[:12]}",
@@ -2425,6 +2744,8 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
             "attributed_revenue": total_revenue,
             "won_experiments": len(won_experiments),
             "retest_delta": delta,
+            "connected_connectors": monitoring["connector_status"]["connected"],
+            "gap_action_completion": action_progress["completion_percent"],
         },
         "findings": findings,
         "next_actions": next_actions,
@@ -2433,6 +2754,88 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
         "confirmed_at": None,
         "notes": notes,
     }
+
+
+def _upsert_gap_action_seed(
+    task_id: str,
+    title: str,
+    action_type: str,
+    source: str,
+    priority: str,
+    related_object_id: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    action_id = f"act_{hashlib.sha256(f'{task_id}:{action_type}:{title}'.encode()).hexdigest()[:12]}"
+    now = _now_iso()
+    existing = _db_get_gap_action(action_id)
+    item = {
+        "action_id": action_id,
+        "task_id": task_id,
+        "title": title.strip(),
+        "action_type": action_type,
+        "source": source,
+        "priority": priority,
+        "status": existing["status"] if existing else "accepted",
+        "owner": existing["owner"] if existing else None,
+        "related_object_id": related_object_id,
+        "notes": notes if notes is not None else (existing["notes"] if existing else None),
+        "evidence_url": existing["evidence_url"] if existing else None,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+        "completed_at": existing["completed_at"] if existing else None,
+    }
+    _db_save_gap_action(item)
+    return item
+
+
+def _bootstrap_gap_actions(task_id: str) -> list[dict]:
+    task = _db_get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    monitoring = _monitoring_summary(task_id)
+    for item in monitoring["source_map"]["recommendations"][:3]:
+        _upsert_gap_action_seed(
+            task_id,
+            item["title"],
+            "source_map",
+            "source_map",
+            "P1",
+            related_object_id=item["page_type"],
+            notes=item["action"],
+        )
+    platforms = set(task.get("target_engines") or [])
+    connector_platforms = {item["platform"] for item in monitoring["connectors"]}
+    for platform in sorted(platforms - connector_platforms):
+        _upsert_gap_action_seed(
+            task_id,
+            f"补齐 {platform} 可审计监测接入",
+            "connector_setup",
+            "monitoring_connector",
+            "P0",
+            related_object_id=platform,
+            notes="优先使用官方 API、官方导出或人工可复核记录，避免不可审计采集。",
+        )
+    if not _db_reports(task_id):
+        _upsert_gap_action_seed(
+            task_id,
+            "生成首期 GEO 效果报告",
+            "effect_report",
+            "reporting",
+            "P1",
+            notes="补齐提及率、引用率、归因收入与后续动作。",
+        )
+    latest_publication = _db_publications(task_id)[:1]
+    if latest_publication and latest_publication[0].get("live_status") == "verification_failed":
+        _upsert_gap_action_seed(
+            task_id,
+            "修复 CMS 发布校验失败",
+            "cms_recovery",
+            "cms",
+            "P0",
+            related_object_id=latest_publication[0]["publication_id"],
+            notes="检查线上内容缺词、字段映射或凭证异常，再重新校验。",
+        )
+    return _db_gap_actions(task_id)
 
 
 def _seed_monitor_queries(task_id: str, brand_name: str, engines: list[str]) -> None:
@@ -4096,6 +4499,115 @@ def geo_report_confirm(report_id: str, request: GEOReportConfirmRequest):
     return report
 
 
+@app.get("/geo/monitoring/connectors")
+def geo_monitor_connectors(task_id: str | None = None, platform: str | None = None):
+    return {"items": _db_monitor_connectors(task_id=task_id, platform=platform)}
+
+
+@app.post("/geo/monitoring/connectors")
+def geo_monitor_connector_save(request: GEOMonitorConnectorRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    platform = request.platform.strip().lower()
+    connector_id = f"conn_{hashlib.sha256(f'{request.task_id}:{platform}:{request.provider_name}'.encode()).hexdigest()[:12]}"
+    now = _now_iso()
+    existing = _db_get_monitor_connector(connector_id)
+    item = {
+        "connector_id": connector_id,
+        "task_id": request.task_id,
+        "platform": platform,
+        "connector_type": request.connector_type.strip().lower() or "manual_audit",
+        "provider_name": request.provider_name.strip(),
+        "status": request.status.strip().lower() or "planned",
+        "credential_env_var": (request.credential_env_var or "").strip() or None,
+        "evidence_url": (request.evidence_url or "").strip() or None,
+        "verification_method": request.verification_method.strip().lower() or "human_recorded",
+        "notes": (request.notes or "").strip() or None,
+        "last_error": existing.get("last_error") if existing else None,
+        "last_checked_at": existing.get("last_checked_at") if existing else None,
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+    }
+    _db_save_monitor_connector(item)
+    _db_add_audit(_current_actor(), "save_monitor_connector", "monitor_connector", connector_id, request.task_id, outcome=item["status"])
+    return _db_get_monitor_connector(connector_id)
+
+
+@app.patch("/geo/monitoring/connectors/{connector_id}")
+def geo_monitor_connector_update(connector_id: str, request: GEOMonitorConnectorStatusRequest):
+    item = _db_get_monitor_connector(connector_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Monitoring connector not found.")
+    item["status"] = request.status.strip().lower() or item["status"]
+    item["evidence_url"] = (request.evidence_url or "").strip() or item.get("evidence_url")
+    item["last_error"] = (request.last_error or "").strip() or None
+    item["notes"] = (request.notes or "").strip() or item.get("notes")
+    item["verification_method"] = (request.verification_method or "").strip().lower() or item["verification_method"]
+    item["last_checked_at"] = _now_iso()
+    item["updated_at"] = _now_iso()
+    _db_save_monitor_connector(item)
+    _db_add_audit(_current_actor(), "update_monitor_connector", "monitor_connector", connector_id, item["task_id"], outcome=item["status"])
+    return _db_get_monitor_connector(connector_id)
+
+
+@app.get("/geo/actions")
+def geo_gap_actions(task_id: str | None = None, status: str | None = None):
+    return {"items": _db_gap_actions(task_id=task_id, status=status)}
+
+
+@app.post("/geo/actions/bootstrap")
+def geo_gap_actions_bootstrap(task_id: str):
+    items = _bootstrap_gap_actions(task_id)
+    _db_add_audit(_current_actor(), "bootstrap_gap_actions", "task", task_id, task_id, detail={"count": len(items)})
+    return {"items": items}
+
+
+@app.post("/geo/actions")
+def geo_gap_action_save(request: GEOGapActionRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    now = _now_iso()
+    item = {
+        "action_id": f"act_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "title": request.title.strip(),
+        "action_type": request.action_type.strip().lower() or "content_gap",
+        "source": request.source.strip().lower() or "manual",
+        "priority": request.priority.strip().upper() or "P1",
+        "status": request.status.strip().lower() or "accepted",
+        "owner": (request.owner or "").strip() or None,
+        "related_object_id": (request.related_object_id or "").strip() or None,
+        "notes": (request.notes or "").strip() or None,
+        "evidence_url": (request.evidence_url or "").strip() or None,
+        "created_at": now,
+        "updated_at": now,
+        "completed_at": now if request.status.strip().lower() == "done" else None,
+    }
+    _db_save_gap_action(item)
+    _db_add_audit(_current_actor(), "save_gap_action", "gap_action", item["action_id"], request.task_id, outcome=item["status"])
+    return item
+
+
+@app.patch("/geo/actions/{action_id}")
+def geo_gap_action_update(action_id: str, request: GEOGapActionUpdateRequest):
+    item = _db_get_gap_action(action_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Gap action not found.")
+    if request.status is not None:
+        item["status"] = request.status.strip().lower() or item["status"]
+    if request.owner is not None:
+        item["owner"] = request.owner.strip() or None
+    if request.notes is not None:
+        item["notes"] = request.notes.strip() or None
+    if request.evidence_url is not None:
+        item["evidence_url"] = request.evidence_url.strip() or None
+    item["updated_at"] = _now_iso()
+    item["completed_at"] = _now_iso() if item["status"] == "done" else None
+    _db_save_gap_action(item)
+    _db_add_audit(_current_actor(), "update_gap_action", "gap_action", action_id, item["task_id"], outcome=item["status"])
+    return item
+
+
 @app.get("/geo/monitoring/queries")
 def geo_monitor_queries(task_id: str | None = None):
     return {"items": _db_monitor_queries(task_id)}
@@ -4676,6 +5188,7 @@ def geo_task_detail(task_id: str):
     task_experiments = _db_experiments(task_id)
     task_attributions = _db_attributions(task_id)
     task_reports = _db_reports(task_id)
+    task_gap_actions = _db_gap_actions(task_id)
     return {
         "task": task,
         "versions": task_versions,
@@ -4699,6 +5212,7 @@ def geo_task_detail(task_id: str):
         "experiments": task_experiments,
         "attributions": task_attributions,
         "reports": task_reports,
+        "gap_actions": task_gap_actions,
     }
 
 

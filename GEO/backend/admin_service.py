@@ -52,6 +52,10 @@ def build_admin_overview(history: dict) -> dict:
     monitor_queries = history.get("monitor_queries") or []
     mention_checks = history.get("mention_checks") or []
     trust_anchors = history.get("trust_anchors") or []
+    service_packages = history.get("service_packages") or []
+    experiments = history.get("experiments") or []
+    attributions = history.get("attributions") or []
+    reports = history.get("reports") or []
     summaries = [_task_summary(task, versions, injections, retests) for task in tasks]
 
     pending_versions = [item for item in versions if item.get("status") == "pending_review"]
@@ -94,6 +98,12 @@ def build_admin_overview(history: dict) -> dict:
             "mention_checks": len(mention_checks),
             "brand_mentions": len([item for item in mention_checks if item.get("brand_mentioned")]),
             "trust_anchors": len(trust_anchors),
+            "service_packages": len(service_packages),
+            "experiments": len(experiments),
+            "active_experiments": len([item for item in experiments if item.get("status") in {"draft", "running"}]),
+            "attributions": len(attributions),
+            "confirmed_leads": len([item for item in attributions if item.get("status") == "confirmed"]),
+            "reports": len(reports),
         },
         "status_counts": dict(Counter(item["status"] for item in summaries)),
         "attention": {
@@ -111,6 +121,9 @@ def build_admin_overview(history: dict) -> dict:
         "recent_publications": publications[:8],
         "recent_feedback": feedback_entries[:8],
         "recent_llm_logs": llm_logs[:8],
+        "recent_experiments": experiments[:8],
+        "recent_attributions": attributions[:8],
+        "recent_reports": reports[:8],
     }
 
 

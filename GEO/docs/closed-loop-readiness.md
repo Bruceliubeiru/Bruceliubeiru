@@ -43,9 +43,13 @@ URL analysis
 | Safety | Private page URLs and private webhook targets are blocked |
 | Regression checks | Standard-library end-to-end workflow tests |
 | Commercial intake | URL projects retain customer, brand, business goal, service tier, owner, target score, and target AI platforms |
+| Service packages | Admin can maintain reusable commercial packages, bind them to projects, and track package-backed delivery expectations |
 | Multi-platform visibility | Projects seed ChatGPT/Perplexity/Gemini monitoring queries and persist brand mention, position, source type, and answer evidence |
 | AI source map | Citation domains and page types are aggregated into prioritized comparison, FAQ, content-cluster, media, and trust-anchor tasks |
 | Ethical trust anchors | External contribution tasks require accountable ownership and evidence; default guidance forbids impersonation and fabricated experience |
+| Content experiments | Mini-program and admin can register hypotheses, A/B content variants, confirm winning structures, and persist outcomes |
+| Lead attribution | Operators can store attributable leads, evidence links, revenue, and confirmation state per project |
+| Effect reporting | Projects can generate and confirm persistent GEO effect reports from monitoring, experiments, retests, and attributable revenue |
 
 ## External Client Delivery Standard
 

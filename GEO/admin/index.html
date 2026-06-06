@@ -156,6 +156,21 @@
           <div class="table-wrap"><table><thead><tr><th>渠道</th><th>主题</th><th>负责人</th><th>状态</th></tr></thead><tbody id="anchorRows"></tbody></table></div>
         </div>
       </section>
+      <section class="grid">
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">服务套餐</div><div class="panel-meta">客户项目可绑定标准化套餐与交付周期</div></div></div>
+          <div class="form-row"><input id="packageName" placeholder="套餐名称"><input id="packageTier" placeholder="套餐层级"><input id="packagePrice" type="number" min="0" placeholder="价格"><input id="packageDays" type="number" min="1" placeholder="交付天数"><button class="refresh" id="savePackage">保存套餐</button></div>
+          <div class="form-row" style="margin-top:8px"><input id="packagePlatforms" placeholder="平台，逗号分隔"><input id="packageFeatures" placeholder="能力，逗号分隔"><input id="packageStatus" placeholder="状态 active"><span></span><span></span></div>
+          <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>套餐</th><th>价格</th><th>周期</th><th>平台</th><th>状态</th></tr></thead><tbody id="packageRows"></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><div class="panel-title">实验与归因</div><div class="panel-meta">记录信源实验、线索证据与效果报告</div></div></div>
+          <div class="form-row"><input id="experimentTask" placeholder="任务 ID"><input id="experimentName" placeholder="实验名称"><input id="experimentMetric" placeholder="指标 mention_rate"><input id="experimentHypothesis" placeholder="实验假设"><button class="refresh" id="saveExperiment">创建实验</button></div>
+          <div class="form-row" style="margin-top:8px"><input id="attrTask" placeholder="任务 ID"><input id="attrSource" placeholder="线索来源"><input id="attrRevenue" type="number" min="0" placeholder="金额"><input id="attrEvidence" placeholder="证据链接"><button class="refresh" id="saveAttribution">登记归因</button></div>
+          <div class="form-row" style="margin-top:8px"><input id="reportTask" placeholder="任务 ID"><input id="reportPeriod" placeholder="报告周期，如近 30 天"><span></span><span></span><button class="refresh" id="generateReport">生成报告</button></div>
+          <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>摘要</th><th>操作</th></tr></thead><tbody id="growthOpsRows"></tbody></table></div>
+        </div>
+      </section>
       <section class="panel" style="margin-top:14px">
         <div class="panel-head"><div><div class="panel-title">最近操作审计</div><div class="panel-meta">关键业务动作与执行结果</div></div><div class="audit-filters"><input id="auditActor" placeholder="筛选执行者"><select id="auditAction"><option value="">全部动作</option></select><select id="auditOutcome"><option value="">全部结果</option><option value="success">success</option><option value="completed">completed</option><option value="failed">failed</option><option value="approved">approved</option><option value="rejected">rejected</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>时间</th><th>执行者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead><tbody id="auditRows"></tbody></table></div>
@@ -197,6 +212,10 @@
     let llmLogs = [];
     let mentionChecks = [];
     let trustAnchors = [];
+    let servicePackages = [];
+    let experiments = [];
+    let attributions = [];
+    let reports = [];
     let apiKey = sessionStorage.getItem("geoApiKey") || "";
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
@@ -305,6 +324,39 @@
       trustAnchors = anchors.items || [];
       renderMonitoring();
     }
+    function renderServicePackages(items) {
+      $("packageRows").innerHTML = items.length ? items.map((item) => `<tr><td><strong>${escapeHtml(item.name)}</strong><div class="task-url">${escapeHtml(item.tier)}</div></td><td>${escapeHtml(item.price_cny)}</td><td>${escapeHtml(item.delivery_days)} 天</td><td><div class="task-url">${escapeHtml((item.platforms || []).join(", "))}</div></td><td>${badge(item.status)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">暂无套餐</td></tr>`;
+    }
+    function renderGrowthOps() {
+      const rows = [
+        ...experiments.map((item) => ({kind:"实验", id:item.experiment_id, title:item.name, status:item.status, summary:item.hypothesis, action:item.status !== "won" ? `<button class="action" data-win-exp="${escapeHtml(item.experiment_id)}">确认赢面</button>` : "-"})),
+        ...attributions.map((item) => ({kind:"归因", id:item.attribution_id, title:item.source_name, status:item.status, summary:`${item.source_type} · ${item.attributed_revenue || 0}`, action:"-"})),
+        ...reports.map((item) => ({kind:"报告", id:item.report_id, title:item.period_label, status:item.status, summary:item.summary, action:item.status !== "confirmed" ? `<button class="action" data-confirm-report="${escapeHtml(item.report_id)}">确认报告</button>` : "-"}))
+      ].slice(0, 20);
+      $("growthOpsRows").innerHTML = rows.length ? rows.map((item) => `<tr><td>${escapeHtml(item.kind)}</td><td><div class="task-title">${escapeHtml(item.title)}</div><div class="task-url">${escapeHtml(item.id)}</div></td><td>${badge(item.status)}</td><td><div class="task-url">${escapeHtml(item.summary)}</div></td><td>${item.action}</td></tr>`).join("") : `<tr><td colspan="5" class="empty">暂无实验、归因或报告</td></tr>`;
+      document.querySelectorAll("[data-win-exp]").forEach((button) => button.addEventListener("click", async () => {
+        await api(`/geo/experiments/${encodeURIComponent(button.dataset.winExp)}/confirm`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({status:"won", winner:"variant_b"})});
+        await loadGrowthOps();
+      }));
+      document.querySelectorAll("[data-confirm-report]").forEach((button) => button.addEventListener("click", async () => {
+        await api(`/geo/reports/${encodeURIComponent(button.dataset.confirmReport)}/confirm`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({status:"confirmed"})});
+        await loadGrowthOps();
+      }));
+    }
+    async function loadGrowthOps() {
+      const [packageResult, experimentResult, attributionResult, reportResult] = await Promise.all([
+        api("/geo/service-packages"),
+        api("/geo/experiments"),
+        api("/geo/attributions"),
+        api("/geo/reports")
+      ]);
+      servicePackages = packageResult.items || [];
+      experiments = experimentResult.items || [];
+      attributions = attributionResult.items || [];
+      reports = reportResult.items || [];
+      renderServicePackages(servicePackages);
+      renderGrowthOps();
+    }
     async function loadAudit() {
       const params = new URLSearchParams({limit: "20"});
       const actor = $("auditActor").value.trim();
@@ -331,7 +383,7 @@
     async function load() {
       $("error").hidden = true;
       try {
-        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs(), loadCmsTargets(), loadKnowledge(), loadLlmLogs(), loadMonitoring()]);
+        [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs(), loadCmsTargets(), loadKnowledge(), loadLlmLogs(), loadMonitoring(), loadGrowthOps()]);
         renderMetrics(overview.metrics);
         renderTasks(overview.recent_tasks);
         renderAttention(overview.attention);
@@ -350,6 +402,7 @@
         const summary = [
           ["任务 ID", task.task_id], ["状态", task.status], ["网址", task.url],
           ["客户 / 品牌", `${detail.project?.client_name || "待补充"} / ${detail.project?.brand_name || "待补充"}`], ["目标平台", (detail.project?.target_engines || []).join(", ") || "待选择"], ["接单准备度", `${detail.project?.commercial_readiness?.completed || 0}/${detail.project?.commercial_readiness?.total || 5}`],
+          ["服务套餐", detail.project?.package_name || "待绑定"],
           ["负责人", detail.project?.owner || "待分配"], ["评分目标", `${task.latest_result?.geo_score ?? 0}/${detail.project?.target_score || 80}`], ["下一步", detail.project?.next_action || "-"]
         ];
         const timelines = [
@@ -366,7 +419,8 @@
         const previewTargetSelect = version?.status === "approved" && enabledTargets.length
           ? `<select id="previewTarget">${enabledTargets.map((item) => `<option value="${escapeHtml(item.target_id)}">${escapeHtml(item.name)} · ${escapeHtml(item.environment)}${item.auth_env_var && !item.credential_configured ? " · 凭证待配置" : ""}</option>`).join("")}</select>`
           : "";
-        const actions = `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div><div class="project-form"><input id="projectClient" placeholder="客户名称" value="${escapeHtml(detail.project?.client_name || "")}"><input id="projectBrand" placeholder="品牌名称" value="${escapeHtml(detail.project?.brand_name || "")}"><input id="projectEngines" placeholder="目标平台，逗号分隔" value="${escapeHtml((detail.project?.target_engines || []).join(","))}"><button class="action" id="saveCommercial">保存商业配置</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.quality_report ? `<span class="badge ${escapeHtml(version.quality_report.status)}">知识引用 ${version.quality_report.citation_coverage?.percent ?? 100}%</span>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${previewTargetSelect}${version?.status === "approved" && enabledTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}${publishedPublication ? `<button class="action" data-verify-publish="${escapeHtml(publishedPublication.publication_id)}">立即上线校验</button><button class="action" data-schedule-verify="${escapeHtml(publishedPublication.publication_id)}">安排自动校验</button>` : ""}</div></section>`;
+        const packageSelect = servicePackages.length ? `<select id="projectPackage"><option value="">不绑定套餐</option>${servicePackages.map((item) => `<option value="${escapeHtml(item.package_id)}" ${detail.project?.package_id === item.package_id ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.tier)}</option>`).join("")}</select>` : "";
+        const actions = `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div><div class="project-form"><input id="projectClient" placeholder="客户名称" value="${escapeHtml(detail.project?.client_name || "")}"><input id="projectBrand" placeholder="品牌名称" value="${escapeHtml(detail.project?.brand_name || "")}"><input id="projectEngines" placeholder="目标平台，逗号分隔" value="${escapeHtml((detail.project?.target_engines || []).join(","))}"><button class="action" id="saveCommercial">保存商业配置</button></div><div class="project-form">${packageSelect}<input id="projectTier" placeholder="服务层级" value="${escapeHtml(detail.project?.service_tier || "")}"><span></span><button class="action" id="savePackageAssignment">保存套餐绑定</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.quality_report ? `<span class="badge ${escapeHtml(version.quality_report.status)}">知识引用 ${version.quality_report.citation_coverage?.percent ?? 100}%</span>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${previewTargetSelect}${version?.status === "approved" && enabledTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}${publishedPublication ? `<button class="action" data-verify-publish="${escapeHtml(publishedPublication.publication_id)}">立即上线校验</button><button class="action" data-schedule-verify="${escapeHtml(publishedPublication.publication_id)}">安排自动校验</button>` : ""}</div></section>`;
         const publicationTimeline = [["发布", detail.publications || [], "publication_id", "status", "updated_at"]];
         const monitoringSection = `<section class="section"><h3>AI 平台监测问题</h3><div class="timeline">${(detail.monitoring?.queries || []).length ? detail.monitoring.queries.map((item) => `<div class="timeline-item"><strong>${escapeHtml(item.engine)}</strong><span>${escapeHtml(item.query_text)}<br><small>${escapeHtml(item.query_id)}</small></span><span>${badge(item.active ? "active" : "paused")}</span></div>`).join("") : `<div class="empty">暂无监测问题</div>`}</div></section>`;
         $("detailBody").innerHTML = `<div class="detail-grid">${summary.map(([label,value]) => `<div class="detail-item"><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>${actions}${monitoringSection}` + [...timelines, ...publicationTimeline].map(([label,items,titleKey,statusKey,timeKey]) => `<section class="section"><h3>${label}记录</h3><div class="timeline">${items.length ? items.map((item) => `<div class="timeline-item"><strong>${label}</strong><span>${escapeHtml(item[titleKey] || "-")}</span><span>${badge(item[statusKey])}<br><small>${formatTime(item[timeKey])}</small></span></div>`).join("") : `<div class="empty">暂无${label}记录</div>`}</div></section>`).join("");
@@ -385,6 +439,7 @@
         document.querySelector("[data-schedule-verify]")?.addEventListener("click", async (event) => { await api("/cms/publications/verify/schedule", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({publication_id:event.target.dataset.scheduleVerify, max_attempts:5})}); $("detailDialog").close(); await showTask(taskId); await loadJobs(); });
         $("saveProject").addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({owner:$("projectOwner").value, target_score:Number($("projectTarget").value), todos:$("projectTodos").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("saveCommercial").addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({client_name:$("projectClient").value, brand_name:$("projectBrand").value, target_engines:$("projectEngines").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
+        $("savePackageAssignment")?.addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({package_id:$("projectPackage")?.value || null, service_tier:$("projectTier").value || null})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("detailDialog").showModal();
       } catch (error) {
         $("error").textContent = error.message;
@@ -440,6 +495,34 @@
         await api("/geo/monitoring/trust-anchors", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("anchorTask").value, topic:$("anchorTopic").value, channel:$("anchorChannel").value, owner:$("anchorOwner").value || null})});
         $("anchorTopic").value = "";
         await loadMonitoring();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("savePackage").addEventListener("click", async () => {
+      try {
+        await api("/geo/service-packages", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({name:$("packageName").value, tier:$("packageTier").value || "growth", price_cny:Number($("packagePrice").value) || 0, delivery_days:Number($("packageDays").value) || 14, platforms:$("packagePlatforms").value.split(",").map((item) => item.trim()).filter(Boolean), features:$("packageFeatures").value.split(",").map((item) => item.trim()).filter(Boolean), status:$("packageStatus").value || "active"})});
+        $("packageName").value = ""; $("packageTier").value = ""; $("packagePrice").value = ""; $("packageDays").value = ""; $("packagePlatforms").value = ""; $("packageFeatures").value = ""; $("packageStatus").value = "";
+        await loadGrowthOps();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("saveExperiment").addEventListener("click", async () => {
+      try {
+        await api("/geo/experiments", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("experimentTask").value, name:$("experimentName").value, primary_metric:$("experimentMetric").value || "mention_rate", hypothesis:$("experimentHypothesis").value, variant_a:"原始结构", variant_b:"新结构", status:"draft"})});
+        $("experimentName").value = ""; $("experimentHypothesis").value = "";
+        await loadGrowthOps();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("saveAttribution").addEventListener("click", async () => {
+      try {
+        await api("/geo/attributions", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("attrTask").value, source_type:"ai_platform", source_name:$("attrSource").value, attributed_revenue:Number($("attrRevenue").value) || 0, evidence_url:$("attrEvidence").value || null, status:"pending_confirmation"})});
+        $("attrSource").value = ""; $("attrRevenue").value = ""; $("attrEvidence").value = "";
+        await loadGrowthOps();
+      } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    });
+    $("generateReport").addEventListener("click", async () => {
+      try {
+        await api("/geo/reports/generate", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({task_id:$("reportTask").value, period_label:$("reportPeriod").value || "近 30 天"})});
+        $("reportPeriod").value = "";
+        await loadGrowthOps();
       } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
     });
     $("closeDialog").addEventListener("click", () => $("detailDialog").close());

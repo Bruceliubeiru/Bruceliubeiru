@@ -15,6 +15,12 @@ Page({
     displayFeedbackEntries: [],
     mentionChecks: [],
     displayMentionChecks: [],
+    experiments: [],
+    displayExperiments: [],
+    attributions: [],
+    displayAttributions: [],
+    reports: [],
+    displayReports: [],
     retestGroups: [],
     displayRetestGroups: [],
     selectedTaskId: "",
@@ -47,7 +53,10 @@ Page({
       displayPublications: this.data.publications.filter((publication) => publication.task_id === taskId),
       displayRetestGroups: this.data.retestGroups.filter((group) => group.task_id === taskId),
       displayFeedbackEntries: this.data.feedbackEntries.filter((entry) => entry.task_id === taskId),
-      displayMentionChecks: this.data.mentionChecks.filter((entry) => entry.task_id === taskId)
+      displayMentionChecks: this.data.mentionChecks.filter((entry) => entry.task_id === taskId),
+      displayExperiments: this.data.experiments.filter((entry) => entry.task_id === taskId),
+      displayAttributions: this.data.attributions.filter((entry) => entry.task_id === taskId),
+      displayReports: this.data.reports.filter((entry) => entry.task_id === taskId)
     })
   },
 
@@ -59,7 +68,10 @@ Page({
       displayPublications: this.data.publications,
       displayRetestGroups: this.data.retestGroups,
       displayFeedbackEntries: this.data.feedbackEntries,
-      displayMentionChecks: this.data.mentionChecks
+      displayMentionChecks: this.data.mentionChecks,
+      displayExperiments: this.data.experiments,
+      displayAttributions: this.data.attributions,
+      displayReports: this.data.reports
     })
   },
 
@@ -78,6 +90,9 @@ Page({
       }))
       const feedbackEntries = history.feedback_entries || []
       const mentionChecks = history.mention_checks || []
+      const experiments = history.experiments || []
+      const attributions = history.attributions || []
+      const reports = history.reports || []
       this.setData({
         tasks: history.tasks || [],
         versions: history.versions || [],
@@ -90,6 +105,12 @@ Page({
         displayFeedbackEntries: feedbackEntries,
         mentionChecks,
         displayMentionChecks: mentionChecks,
+        experiments,
+        displayExperiments: experiments,
+        attributions,
+        displayAttributions: attributions,
+        reports,
+        displayReports: reports,
         retestGroups,
         displayRetestGroups: retestGroups,
         loading: false

@@ -210,6 +210,7 @@ class GEOProjectUpdateRequest(BaseModel):
     target_engines: list[str] | None = None
     business_goal: str | None = None
     service_tier: str | None = None
+    package_id: str | None = None
 
 
 class CMSPublishTargetRequest(BaseModel):
@@ -326,6 +327,57 @@ class GEOMentionCheckRequest(BaseModel):
     notes: str | None = None
 
 
+class GEOServicePackageRequest(BaseModel):
+    name: str
+    tier: str = "growth"
+    price_cny: int = 0
+    delivery_days: int = 14
+    platforms: list[str] | None = None
+    features: list[str] | None = None
+    status: str = "active"
+
+
+class GEOExperimentRequest(BaseModel):
+    task_id: str
+    name: str
+    hypothesis: str
+    channel: str = "onsite"
+    primary_metric: str = "mention_rate"
+    variant_a: str
+    variant_b: str
+    status: str = "draft"
+    notes: str | None = None
+
+
+class GEOExperimentConfirmRequest(BaseModel):
+    status: str
+    winner: str | None = None
+    notes: str | None = None
+
+
+class GEOAttributionRequest(BaseModel):
+    task_id: str
+    source_type: str
+    source_name: str
+    session_ref: str | None = None
+    lead_stage: str = "new"
+    attributed_revenue: float = 0
+    evidence_url: str | None = None
+    status: str = "pending_confirmation"
+    notes: str | None = None
+
+
+class GEOReportGenerateRequest(BaseModel):
+    task_id: str
+    period_label: str = "近 30 天"
+    notes: str | None = None
+
+
+class GEOReportConfirmRequest(BaseModel):
+    status: str = "confirmed"
+    notes: str | None = None
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -375,6 +427,7 @@ def _init_db() -> None:
                 target_engines TEXT,
                 business_goal TEXT,
                 service_tier TEXT,
+                package_id TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -416,6 +469,80 @@ def _init_db() -> None:
                 recommendations TEXT,
                 effect_details TEXT,
                 created_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS service_packages (
+                package_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                price_cny INTEGER NOT NULL,
+                delivery_days INTEGER NOT NULL,
+                platforms TEXT NOT NULL,
+                features TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS content_experiments (
+                experiment_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                hypothesis TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                primary_metric TEXT NOT NULL,
+                variant_a TEXT NOT NULL,
+                variant_b TEXT NOT NULL,
+                status TEXT NOT NULL,
+                winner TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                confirmed_by TEXT,
+                confirmed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lead_attributions (
+                attribution_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                session_ref TEXT,
+                lead_stage TEXT NOT NULL,
+                attributed_revenue REAL NOT NULL,
+                evidence_url TEXT,
+                status TEXT NOT NULL,
+                notes TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS effect_reports (
+                report_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                period_label TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                metrics TEXT NOT NULL,
+                findings TEXT NOT NULL,
+                next_actions TEXT NOT NULL,
+                generated_at TEXT NOT NULL,
+                confirmed_by TEXT,
+                confirmed_at TEXT,
+                notes TEXT
             )
             """
         )
@@ -631,6 +758,7 @@ def _init_db() -> None:
             "target_engines": "TEXT",
             "business_goal": "TEXT",
             "service_tier": "TEXT",
+            "package_id": "TEXT",
         }.items():
             if column not in task_columns:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
@@ -657,9 +785,10 @@ def _db_upsert_task(task: dict) -> None:
                 task_id, url, title, status, latest_result, latest_workflow,
                 latest_version_id, latest_retest, owner, target_score, todos,
                 client_name, brand_name, target_engines, business_goal, service_tier,
+                package_id,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 url=excluded.url,
                 title=excluded.title,
@@ -676,6 +805,7 @@ def _db_upsert_task(task: dict) -> None:
                 target_engines=excluded.target_engines,
                 business_goal=excluded.business_goal,
                 service_tier=excluded.service_tier,
+                package_id=excluded.package_id,
                 updated_at=excluded.updated_at
             """,
             (
@@ -695,6 +825,7 @@ def _db_upsert_task(task: dict) -> None:
                 _json_dumps(task.get("target_engines", [])),
                 task.get("business_goal"),
                 task.get("service_tier"),
+                task.get("package_id"),
                 task.get("created_at") or _now_iso(),
                 task.get("updated_at") or _now_iso(),
             ),
@@ -727,6 +858,7 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "target_engines": _json_loads(row["target_engines"], []),
         "business_goal": row["business_goal"],
         "service_tier": row["service_tier"],
+        "package_id": row["package_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1256,6 +1388,10 @@ def _project_view(
         if score < target_score:
             todos.append(f"将 GEO 分数从 {score} 提升到 {target_score}")
     monitoring = _monitoring_summary(task["task_id"])
+    assigned_package = _db_get_service_package(task.get("package_id")) if task.get("package_id") else None
+    experiments = _db_experiments(task["task_id"])
+    attributions = _db_attributions(task["task_id"])
+    reports = _db_reports(task["task_id"])
     readiness_checks = [
         bool(task.get("brand_name")),
         bool(task.get("client_name")),
@@ -1273,6 +1409,14 @@ def _project_view(
         "next_action": next_action,
         "next_action_key": next_action_key,
         "todos": todos,
+        "assigned_package": assigned_package,
+        "package_id": task.get("package_id"),
+        "package_name": assigned_package.get("name") if assigned_package else None,
+        "experiment_count": len(experiments),
+        "active_experiment_count": len([item for item in experiments if item.get("status") in {"draft", "running"}]),
+        "attribution_count": len(attributions),
+        "confirmed_lead_count": len([item for item in attributions if item.get("status") == "confirmed"]),
+        "report_count": len(reports),
         "effectiveness": effect,
         "latest_version": latest_version,
         "latest_injection": latest_injection,
@@ -1576,6 +1720,258 @@ def _db_mention_checks(task_id: str | None = None) -> list[dict]:
     ]
 
 
+def _package_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "package_id": row["package_id"],
+        "name": row["name"],
+        "tier": row["tier"],
+        "price_cny": row["price_cny"],
+        "delivery_days": row["delivery_days"],
+        "platforms": _json_loads(row["platforms"], []),
+        "features": _json_loads(row["features"], []),
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _db_get_service_package(package_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM service_packages WHERE package_id = ?", (package_id,)).fetchone()
+    return _package_from_row(row) if row else None
+
+
+def _db_service_packages(status: str | None = None) -> list[dict]:
+    query = "SELECT * FROM service_packages"
+    params: list[str] = []
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+    query += " ORDER BY updated_at DESC, name ASC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_package_from_row(row) for row in rows]
+
+
+def _db_save_service_package(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO service_packages (
+                package_id, name, tier, price_cny, delivery_days, platforms,
+                features, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(package_id) DO UPDATE SET
+                name=excluded.name,
+                tier=excluded.tier,
+                price_cny=excluded.price_cny,
+                delivery_days=excluded.delivery_days,
+                platforms=excluded.platforms,
+                features=excluded.features,
+                status=excluded.status,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["package_id"],
+                item["name"],
+                item["tier"],
+                item["price_cny"],
+                item["delivery_days"],
+                _json_dumps(item.get("platforms", [])),
+                _json_dumps(item.get("features", [])),
+                item["status"],
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
+
+
+def _experiment_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _db_experiments(task_id: str | None = None, status: str | None = None) -> list[dict]:
+    query = "SELECT * FROM content_experiments"
+    filters: list[str] = []
+    params: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_experiment_from_row(row) for row in rows]
+
+
+def _db_get_experiment(experiment_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM content_experiments WHERE experiment_id = ?", (experiment_id,)).fetchone()
+    return _experiment_from_row(row) if row else None
+
+
+def _db_save_experiment(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO content_experiments (
+                experiment_id, task_id, name, hypothesis, channel, primary_metric,
+                variant_a, variant_b, status, winner, notes, created_at, updated_at,
+                confirmed_by, confirmed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(experiment_id) DO UPDATE SET
+                name=excluded.name,
+                hypothesis=excluded.hypothesis,
+                channel=excluded.channel,
+                primary_metric=excluded.primary_metric,
+                variant_a=excluded.variant_a,
+                variant_b=excluded.variant_b,
+                status=excluded.status,
+                winner=excluded.winner,
+                notes=excluded.notes,
+                updated_at=excluded.updated_at,
+                confirmed_by=excluded.confirmed_by,
+                confirmed_at=excluded.confirmed_at
+            """,
+            tuple(item[key] for key in [
+                "experiment_id", "task_id", "name", "hypothesis", "channel", "primary_metric",
+                "variant_a", "variant_b", "status", "winner", "notes", "created_at", "updated_at",
+                "confirmed_by", "confirmed_at",
+            ]),
+        )
+
+
+def _attribution_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _db_attributions(task_id: str | None = None, status: str | None = None) -> list[dict]:
+    query = "SELECT * FROM lead_attributions"
+    filters: list[str] = []
+    params: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_attribution_from_row(row) for row in rows]
+
+
+def _db_save_attribution(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO lead_attributions (
+                attribution_id, task_id, source_type, source_name, session_ref,
+                lead_stage, attributed_revenue, evidence_url, status, notes, actor,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(attribution_id) DO UPDATE SET
+                source_type=excluded.source_type,
+                source_name=excluded.source_name,
+                session_ref=excluded.session_ref,
+                lead_stage=excluded.lead_stage,
+                attributed_revenue=excluded.attributed_revenue,
+                evidence_url=excluded.evidence_url,
+                status=excluded.status,
+                notes=excluded.notes,
+                updated_at=excluded.updated_at
+            """,
+            tuple(item[key] for key in [
+                "attribution_id", "task_id", "source_type", "source_name", "session_ref",
+                "lead_stage", "attributed_revenue", "evidence_url", "status", "notes", "actor",
+                "created_at", "updated_at",
+            ]),
+        )
+
+
+def _report_from_row(row: sqlite3.Row) -> dict:
+    return {
+        "report_id": row["report_id"],
+        "task_id": row["task_id"],
+        "period_label": row["period_label"],
+        "status": row["status"],
+        "summary": row["summary"],
+        "metrics": _json_loads(row["metrics"], {}),
+        "findings": _json_loads(row["findings"], []),
+        "next_actions": _json_loads(row["next_actions"], []),
+        "generated_at": row["generated_at"],
+        "confirmed_by": row["confirmed_by"],
+        "confirmed_at": row["confirmed_at"],
+        "notes": row["notes"],
+    }
+
+
+def _db_reports(task_id: str | None = None, status: str | None = None) -> list[dict]:
+    query = "SELECT * FROM effect_reports"
+    filters: list[str] = []
+    params: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY generated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_report_from_row(row) for row in rows]
+
+
+def _db_get_report(report_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM effect_reports WHERE report_id = ?", (report_id,)).fetchone()
+    return _report_from_row(row) if row else None
+
+
+def _db_save_report(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO effect_reports (
+                report_id, task_id, period_label, status, summary, metrics, findings,
+                next_actions, generated_at, confirmed_by, confirmed_at, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_id) DO UPDATE SET
+                period_label=excluded.period_label,
+                status=excluded.status,
+                summary=excluded.summary,
+                metrics=excluded.metrics,
+                findings=excluded.findings,
+                next_actions=excluded.next_actions,
+                confirmed_by=excluded.confirmed_by,
+                confirmed_at=excluded.confirmed_at,
+                notes=excluded.notes
+            """,
+            (
+                item["report_id"],
+                item["task_id"],
+                item["period_label"],
+                item["status"],
+                item["summary"],
+                _json_dumps(item.get("metrics", {})),
+                _json_dumps(item.get("findings", [])),
+                _json_dumps(item.get("next_actions", [])),
+                item["generated_at"],
+                item.get("confirmed_by"),
+                item.get("confirmed_at"),
+                item.get("notes"),
+            ),
+        )
+
+
 def _source_map(task_id: str) -> dict:
     observations = _db_source_observations(task_id)
     domain_counts: dict[str, int] = {}
@@ -1672,6 +2068,52 @@ def _monitoring_summary(task_id: str) -> dict:
         "latest_check": checks[0] if checks else None,
         "source_map": _source_map(task_id),
         "trust_anchors": _db_trust_anchors(task_id),
+    }
+
+
+def _build_effect_report(task: dict, period_label: str, notes: str | None = None) -> dict:
+    task_id = task["task_id"]
+    monitoring = _monitoring_summary(task_id)
+    retests = _db_history()["retests"].get(task_id, [])
+    attributions = _db_attributions(task_id)
+    experiments = _db_experiments(task_id)
+    reports = _db_reports(task_id)
+    confirmed_attributions = [item for item in attributions if item.get("status") == "confirmed"]
+    total_revenue = round(sum(float(item.get("attributed_revenue") or 0) for item in confirmed_attributions), 2)
+    won_experiments = [item for item in experiments if item.get("status") == "won"]
+    latest_retest = retests[0] if retests else task.get("latest_retest") or {}
+    delta = int(latest_retest.get("score_delta") or 0)
+    findings = [
+        f"AI 平台品牌提及率 {monitoring['mention_rate']}%，累计监测 {monitoring['check_count']} 次。",
+        f"已确认线索 {len(confirmed_attributions)} 条，归因收入 {total_revenue:.2f}。",
+        f"内容实验完结 {len(won_experiments)} 个，当前 GEO 分数变化 {delta:+d}。",
+    ]
+    next_actions = [
+        "补录待确认线索的证据链接并完成人工确认。",
+        "将赢面实验的内容结构同步到主站和 CMS 模板。",
+        "继续补充高频信源页型，提升目标 AI 平台提及率。",
+    ]
+    return {
+        "report_id": f"report_{uuid.uuid4().hex[:12]}",
+        "task_id": task_id,
+        "period_label": period_label,
+        "status": "generated",
+        "summary": f"{task.get('brand_name') or task.get('title') or task_id} 在 {period_label} 形成 {len(reports) + 1} 期 GEO 效果报告。",
+        "metrics": {
+            "mention_rate": monitoring["mention_rate"],
+            "mention_count": monitoring["mention_count"],
+            "check_count": monitoring["check_count"],
+            "confirmed_leads": len(confirmed_attributions),
+            "attributed_revenue": total_revenue,
+            "won_experiments": len(won_experiments),
+            "retest_delta": delta,
+        },
+        "findings": findings,
+        "next_actions": next_actions,
+        "generated_at": _now_iso(),
+        "confirmed_by": None,
+        "confirmed_at": None,
+        "notes": notes,
     }
 
 
@@ -1880,6 +2322,10 @@ def _db_history() -> dict:
         "source_observations": _db_source_observations(),
         "trust_anchors": _db_trust_anchors(),
         "mention_checks": _db_mention_checks(),
+        "service_packages": _db_service_packages(),
+        "experiments": _db_experiments(),
+        "attributions": _db_attributions(),
+        "reports": _db_reports(),
     }
 
 
@@ -3176,6 +3622,11 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
         task["business_goal"] = request.business_goal.strip() or None
     if request.service_tier is not None:
         task["service_tier"] = request.service_tier.strip() or None
+    if request.package_id is not None:
+        package_id = request.package_id.strip() or None
+        if package_id and not _db_get_service_package(package_id):
+            raise HTTPException(status_code=404, detail="Service package not found.")
+        task["package_id"] = package_id
     task["updated_at"] = _now_iso()
     _db_upsert_task(task)
     if task.get("brand_name") and task.get("target_engines"):
@@ -3190,6 +3641,141 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
         _db_publications(task_id),
         [item for item in _db_jobs(limit=100) if item.get("payload", {}).get("task_id") == task_id],
     )
+
+
+@app.get("/geo/service-packages")
+def geo_service_packages(status: str | None = None):
+    return {"items": _db_service_packages(status=status)}
+
+
+@app.post("/geo/service-packages")
+def geo_service_package_save(request: GEOServicePackageRequest):
+    now = _now_iso()
+    package_id = f"pkg_{hashlib.sha256(f'{request.name}:{request.tier}'.encode()).hexdigest()[:12]}"
+    existing = _db_get_service_package(package_id)
+    item = {
+        "package_id": package_id,
+        "name": request.name.strip(),
+        "tier": request.tier.strip() or "growth",
+        "price_cny": max(0, int(request.price_cny)),
+        "delivery_days": max(1, min(int(request.delivery_days), 365)),
+        "platforms": [item.strip().lower() for item in (request.platforms or []) if item.strip()][:10],
+        "features": [item.strip() for item in (request.features or []) if item.strip()][:20],
+        "status": request.status.strip() or "active",
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+    }
+    _db_save_service_package(item)
+    _db_add_audit(_current_actor(), "save_service_package", "service_package", package_id)
+    return item
+
+
+@app.get("/geo/experiments")
+def geo_experiments(task_id: str | None = None, status: str | None = None):
+    return {"items": _db_experiments(task_id=task_id, status=status)}
+
+
+@app.post("/geo/experiments")
+def geo_experiment_save(request: GEOExperimentRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    now = _now_iso()
+    item = {
+        "experiment_id": f"exp_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "name": request.name.strip(),
+        "hypothesis": request.hypothesis.strip(),
+        "channel": request.channel.strip() or "onsite",
+        "primary_metric": request.primary_metric.strip() or "mention_rate",
+        "variant_a": request.variant_a.strip(),
+        "variant_b": request.variant_b.strip(),
+        "status": request.status.strip() or "draft",
+        "winner": None,
+        "notes": (request.notes or "").strip() or None,
+        "created_at": now,
+        "updated_at": now,
+        "confirmed_by": None,
+        "confirmed_at": None,
+    }
+    _db_save_experiment(item)
+    _db_add_audit(_current_actor(), "save_experiment", "experiment", item["experiment_id"], request.task_id)
+    return item
+
+
+@app.post("/geo/experiments/{experiment_id}/confirm")
+def geo_experiment_confirm(experiment_id: str, request: GEOExperimentConfirmRequest):
+    item = _db_get_experiment(experiment_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    item["status"] = request.status.strip() or item["status"]
+    item["winner"] = (request.winner or "").strip() or None
+    item["notes"] = (request.notes or "").strip() or item.get("notes")
+    item["updated_at"] = _now_iso()
+    item["confirmed_by"] = _current_actor()
+    item["confirmed_at"] = _now_iso()
+    _db_save_experiment(item)
+    _db_add_audit(_current_actor(), "confirm_experiment", "experiment", experiment_id, item["task_id"], outcome=item["status"])
+    return item
+
+
+@app.get("/geo/attributions")
+def geo_attributions(task_id: str | None = None, status: str | None = None):
+    return {"items": _db_attributions(task_id=task_id, status=status)}
+
+
+@app.post("/geo/attributions")
+def geo_attribution_save(request: GEOAttributionRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
+    now = _now_iso()
+    item = {
+        "attribution_id": f"attr_{uuid.uuid4().hex[:12]}",
+        "task_id": request.task_id,
+        "source_type": request.source_type.strip(),
+        "source_name": request.source_name.strip(),
+        "session_ref": (request.session_ref or "").strip() or None,
+        "lead_stage": request.lead_stage.strip() or "new",
+        "attributed_revenue": round(float(request.attributed_revenue or 0), 2),
+        "evidence_url": (request.evidence_url or "").strip() or None,
+        "status": request.status.strip() or "pending_confirmation",
+        "notes": (request.notes or "").strip() or None,
+        "actor": _current_actor(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    _db_save_attribution(item)
+    _db_add_audit(_current_actor(), "save_attribution", "attribution", item["attribution_id"], request.task_id, outcome=item["status"])
+    return item
+
+
+@app.get("/geo/reports")
+def geo_reports(task_id: str | None = None, status: str | None = None):
+    return {"items": _db_reports(task_id=task_id, status=status)}
+
+
+@app.post("/geo/reports/generate")
+def geo_report_generate(request: GEOReportGenerateRequest):
+    task = _db_get_task(request.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    report = _build_effect_report(task, request.period_label.strip() or "近 30 天", request.notes)
+    _db_save_report(report)
+    _db_add_audit(_current_actor(), "generate_report", "report", report["report_id"], request.task_id)
+    return report
+
+
+@app.post("/geo/reports/{report_id}/confirm")
+def geo_report_confirm(report_id: str, request: GEOReportConfirmRequest):
+    report = _db_get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    report["status"] = request.status.strip() or report["status"]
+    report["notes"] = (request.notes or "").strip() or report.get("notes")
+    report["confirmed_by"] = _current_actor()
+    report["confirmed_at"] = _now_iso()
+    _db_save_report(report)
+    _db_add_audit(_current_actor(), "confirm_report", "report", report_id, report["task_id"], outcome=report["status"])
+    return report
 
 
 @app.get("/geo/monitoring/queries")
@@ -3700,6 +4286,9 @@ def geo_task_detail(task_id: str):
         for item in _db_jobs(limit=100)
         if item.get("payload", {}).get("task_id") == task_id
     ]
+    task_experiments = _db_experiments(task_id)
+    task_attributions = _db_attributions(task_id)
+    task_reports = _db_reports(task_id)
     return {
         "task": task,
         "versions": task_versions,
@@ -3719,6 +4308,10 @@ def geo_task_detail(task_id: str):
         "publications": task_publications,
         "jobs": task_jobs,
         "monitoring": _monitoring_summary(task_id),
+        "service_packages": _db_service_packages(status="active"),
+        "experiments": task_experiments,
+        "attributions": task_attributions,
+        "reports": task_reports,
     }
 
 

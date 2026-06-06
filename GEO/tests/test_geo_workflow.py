@@ -243,6 +243,74 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual(result["task_id"], stored["result"]["task_id"])
         self.assertEqual(1, claimed_again["attempts"])
 
+    def test_service_package_assignment_and_project_detail(self):
+        result = self._analyze()
+        package = main.geo_service_package_save(
+            main.GEOServicePackageRequest(
+                name="增长闭环套餐",
+                tier="pro",
+                price_cny=12800,
+                delivery_days=21,
+                platforms=["chatgpt", "perplexity"],
+                features=["监测", "实验", "归因", "报告"],
+            )
+        )
+        project = main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(
+                client_name="Acme",
+                brand_name="Acme AI",
+                package_id=package["package_id"],
+                service_tier="pro",
+            ),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual(package["package_id"], project["package_id"])
+        self.assertEqual("增长闭环套餐", detail["project"]["package_name"])
+        self.assertTrue(detail["service_packages"])
+
+    def test_experiment_attribution_and_report_flow(self):
+        result = self._analyze()
+        experiment = main.geo_experiment_save(
+            main.GEOExperimentRequest(
+                task_id=result["task_id"],
+                name="FAQ 对比实验",
+                hypothesis="增加 FAQ 和对比表后提及率会上升",
+                variant_a="旧版内容",
+                variant_b="新版内容",
+            )
+        )
+        confirmed_experiment = main.geo_experiment_confirm(
+            experiment["experiment_id"],
+            main.GEOExperimentConfirmRequest(status="won", winner="variant_b"),
+        )
+        attribution = main.geo_attribution_save(
+            main.GEOAttributionRequest(
+                task_id=result["task_id"],
+                source_type="ai_platform",
+                source_name="ChatGPT 推荐",
+                attributed_revenue=5000,
+                status="confirmed",
+            )
+        )
+        report = main.geo_report_generate(
+            main.GEOReportGenerateRequest(task_id=result["task_id"], period_label="近 30 天")
+        )
+        confirmed_report = main.geo_report_confirm(
+            report["report_id"],
+            main.GEOReportConfirmRequest(status="confirmed"),
+        )
+        history = main.geo_history()
+
+        self.assertEqual("won", confirmed_experiment["status"])
+        self.assertEqual("confirmed", attribution["status"])
+        self.assertEqual(result["task_id"], report["task_id"])
+        self.assertEqual("confirmed", confirmed_report["status"])
+        self.assertTrue(history["experiments"])
+        self.assertTrue(history["attributions"])
+        self.assertTrue(history["reports"])
+
     def test_failed_job_waits_then_can_be_retried(self):
         result = self._analyze()
         job = main.geo_schedule_retest(

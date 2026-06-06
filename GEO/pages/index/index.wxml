@@ -210,6 +210,64 @@
       <view wx:else class="status-note">下一步：每周在目标 AI 平台记录品牌是否出现、推荐位置和引用来源，建立可量化增长基线。</view>
     </view>
 
+    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">EXPERIMENTS</text>
+          <text class="section-title">内容实验</text>
+        </view>
+        <text class="section-tag">{{experiments.length}} 个</text>
+      </view>
+      <input class="business-input" value="{{experimentName}}" placeholder="实验名称" bindinput="onExperimentNameInput" />
+      <textarea class="module-body-input" value="{{experimentHypothesis}}" placeholder="实验假设：例如 FAQ + 对比表能提升 Perplexity 提及率" bindinput="onExperimentHypothesisInput" />
+      <input class="business-input" value="{{experimentVariantA}}" placeholder="A 方案" bindinput="onExperimentVariantAInput" />
+      <input class="business-input" value="{{experimentVariantB}}" placeholder="B 方案" bindinput="onExperimentVariantBInput" />
+      <view class="review-bar">
+        <button loading="{{savingExperiment}}" disabled="{{savingExperiment}}" bindtap="createExperiment">创建实验</button>
+      </view>
+      <view wx:for="{{experiments}}" wx:key="experiment_id" wx:for-item="experiment" class="status-note">
+        {{experiment.name}} · {{experiment.status}} · {{experiment.primary_metric}}
+        <button size="mini" data-experiment-id="{{experiment.experiment_id}}" bindtap="markExperimentWon">确认赢面</button>
+      </view>
+    </view>
+
+    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">ATTRIBUTION</text>
+          <text class="section-title">线索归因</text>
+        </view>
+        <text class="section-tag">{{attributions.length}} 条</text>
+      </view>
+      <input class="business-input" value="{{attributionSourceName}}" placeholder="来源名称，例如 ChatGPT 推荐 / 行业媒体" bindinput="onAttributionSourceNameInput" />
+      <input class="business-input" value="{{attributionRevenue}}" placeholder="归因金额（可选）" type="number" bindinput="onAttributionRevenueInput" />
+      <input class="business-input" value="{{attributionEvidenceUrl}}" placeholder="证据链接（可选）" bindinput="onAttributionEvidenceUrlInput" />
+      <view class="review-bar">
+        <button loading="{{savingAttribution}}" disabled="{{savingAttribution}}" bindtap="saveLeadAttribution">登记线索</button>
+      </view>
+      <view wx:for="{{attributions}}" wx:key="attribution_id" wx:for-item="item" class="status-note">
+        {{item.source_name}} · {{item.status}} · {{item.attributed_revenue || 0}}
+      </view>
+    </view>
+
+    <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="surface compact-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">REPORTING</text>
+          <text class="section-title">效果报告</text>
+        </view>
+        <text class="section-tag">{{reports.length}} 期</text>
+      </view>
+      <input class="business-input" value="{{reportPeriod}}" placeholder="报告周期" bindinput="onReportPeriodInput" />
+      <view class="review-bar">
+        <button loading="{{generatingReport}}" disabled="{{generatingReport}}" bindtap="buildEffectReport">生成报告</button>
+      </view>
+      <view wx:for="{{reports}}" wx:key="report_id" wx:for-item="report" class="status-note">
+        {{report.period_label}} · {{report.status}} · 提及率 {{report.metrics.mention_rate || 0}}%
+        <button wx:if="{{report.status !== 'confirmed'}}" size="mini" data-report-id="{{report.report_id}}" bindtap="confirmLatestReport">确认</button>
+      </view>
+    </view>
+
     <view wx:if="{{taskList.length > 1}}" class="surface compact-surface">
       <view class="section-head">
         <text class="section-title">批量任务</text>

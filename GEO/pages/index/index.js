@@ -15,6 +15,10 @@ const {
   retestTask,
   scheduleRetest,
   getTaskDetail,
+  saveExperiment,
+  confirmExperiment,
+  saveAttribution,
+  generateReport,
   exportJson
 } = require("../../utils/api")
 
@@ -413,6 +417,18 @@ Page({
     selectedPublication: null,
     selectedPublicationIndex: 0,
     feedbackEntries: [],
+    experiments: [],
+    attributions: [],
+    reports: [],
+    experimentName: "",
+    experimentHypothesis: "",
+    experimentVariantA: "",
+    experimentVariantB: "",
+    attributionSourceType: "chatgpt",
+    attributionSourceName: "",
+    attributionRevenue: "",
+    attributionEvidenceUrl: "",
+    reportPeriod: "近 30 天",
     cmsTargets: [],
     cmsTargetIndex: 0,
     publishConfirmation: "",
@@ -426,6 +442,9 @@ Page({
     publishing: false,
     verifyingPublication: false,
     savingFeedback: false,
+    savingExperiment: false,
+    savingAttribution: false,
+    generatingReport: false,
     deliveryTarget: "json_file",
     webhookUrl: "",
     retesting: false,
@@ -483,6 +502,9 @@ Page({
         monitoring: detail.monitoring || null,
         publications: detail.publications || [],
         feedbackEntries: detail.feedback || [],
+        experiments: detail.experiments || [],
+        attributions: detail.attributions || [],
+        reports: detail.reports || [],
         ...publicationState,
         dimensions: buildDimensions(normalized.breakdown),
         assets: buildAssets(normalized),
@@ -586,6 +608,38 @@ Page({
     this.setData({ feedbackNotes: event.detail.value })
   },
 
+  onExperimentNameInput(event) {
+    this.setData({ experimentName: event.detail.value })
+  },
+
+  onExperimentHypothesisInput(event) {
+    this.setData({ experimentHypothesis: event.detail.value })
+  },
+
+  onExperimentVariantAInput(event) {
+    this.setData({ experimentVariantA: event.detail.value })
+  },
+
+  onExperimentVariantBInput(event) {
+    this.setData({ experimentVariantB: event.detail.value })
+  },
+
+  onAttributionSourceNameInput(event) {
+    this.setData({ attributionSourceName: event.detail.value })
+  },
+
+  onAttributionRevenueInput(event) {
+    this.setData({ attributionRevenue: event.detail.value })
+  },
+
+  onAttributionEvidenceUrlInput(event) {
+    this.setData({ attributionEvidenceUrl: event.detail.value })
+  },
+
+  onReportPeriodInput(event) {
+    this.setData({ reportPeriod: event.detail.value })
+  },
+
   setFeedbackVerdict(event) {
     this.setData({ feedbackVerdict: event.currentTarget.dataset.verdict })
   },
@@ -680,6 +734,9 @@ Page({
         selectedPublication: null,
         selectedPublicationIndex: 0,
         feedbackEntries: [],
+        experiments: [],
+        attributions: [],
+        reports: [],
         project: mode === "url" ? {
           client_name: this.data.clientName.trim() || null,
           brand_name: this.data.brandName.trim() || result.title,
@@ -729,9 +786,19 @@ Page({
       selectedPublication: null,
       selectedPublicationIndex: 0,
       feedbackEntries: [],
+      experiments: [],
+      attributions: [],
+      reports: [],
       publishConfirmation: "",
       verifyTerms: "",
-      feedbackNotes: ""
+      feedbackNotes: "",
+      experimentName: "",
+      experimentHypothesis: "",
+      experimentVariantA: "",
+      experimentVariantB: "",
+      attributionSourceName: "",
+      attributionRevenue: "",
+      attributionEvidenceUrl: ""
     })
     wx.pageScrollTo({ scrollTop: 0, duration: 250 })
   },
@@ -1083,6 +1150,9 @@ Page({
       project: detail.project || this.data.project,
       publications: detail.publications || [],
       feedbackEntries: detail.feedback || [],
+      experiments: detail.experiments || [],
+      attributions: detail.attributions || [],
+      reports: detail.reports || [],
       ...publicationState,
       stepPanel: buildStepPanel(result, this.data.activeStep)
     })
@@ -1235,6 +1305,111 @@ Page({
       wx.showToast({ title: "反馈已记录", icon: "success" })
     } catch (error) {
       this.setData({ savingFeedback: false, error: error.message || "保存反馈失败" })
+    }
+  },
+
+  async createExperiment() {
+    if (!this.data.result.task_id || !this.data.experimentName.trim() || !this.data.experimentHypothesis.trim()) {
+      wx.showToast({ title: "请填写实验名称与假设", icon: "none" })
+      return
+    }
+    this.setData({ savingExperiment: true, error: "" })
+    try {
+      await saveExperiment({
+        task_id: this.data.result.task_id,
+        name: this.data.experimentName.trim(),
+        hypothesis: this.data.experimentHypothesis.trim(),
+        channel: "onsite",
+        primary_metric: "mention_rate",
+        variant_a: this.data.experimentVariantA.trim() || "原始内容结构",
+        variant_b: this.data.experimentVariantB.trim() || "改写内容结构",
+        status: "draft"
+      })
+      await this.reloadCurrentTask()
+      this.setData({
+        savingExperiment: false,
+        experimentName: "",
+        experimentHypothesis: "",
+        experimentVariantA: "",
+        experimentVariantB: ""
+      })
+      wx.showToast({ title: "实验已创建", icon: "success" })
+    } catch (error) {
+      this.setData({ savingExperiment: false, error: error.message || "创建实验失败" })
+    }
+  },
+
+  async markExperimentWon(event) {
+    const experimentId = event.currentTarget.dataset.experimentId
+    if (!experimentId) {
+      return
+    }
+    try {
+      await confirmExperiment(experimentId, { status: "won", winner: "variant_b" })
+      await this.reloadCurrentTask()
+      wx.showToast({ title: "已确认赢家", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "确认实验失败" })
+    }
+  },
+
+  async saveLeadAttribution() {
+    if (!this.data.result.task_id || !this.data.attributionSourceName.trim()) {
+      wx.showToast({ title: "请填写线索来源", icon: "none" })
+      return
+    }
+    this.setData({ savingAttribution: true, error: "" })
+    try {
+      await saveAttribution({
+        task_id: this.data.result.task_id,
+        source_type: this.data.attributionSourceType,
+        source_name: this.data.attributionSourceName.trim(),
+        attributed_revenue: Number(this.data.attributionRevenue) || 0,
+        evidence_url: this.data.attributionEvidenceUrl.trim() || undefined,
+        status: "pending_confirmation"
+      })
+      await this.reloadCurrentTask()
+      this.setData({
+        savingAttribution: false,
+        attributionSourceName: "",
+        attributionRevenue: "",
+        attributionEvidenceUrl: ""
+      })
+      wx.showToast({ title: "线索已登记", icon: "success" })
+    } catch (error) {
+      this.setData({ savingAttribution: false, error: error.message || "保存线索失败" })
+    }
+  },
+
+  async buildEffectReport() {
+    if (!this.data.result.task_id) {
+      return
+    }
+    this.setData({ generatingReport: true, error: "" })
+    try {
+      await generateReport({
+        task_id: this.data.result.task_id,
+        period_label: this.data.reportPeriod.trim() || "近 30 天"
+      })
+      await this.reloadCurrentTask()
+      this.setData({ generatingReport: false })
+      wx.showToast({ title: "报告已生成", icon: "success" })
+    } catch (error) {
+      this.setData({ generatingReport: false, error: error.message || "生成报告失败" })
+    }
+  },
+
+  async confirmLatestReport(event) {
+    const reportId = event.currentTarget.dataset.reportId
+    if (!reportId) {
+      return
+    }
+    try {
+      await confirmReport(reportId, { status: "confirmed" })
+      await this.reloadCurrentTask()
+      wx.showToast({ title: "报告已确认", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "确认报告失败" })
     }
   },
 

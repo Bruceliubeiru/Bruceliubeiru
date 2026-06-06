@@ -113,6 +113,30 @@ function getTaskDetail(taskId) {
   return request(`/geo/tasks/${taskId}`, {}, "GET")
 }
 
+function getServicePackages() {
+  return request("/geo/service-packages", {}, "GET")
+}
+
+function saveExperiment(payload) {
+  return request("/geo/experiments", payload)
+}
+
+function confirmExperiment(experimentId, payload) {
+  return request(`/geo/experiments/${experimentId}/confirm`, payload)
+}
+
+function saveAttribution(payload) {
+  return request("/geo/attributions", payload)
+}
+
+function generateReport(payload) {
+  return request("/geo/reports/generate", payload)
+}
+
+function confirmReport(reportId, payload) {
+  return request(`/geo/reports/${reportId}/confirm`, payload)
+}
+
 function exportJson(payload) {
   return request("/geo/export/json", payload)
 }
@@ -136,5 +160,11 @@ module.exports = {
   scheduleRetest,
   getHistory,
   getTaskDetail,
+  getServicePackages,
+  saveExperiment,
+  confirmExperiment,
+  saveAttribution,
+  generateReport,
+  confirmReport,
   exportJson
 }

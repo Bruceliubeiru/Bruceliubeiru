@@ -29,6 +29,9 @@
     <button class="tab {{activeTab === 'retests' ? 'active' : ''}}" data-tab="retests" bindtap="switchTab">复测</button>
     <button class="tab {{activeTab === 'feedback' ? 'active' : ''}}" data-tab="feedback" bindtap="switchTab">反馈</button>
     <button class="tab {{activeTab === 'visibility' ? 'active' : ''}}" data-tab="visibility" bindtap="switchTab">AI 可见度</button>
+    <button class="tab {{activeTab === 'experiments' ? 'active' : ''}}" data-tab="experiments" bindtap="switchTab">实验</button>
+    <button class="tab {{activeTab === 'attributions' ? 'active' : ''}}" data-tab="attributions" bindtap="switchTab">归因</button>
+    <button class="tab {{activeTab === 'reports' ? 'active' : ''}}" data-tab="reports" bindtap="switchTab">报告</button>
   </view>
 
   <text wx:if="{{error}}" class="error">{{error}}</text>
@@ -160,5 +163,51 @@
       <text class="url">{{check.answer_excerpt || check.notes || '暂无答案摘录'}}</text>
     </view>
     <text wx:if="{{!displayMentionChecks.length && !loading}}" class="empty">暂无 AI 平台可见度记录</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'experiments'}}" class="list">
+    <view class="card" wx:for="{{displayExperiments}}" wx:key="experiment_id" wx:for-item="item">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{item.name}}</text>
+          <text class="url">{{item.primary_metric}}</text>
+        </view>
+        <text class="status">{{item.status}}</text>
+      </view>
+      <text class="url">{{item.hypothesis}}</text>
+    </view>
+    <text wx:if="{{!displayExperiments.length && !loading}}" class="empty">暂无内容实验</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'attributions'}}" class="list">
+    <view class="card" wx:for="{{displayAttributions}}" wx:key="attribution_id" wx:for-item="item">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{item.source_name}}</text>
+          <text class="url">{{item.source_type}}</text>
+        </view>
+        <text class="status">{{item.status}}</text>
+      </view>
+      <view class="version-grid">
+        <view><text class="meta-label">任务</text><text class="meta-value">{{item.task_id}}</text></view>
+        <view><text class="meta-label">阶段</text><text class="meta-value">{{item.lead_stage}}</text></view>
+        <view><text class="meta-label">金额</text><text class="meta-value">{{item.attributed_revenue}}</text></view>
+      </view>
+    </view>
+    <text wx:if="{{!displayAttributions.length && !loading}}" class="empty">暂无线索归因</text>
+  </view>
+
+  <view wx:if="{{activeTab === 'reports'}}" class="list">
+    <view class="card" wx:for="{{displayReports}}" wx:key="report_id" wx:for-item="item">
+      <view class="card-top">
+        <view class="card-copy">
+          <text class="card-title">{{item.period_label}}</text>
+          <text class="url">{{item.report_id}}</text>
+        </view>
+        <text class="status">{{item.status}}</text>
+      </view>
+      <text class="url">{{item.summary}}</text>
+    </view>
+    <text wx:if="{{!displayReports.length && !loading}}" class="empty">暂无效果报告</text>
   </view>
 </view>

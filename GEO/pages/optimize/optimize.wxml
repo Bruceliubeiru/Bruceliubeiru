@@ -16,8 +16,35 @@
 
   <view class="surface">
     <view class="section-head">
-      <text class="section-title">内容改造包</text>
+      <view>
+        <text class="section-eyebrow">P0 GAPS</text>
+        <text class="section-title">差距诊断转动作</text>
+      </view>
       <button class="ghost-button" bindtap="loadData">刷新</button>
+    </view>
+    <view class="stage-list">
+      <view class="stage-card active">
+        <text class="stage-no">01</text>
+        <text class="stage-title">内容缺口</text>
+        <text class="stage-meta">先补 AI Summary、FAQ、对比表和权威证据。</text>
+      </view>
+      <view class="stage-card">
+        <text class="stage-no">02</text>
+        <text class="stage-title">内容包</text>
+        <text class="stage-meta">生成可复制、可编辑、可审核的模块草稿。</text>
+      </view>
+      <view class="stage-card">
+        <text class="stage-no">03</text>
+        <text class="stage-title">审核发布</text>
+        <text class="stage-meta">保存版本、人工审核、创建预览、上线校验。</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="surface">
+    <view class="section-head">
+      <text class="section-title">内容改造包</text>
+      <text class="section-tag">{{versions.length}} 个</text>
     </view>
     <view class="list-card" wx:for="{{versions}}" wx:key="version_id" wx:for-item="version">
       <view>
@@ -33,7 +60,10 @@
   </view>
 
   <view class="surface">
-    <text class="section-title">审核与发布</text>
+    <view class="section-head">
+      <text class="section-title">审核与发布</text>
+      <text class="section-tag">{{publications.length}} 条</text>
+    </view>
     <view class="list-card" wx:for="{{publications}}" wx:key="publication_id" wx:for-item="publication">
       <view>
         <text class="item-title">{{publication.publication_id}}</text>

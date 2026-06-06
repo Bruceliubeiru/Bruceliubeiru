@@ -771,10 +771,31 @@ Page({
 
   switchStep(event) {
     const activeStep = event.currentTarget.dataset.step
-    this.setData({
+    const nextData = {
       activeStep,
       stepPanel: buildStepPanel(this.data.result, activeStep)
-    })
+    }
+
+    if (activeStep === "advise") {
+      nextData.activeTab = "summary"
+    }
+    if (activeStep === "produce" || activeStep === "export") {
+      nextData.activeTab = "modules"
+    }
+
+    this.setData(nextData)
+
+    const selectorMap = {
+      advise: ".preview-surface",
+      produce: ".package-surface",
+      export: ".package-surface",
+      sample: ".sampling-surface",
+      report: ".report-surface"
+    }
+    const selector = selectorMap[activeStep]
+    if (selector) {
+      wx.pageScrollTo({ selector, duration: 250 })
+    }
   },
 
   refreshLoopSteps(extra = {}) {

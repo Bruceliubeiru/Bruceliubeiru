@@ -1,1 +1,44 @@
 @import "../profile/profile.wxss";
+
+.stage-list {
+  display: grid;
+  gap: 12rpx;
+}
+
+.stage-card {
+  padding: 16rpx;
+  border: 1rpx solid #e0e5e9;
+  border-radius: 12rpx;
+  background: #fbfcfd;
+}
+
+.stage-card.active {
+  border-color: #b9d8cf;
+  background: #eef8f5;
+}
+
+.stage-no,
+.stage-title,
+.stage-meta {
+  display: block;
+}
+
+.stage-no {
+  color: #a9342c;
+  font-size: 19rpx;
+  font-weight: 900;
+}
+
+.stage-title {
+  margin-top: 6rpx;
+  color: #222b32;
+  font-size: 25rpx;
+  font-weight: 900;
+}
+
+.stage-meta {
+  margin-top: 5rpx;
+  color: #7f8992;
+  font-size: 21rpx;
+  line-height: 1.4;
+}

@@ -356,7 +356,7 @@
       </view>
     </view>
 
-    <view class="surface">
+    <view wx:if="{{activeStep === 'advise'}}" class="surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">DIAGNOSTIC</text>
@@ -403,7 +403,7 @@
       </view>
     </view>
 
-    <view class="surface package-surface">
+    <view wx:if="{{activeStep === 'produce' || activeStep === 'export'}}" class="surface package-surface">
       <view class="section-head">
         <view>
           <text class="section-eyebrow">CONTENT PACKAGE</text>
@@ -491,7 +491,15 @@
             </view>
           </view>
         </view>
-        <view class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
+        <view wx:if="{{activeStep === 'export'}}" class="handoff-summary">
+          <text class="handoff-title">已生成内容包</text>
+          <text class="handoff-copy">内容包已准备好，当前屏只处理审核、发布、校验。需要编辑文案时切回第 2 步“生成”。</text>
+          <view class="handoff-actions">
+            <button data-step="produce" bindtap="switchStep">回到内容编辑</button>
+            <button bindtap="copyJson">复制 JSON</button>
+          </view>
+        </view>
+        <view wx:if="{{activeStep === 'produce'}}" class="module-card" wx:for="{{result.injection_modules}}" wx:key="module_type" wx:for-item="module">
           <view class="module-head">
             <text class="module-type">{{module.module_type}}</text>
             <text class="module-status">{{module.review_status || module.priority}}</text>
@@ -602,7 +610,7 @@
       </view>
     </view>
 
-    <view class="surface preview-surface">
+    <view wx:if="{{activeStep === 'advise'}}" class="surface preview-surface">
       <view class="section-head"><text class="section-title">抓取内容预览</text></view>
       <text class="preview-copy">{{result.content_preview}}</text>
     </view>

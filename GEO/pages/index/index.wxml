@@ -176,6 +176,20 @@
       </view>
     </view>
 
+    <view class="screen-guide">
+      <view class="screen-guide-main">
+        <text class="screen-code">{{stepPanel.screenCode}}</text>
+        <text class="screen-title">{{stepPanel.screenName}}</text>
+        <text class="screen-copy">{{stepPanel.screenGoal}}</text>
+      </view>
+      <view class="screen-guide-side">
+        <text class="screen-label">交付物</text>
+        <text class="screen-value">{{stepPanel.output}}</text>
+        <text class="screen-label next">下一屏</text>
+        <text class="screen-value">{{stepPanel.nextScreen}}</text>
+      </view>
+    </view>
+
     <view class="surface loop-surface">
       <view class="section-head">
         <view>
@@ -531,16 +545,14 @@
               <text class="config-value">{{cmsTargets[cmsTargetIndex].name}} · {{cmsTargets[cmsTargetIndex].environment}}</text>
             </view>
           </picker>
-          <view class="review-bar">
-            <button loading="{{publishing}}" disabled="{{publishing}}" bindtap="createCmsPreview">创建发布预览</button>
-            <button loading="{{publishing}}" disabled="{{publishing}}" bindtap="retryCmsPublish">重试失败发布</button>
+          <view class="review-bar publish-action-bar">
+            <button wx:if="{{!selectedPublication}}" class="approve" loading="{{publishing}}" disabled="{{publishing}}" bindtap="createCmsPreview">创建发布预览</button>
+            <button wx:if="{{selectedPublication.status === 'failed'}}" loading="{{publishing}}" disabled="{{publishing}}" bindtap="retryCmsPublish">重试失败发布</button>
+            <button wx:if="{{selectedPublication.status === 'pending_confirmation' || selectedPublication.status === 'preview_created' || selectedPublication.status === 'pending_publish'}}" class="approve" loading="{{publishing}}" disabled="{{publishing}}" bindtap="confirmCmsPublish">确认发布</button>
+            <button wx:if="{{selectedPublication.status === 'published' || selectedPublication.status === 'verification_failed'}}" class="approve" loading="{{verifyingPublication}}" disabled="{{verifyingPublication}}" bindtap="verifyCmsPublication">上线校验</button>
           </view>
-          <input class="webhook-input" value="{{publishConfirmation}}" placeholder="输入 PUBLISH 确认正式发布" bindinput="onPublishConfirmationInput" />
-          <view class="review-bar">
-            <button class="approve" loading="{{publishing}}" disabled="{{publishing}}" bindtap="confirmCmsPublish">确认发布</button>
-            <button loading="{{verifyingPublication}}" disabled="{{verifyingPublication}}" bindtap="verifyCmsPublication">上线校验</button>
-            <button bindtap="scheduleCmsVerification">安排自动校验</button>
-          </view>
+          <input wx:if="{{selectedPublication.status === 'pending_confirmation' || selectedPublication.status === 'preview_created' || selectedPublication.status === 'pending_publish'}}" class="webhook-input" value="{{publishConfirmation}}" placeholder="可选：手动输入 PUBLISH，主按钮会自动确认" bindinput="onPublishConfirmationInput" />
+          <button wx:if="{{selectedPublication.status === 'published' || selectedPublication.status === 'verification_failed'}}" class="secondary-wide" bindtap="scheduleCmsVerification">安排自动校验</button>
         </view>
         <view wx:if="{{publications.length}}" class="delivery-config">
           <text class="delivery-title">发布记录</text>

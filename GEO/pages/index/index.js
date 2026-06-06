@@ -284,6 +284,45 @@ function buildNextSteps(result) {
 function buildStepPanel(result, activeStep) {
   const steps = buildNextSteps(result)
   const step = steps.find((item) => item.key === activeStep) || steps[0]
+  const screenMap = {
+    advise: {
+      screenCode: "P09",
+      screenName: "差距诊断",
+      screenGoal: "先确认 AI 不引用、不推荐的具体原因。",
+      nextScreen: "P10 内容改造包"
+    },
+    produce: {
+      screenCode: "P10",
+      screenName: "内容改造包",
+      screenGoal: "把诊断差距转成可复制、可编辑、可审核的页面模块。",
+      nextScreen: "P13 审核与发布"
+    },
+    export: {
+      screenCode: "P13",
+      screenName: "审核与发布",
+      screenGoal: "完成版本审核、发布预览、正式发布和上线校验。",
+      nextScreen: "P11 收录与采样"
+    },
+    index: {
+      screenCode: "P11",
+      screenName: "收录推进",
+      screenGoal: "把飞书文章或内容包变成可被模型抓取的公开页面。",
+      nextScreen: "P06 AI Query 池"
+    },
+    sample: {
+      screenCode: "P06-P08",
+      screenName: "Query / Sources / 信源地图",
+      screenGoal: "用真实 AI 平台回答采样，沉淀 Mention、Citation 和 Sources。",
+      nextScreen: "P12 周报与实验"
+    },
+    report: {
+      screenCode: "P12",
+      screenName: "AI 可见度周报",
+      screenGoal: "把分数、收录、采样和线索归因收束成可复盘的增长报告。",
+      nextScreen: "下一轮差距诊断"
+    }
+  }
+  const screen = screenMap[step.key] || screenMap.advise
   const modules = result.injection_modules || []
   const faqs = result.faq_items || []
 
@@ -293,6 +332,7 @@ function buildStepPanel(result, activeStep) {
     const hasDraft = workflow.status === "draft_ready" || improved.length > 0
     return {
       ...step,
+      ...screen,
       action: hasDraft ? "保存版本进入审核" : "生成改进",
       items: (improved.length ? improved : modules).slice(0, 4).map((item) => `${item.module_type}：${item.title}`),
       note: hasDraft
@@ -316,6 +356,7 @@ function buildStepPanel(result, activeStep) {
     }
     return {
       ...step,
+      ...screen,
       action,
       items: workflow.retest_plan && workflow.retest_plan.length
         ? workflow.retest_plan
@@ -339,6 +380,7 @@ function buildStepPanel(result, activeStep) {
   if (step.key === "index") {
     return {
       ...step,
+      ...screen,
       items: ["创建飞书文章草稿", "发布到可抓取公开页面", "填写公开 URL 并提交收录", "记录收录状态后进入 AI 采样"],
       note: "飞书适合协作，不等于公开收录。必须有官网、博客、帮助中心或专题页 URL 才能进入稳定收录。"
     }
@@ -347,6 +389,7 @@ function buildStepPanel(result, activeStep) {
   if (step.key === "sample") {
     return {
       ...step,
+      ...screen,
       items: ["生成或补齐监测 Query", "选择 AI 平台并粘贴回答正文", "粘贴 Sources 链接", "解析后刷新 Mention / Citation"],
       note: "建议每个平台每周至少采 3 条核心 Query，样本不足时只能作为方向参考。"
     }
@@ -355,6 +398,7 @@ function buildStepPanel(result, activeStep) {
   if (step.key === "report") {
     return {
       ...step,
+      ...screen,
       items: ["立即复测同一 URL", "记录 AI 平台采样", "登记线索或转化证据", "生成并确认效果报告"],
       note: "闭环完成的标准不是页面写完，而是能看到分数、收录、Mention、Citation 或线索归因的变化。"
     }
@@ -362,6 +406,7 @@ function buildStepPanel(result, activeStep) {
 
   return {
     ...step,
+    ...screen,
     items: (result.content_gaps || result.recommendations || []).slice(0, 4),
     note: "先处理前两项弱点，通常比一次性重写整页更容易验收。"
   }

@@ -469,6 +469,74 @@
   font-weight: 900;
 }
 
+.screen-guide {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(190rpx, 0.75fr);
+  gap: 16rpx;
+  margin-top: 16rpx;
+  padding: 20rpx;
+  border: 1rpx solid #d9e5e1;
+  border-radius: 14rpx;
+  background: #f8fbfa;
+}
+
+.screen-guide-main,
+.screen-guide-side {
+  min-width: 0;
+}
+
+.screen-code,
+.screen-title,
+.screen-copy,
+.screen-label,
+.screen-value {
+  display: block;
+}
+
+.screen-code {
+  color: #a9342c;
+  font-size: 20rpx;
+  font-weight: 900;
+}
+
+.screen-title {
+  margin-top: 5rpx;
+  color: #1d242b;
+  font-size: 30rpx;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.screen-copy {
+  margin-top: 8rpx;
+  color: #68737d;
+  font-size: 22rpx;
+  line-height: 1.45;
+}
+
+.screen-guide-side {
+  padding-left: 16rpx;
+  border-left: 1rpx solid #dde8e4;
+}
+
+.screen-label {
+  color: #8a959d;
+  font-size: 18rpx;
+  font-weight: 900;
+}
+
+.screen-label.next {
+  margin-top: 12rpx;
+}
+
+.screen-value {
+  margin-top: 5rpx;
+  color: #263038;
+  font-size: 21rpx;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
 .workflow-rail {
   width: 100%;
   margin-top: 14rpx;
@@ -1048,6 +1116,25 @@
   border-color: #82b5a8;
   background: #edf7f4;
   color: #176b5b;
+}
+
+.publish-action-bar {
+  grid-template-columns: 1fr;
+}
+
+.secondary-wide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 62rpx;
+  margin-top: 10rpx;
+  border: 1rpx solid #d8dee3;
+  border-radius: 8rpx;
+  background: #ffffff;
+  color: #55616b;
+  font-size: 20rpx;
+  font-weight: 900;
 }
 
 .delivery-config {

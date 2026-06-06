@@ -381,6 +381,17 @@ function buildPublicationState(publications, preferredId) {
   }
 }
 
+function normalizeAnalyzeError(error) {
+  const message = (error && error.message) || "诊断失败，请稍后重试"
+  if (message.includes("HTTPS/TLS") || message.includes("SSL") || message.includes("抓取失败") || message.includes("Failed to fetch URL")) {
+    return `${message}\n\n可切换到“文案分析”，把页面正文粘贴进来继续生成 GEO 文章、FAQ、Schema 和收录推进。`
+  }
+  if (message.includes("502")) {
+    return "后端抓取目标页面失败。请确认页面可公开访问，或切换到“文案分析”粘贴正文继续。"
+  }
+  return message
+}
+
 Page({
   data: {
     hasAnalyzed: false,
@@ -807,7 +818,7 @@ Page({
       }
     } catch (error) {
       this.setData({
-        error: error.message || "诊断失败，请稍后重试",
+        error: normalizeAnalyzeError(error),
         loading: false
       })
     }

@@ -6,6 +6,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import ssl
 import subprocess
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -3277,26 +3278,99 @@ def _normalize_url(raw_url: str) -> str:
     return _validate_public_url(value, "Page")
 
 
-def _fetch_page_text(url: str) -> tuple[str, str]:
+def _extract_html_title_text(url: str, html: str) -> tuple[str, str]:
+    parser = _ReadableTextParser()
+    parser.feed(html)
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else url
+    return title, parser.text[:12000]
+
+
+def _fetch_page_text_with_urlopen(url: str) -> tuple[str, str]:
     request = Request(
         url,
         headers={
             "User-Agent": (
-                "Mozilla/5.0 (compatible; GEOGrowthOS/1.0; "
-                "+https://example.com/geo-audit)"
-            )
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh-HK;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
         },
     )
-    with urlopen(request, timeout=12) as response:
+    with urlopen(request, timeout=14) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         html = response.read().decode(charset, errors="ignore")
+    return _extract_html_title_text(url, html)
 
-    parser = _ReadableTextParser()
-    parser.feed(html)
 
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
-    title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else url
-    return title, parser.text[:12000]
+def _fetch_page_text_with_curl(url: str) -> tuple[str, str]:
+    curl = shutil.which("curl")
+    if not curl:
+        raise URLError("curl fallback is unavailable.")
+    completed = subprocess.run(
+        [
+            curl,
+            "--location",
+            "--silent",
+            "--show-error",
+            "--compressed",
+            "--http1.1",
+            "--retry",
+            "2",
+            "--retry-delay",
+            "1",
+            "--max-time",
+            "18",
+            "--user-agent",
+            (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0 Safari/537.36"
+            ),
+            "--header",
+            "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "--header",
+            "Accept-Language: zh-CN,zh-HK;q=0.9,en;q=0.8",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=22,
+    )
+    if completed.returncode != 0:
+        raise URLError((completed.stderr or completed.stdout or "curl fetch failed").strip())
+    return _extract_html_title_text(url, completed.stdout)
+
+
+def _fetch_page_text(url: str) -> tuple[str, str]:
+    errors: list[str] = []
+    for fetcher in (_fetch_page_text_with_urlopen, _fetch_page_text_with_curl):
+        try:
+            title, text = fetcher(url)
+            if text.strip():
+                return title, text
+            errors.append("fetched page has no readable text")
+        except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError, subprocess.SubprocessError) as exc:
+            errors.append(str(exc))
+    raise URLError("; ".join(errors) or "failed to fetch page")
+
+
+def _fetch_error_detail(exc: Exception) -> str:
+    raw = str(exc)
+    if "EOF occurred in violation of protocol" in raw or "SSL" in raw or "_ssl.c" in raw:
+        return (
+            "目标页面的 HTTPS/TLS 握手被站点或 CDN 中断，后端已尝试浏览器 UA 和 curl 兼容模式仍失败。"
+            "请换一个可公开抓取的 URL，或切到“文案分析”粘贴页面正文继续。"
+        )
+    if "timed out" in raw.lower() or "timeout" in raw.lower():
+        return "目标页面抓取超时。请稍后重试，或切到“文案分析”粘贴页面正文继续。"
+    if "403" in raw or "Forbidden" in raw:
+        return "目标页面拒绝后端抓取。请使用可公开访问页面，或切到“文案分析”粘贴页面正文继续。"
+    return f"目标页面抓取失败：{raw}。可切到“文案分析”粘贴页面正文继续。"
 
 
 def _extract_terms(title: str, content: str) -> dict:
@@ -3910,8 +3984,8 @@ def geo_url_audit(request: GEOUrlAuditRequest):
         title, content = _fetch_page_text(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch URL: {exc}") from exc
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=_fetch_error_detail(exc)) from exc
 
     if len(content.split()) < 20:
         raise HTTPException(
@@ -3936,8 +4010,8 @@ def geo_analyze(request: GEOAnalyzeRequest):
         title, content = _fetch_page_text(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch URL: {exc}") from exc
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=_fetch_error_detail(exc)) from exc
 
     if len(content.split()) < 20:
         raise HTTPException(
@@ -4338,8 +4412,8 @@ def geo_retest(request: GEORetestRequest):
         title, content = _fetch_page_text(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch URL: {exc}") from exc
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=_fetch_error_detail(exc)) from exc
 
     score_result = score_content(content)
     current_score = int(score_result.get("geo_score") or 0)
@@ -5208,8 +5282,8 @@ def cms_publication_verify(request: CMSPublicationVerifyRequest):
         title, content = _fetch_page_text(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to verify live page: {exc}") from exc
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=f"上线页面校验失败：{_fetch_error_detail(exc)}") from exc
 
     matched = [term for term in expected_terms if term and term.lower() in content.lower()]
     missing = [term for term in expected_terms if term and term not in matched]

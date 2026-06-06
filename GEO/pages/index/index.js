@@ -145,6 +145,12 @@ const defaultWorkflow = {
   retest_plan: []
 }
 
+const pendingPublicationStatuses = ["pending_confirmation", "preview_created", "pending_publish"]
+
+function isPendingPublication(publication) {
+  return pendingPublicationStatuses.includes(publication && publication.status)
+}
+
 const pageTypeOptions = [
   { label: "交通票券", value: "transport_pass" },
   { label: "推广页", value: "landing_page" },
@@ -304,7 +310,7 @@ function buildStepPanel(result, activeStep) {
     if (version.status === "pending_review") action = "审核通过"
     if (version.status === "approved") {
       action = "创建发布预览"
-      if (publication.status === "pending_confirmation") action = "确认发布"
+      if (isPendingPublication(publication)) action = "确认发布"
       if (publication.status === "published" || publication.status === "verification_failed") action = "上线校验"
       if (publication.live_status === "verified_live" || publication.status === "verified_live") action = "进入收录推进"
     }
@@ -316,7 +322,7 @@ function buildStepPanel(result, activeStep) {
         : ["复制 JSON 给开发对接", "复制 Markdown 给运营审核", "页面发布后重新诊断同一 URL"],
       note: retest.current_score
         ? `已复测：${retest.previous_score} → ${retest.current_score}，变化 ${retest.score_delta} 分。`
-        : (publication.status === "pending_confirmation"
+        : (isPendingPublication(publication)
           ? "发布预览已创建。点击主按钮会用 PUBLISH 确认发布，然后进入上线校验。"
           : (publication.status === "published"
             ? "已提交发布。下一步校验线上页面是否包含关键模块。"
@@ -435,7 +441,7 @@ function buildPublicationState(publications, preferredId) {
   const items = Array.isArray(publications) ? publications : []
   const preferred = preferredId
     ? items.find((item) => item.publication_id === preferredId)
-    : (items.find((item) => item.status === "pending_confirmation")
+    : (items.find((item) => isPendingPublication(item))
       || items.find((item) => item.status === "failed")
       || items.find((item) => ["published", "verification_failed", "verified_live"].includes(item.status))
       || items[0])
@@ -1043,7 +1049,7 @@ Page({
         return
       }
       const publication = this.data.selectedPublication
-      if (publication && publication.status === "pending_confirmation") {
+      if (publication && isPendingPublication(publication)) {
         this.confirmCmsPublish(true)
         return
       }
@@ -1354,7 +1360,7 @@ Page({
     }
   },
 
-  async reloadCurrentTask() {
+  async reloadCurrentTask(preferredPublicationId = "") {
     if (!this.data.result.task_id) {
       return
     }
@@ -1374,7 +1380,7 @@ Page({
     if (latestVersion && latestVersion.modules && latestVersion.modules.length) {
       result.injection_modules = latestVersion.modules
     }
-    const publicationState = buildPublicationState(detail.publications || [], this.data.selectedPublicationId)
+    const publicationState = buildPublicationState(detail.publications || [], preferredPublicationId || this.data.selectedPublicationId)
     result.selectedPublication = publicationState.selectedPublication
     this.setData({
       result,
@@ -1534,10 +1540,16 @@ Page({
     }
     this.setData({ publishing: true, error: "" })
     try {
-      await createPublicationPreview({ version_id: version.version_id, target_id: target.target_id })
-      await this.reloadCurrentTask()
-      this.setData({ publishing: false })
+      const publication = await createPublicationPreview({ version_id: version.version_id, target_id: target.target_id })
+      const publicationId = publication && publication.publication_id
+      await this.reloadCurrentTask(publicationId)
+      this.setData({
+        publishing: false,
+        activeStep: "export",
+        activeTab: "modules"
+      })
       wx.showToast({ title: "预览已创建，下一步确认发布", icon: "success" })
+      wx.pageScrollTo({ selector: ".loop-surface", duration: 250 })
     } catch (error) {
       this.setData({ publishing: false, error: error.message || "创建发布预览失败" })
     }
@@ -1545,7 +1557,7 @@ Page({
 
   async confirmCmsPublish(autoConfirm = false) {
     const publication = this.data.selectedPublication
-    if (!publication || publication.status !== "pending_confirmation") {
+    if (!publication || !isPendingPublication(publication)) {
       wx.showToast({ title: "暂无待确认发布", icon: "none" })
       return
     }
@@ -1556,13 +1568,19 @@ Page({
     }
     this.setData({ publishing: true, error: "" })
     try {
-      await confirmPublication({
+      const updatedPublication = await confirmPublication({
         publication_id: publication.publication_id,
         confirmation
       })
-      await this.reloadCurrentTask()
-      this.setData({ publishing: false, publishConfirmation: "" })
+      await this.reloadCurrentTask((updatedPublication && updatedPublication.publication_id) || publication.publication_id)
+      this.setData({
+        publishing: false,
+        publishConfirmation: "",
+        activeStep: "export",
+        activeTab: "modules"
+      })
       wx.showToast({ title: "已发布，下一步上线校验", icon: "success" })
+      wx.pageScrollTo({ selector: ".loop-surface", duration: 250 })
     } catch (error) {
       this.setData({ publishing: false, error: error.message || "确认发布失败" })
     }
@@ -1576,8 +1594,8 @@ Page({
     }
     this.setData({ publishing: true, error: "" })
     try {
-      await retryPublication(publication.publication_id)
-      await this.reloadCurrentTask()
+      const updatedPublication = await retryPublication(publication.publication_id)
+      await this.reloadCurrentTask((updatedPublication && updatedPublication.publication_id) || publication.publication_id)
       this.setData({ publishing: false })
       wx.showToast({ title: "已重置发布", icon: "success" })
     } catch (error) {
@@ -1601,12 +1619,12 @@ Page({
       .filter(Boolean)
     this.setData({ verifyingPublication: true, error: "" })
     try {
-      await verifyPublication({
+      const updatedPublication = await verifyPublication({
         publication_id: publication.publication_id,
         expected_terms: expectedTerms.length ? expectedTerms : undefined,
         notes: this.data.feedbackNotes.trim() || undefined
       })
-      await this.reloadCurrentTask()
+      await this.reloadCurrentTask((updatedPublication && updatedPublication.publication_id) || publication.publication_id)
       this.setData({ verifyingPublication: false, verifyTerms: "" })
       wx.showToast({ title: "上线校验完成", icon: "success" })
     } catch (error) {
@@ -1630,7 +1648,7 @@ Page({
         expected_terms: expectedTerms.length ? expectedTerms : undefined,
         max_attempts: 5
       })
-      await this.reloadCurrentTask()
+      await this.reloadCurrentTask(publication.publication_id)
       wx.showToast({ title: "已安排上线校验", icon: "success" })
     } catch (error) {
       this.setData({ error: error.message || "安排上线校验失败" })

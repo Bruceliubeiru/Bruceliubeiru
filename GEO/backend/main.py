@@ -3,15 +3,19 @@ import hashlib
 import ipaddress
 import os
 import re
+import secrets
 import socket
 import sqlite3
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +34,7 @@ except ImportError:
 
 try:
     from backend.auth import (
+        AuthIdentity,
         current_identity,
         extract_api_key,
         has_role,
@@ -40,6 +45,7 @@ try:
     )
 except ImportError:
     from auth import (
+        AuthIdentity,
         current_identity,
         extract_api_key,
         has_role,
@@ -66,9 +72,164 @@ except ImportError as llm_import_error:
 
 
 app = FastAPI(title="GEO Growth OS")
+
+BOOTSTRAP_ORG_ID = "org_internal"
+BOOTSTRAP_WORKSPACE_ID = "ws_internal"
+BOOTSTRAP_CUSTOMER_ID = "cust_internal"
+CLIENT_SESSION_ROLES = {"client_viewer", "client_approver"}
+SCOPED_TABLES = (
+    "tasks",
+    "versions",
+    "retests",
+    "content_experiments",
+    "lead_attributions",
+    "effect_reports",
+    "publications",
+    "knowledge_items",
+    "feedback_entries",
+    "llm_logs",
+    "injections",
+    "audit_logs",
+    "jobs",
+    "monitor_queries",
+    "source_observations",
+    "trust_anchor_tasks",
+    "mention_checks",
+)
+
+
+@dataclass(frozen=True)
+class RequestScope:
+    workspace_id: str | None = None
+    customer_id: str | None = None
+    membership_id: str | None = None
+    via_session: bool = False
+
+
+_scope_context: ContextVar[RequestScope] = ContextVar(
+    "geo_request_scope",
+    default=RequestScope(),
+)
+
+
+def _database_url() -> str:
+    return os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}").strip()
+
+
+def _session_cookie_name() -> str:
+    return os.getenv("GEO_SESSION_COOKIE_NAME", "geo_session").strip() or "geo_session"
+
+
+def _session_cookie_secure() -> bool:
+    return os.getenv("GEO_SESSION_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _session_cookie_samesite() -> str:
+    value = os.getenv("GEO_SESSION_COOKIE_SAMESITE", "lax").strip().lower()
+    return value if value in {"lax", "strict", "none"} else "lax"
+
+
+def _session_ttl_hours() -> int:
+    raw = os.getenv("GEO_SESSION_TTL_HOURS", "168").strip()
+    try:
+        return max(1, min(int(raw), 24 * 90))
+    except ValueError:
+        return 168
+
+
+def _browser_base_url() -> str:
+    return os.getenv("GEO_BROWSER_BASE_URL", "").strip().rstrip("/")
+
+
+def _workspace_id_header() -> str:
+    return "x-geo-workspace-id"
+
+
+def _customer_id_header() -> str:
+    return "x-geo-customer-id"
+
+
+def _slugify(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return cleaned[:48] or f"item-{uuid.uuid4().hex[:8]}"
+
+
+def _hash_secret(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def _set_current_scope(scope: RequestScope):
+    return _scope_context.set(scope)
+
+
+def _reset_current_scope(token) -> None:
+    _scope_context.reset(token)
+
+
+def _current_scope() -> RequestScope:
+    return _scope_context.get()
+
+
+def _client_role() -> str | None:
+    role = current_identity().role
+    return role if role in CLIENT_SESSION_ROLES else None
+
+
+def _is_client_session() -> bool:
+    scope = _current_scope()
+    return scope.via_session and current_identity().role in CLIENT_SESSION_ROLES
+
+
+def _session_can_access_viewer_route(path: str, method: str, role: str) -> bool:
+    if role == "client_approver" and path == "/geo/version/review" and method.upper() == "POST":
+        return True
+    if role not in CLIENT_SESSION_ROLES or method.upper() != "GET":
+        return False
+    if path in {"/workspaces", "/customers", "/geo/projects", "/auth/session/me"}:
+        return True
+    return (
+        path.startswith("/geo/projects/")
+        or path.startswith("/geo/tasks/")
+        or path.startswith("/geo/reports")
+    )
+
+
+def _require_internal_panel_access() -> None:
+    if _is_client_session():
+        raise HTTPException(status_code=403, detail="Client sessions cannot access internal operator panels.")
+
+
+def _cors_allowed_origins() -> list[str]:
+    raw = os.getenv("GEO_CORS_ALLOWED_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return False
+    value = host.strip().strip("[]")
+    if value.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_allows_unsafe_local_dev(request: FastAPIRequest) -> bool:
+    client_host = request.client.host if request.client else None
+    client_is_local = (
+        client_host is None
+        or _is_loopback_host(client_host)
+        or client_host == "testclient"
+    )
+    return _is_loopback_host(request.url.hostname) and client_is_local
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_allowed_origins(),
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -77,24 +238,54 @@ app.add_middleware(
 @app.middleware("http")
 async def api_key_rbac(request: FastAPIRequest, call_next):
     role = required_role(request.method, request.url.path)
-    if role is None:
-        return await call_next(request)
-
     api_key = extract_api_key(
         request.headers.get("authorization"),
         request.headers.get("x-geo-api-key"),
     )
+    session_token = request.cookies.get(_session_cookie_name())
+    identity = None
+    scope = RequestScope()
     try:
-        identity = resolve_identity(api_key)
+        if api_key:
+            identity = resolve_identity(
+                api_key,
+                allow_unsafe_local_dev=_request_allows_unsafe_local_dev(request),
+            )
+        elif session_token:
+            browser_session = _db_get_browser_session(session_token)
+            if browser_session:
+                display_name = browser_session.get("display_name") or browser_session["email"]
+                identity = AuthIdentity(name=display_name, role=browser_session["role"])
+                scope = RequestScope(
+                    workspace_id=browser_session["workspace_id"],
+                    customer_id=browser_session.get("customer_id"),
+                    membership_id=browser_session["membership_id"],
+                    via_session=True,
+                )
+        if identity is None:
+            identity = resolve_identity(
+                None,
+                allow_unsafe_local_dev=_request_allows_unsafe_local_dev(request),
+            )
+        if not scope.via_session:
+            scope = _scope_from_headers(request.headers)
     except ValueError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
-    if identity is None:
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    except (OSError, sqlite3.Error) as exc:
+        return JSONResponse(status_code=500, content={"detail": f"Authentication lookup failed: {exc}"})
+
+    if role is not None and identity is None:
         return JSONResponse(
             status_code=401,
-            content={"detail": "API key required."},
+            content={"detail": "Authentication required."},
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not has_role(identity, role):
+    if role is not None and identity is not None and not (
+        has_role(identity, role)
+        or (scope.via_session and _session_can_access_viewer_route(request.url.path, request.method, identity.role))
+    ):
         try:
             _db_add_audit(
                 identity.name,
@@ -108,21 +299,34 @@ async def api_key_rbac(request: FastAPIRequest, call_next):
             pass
         return JSONResponse(status_code=403, content={"detail": f"Role {role} or higher required."})
 
+    if identity is None:
+        return await call_next(request)
+
     context_token = set_current_identity(identity)
+    scope_token = _set_current_scope(scope)
     try:
         response = await call_next(request)
         response.headers["X-GEO-Actor"] = identity.name
         response.headers["X-GEO-Role"] = identity.role
+        if scope.workspace_id:
+            response.headers["X-GEO-Workspace"] = scope.workspace_id
+        if scope.customer_id:
+            response.headers["X-GEO-Customer"] = scope.customer_id
         return response
     finally:
+        _reset_current_scope(scope_token)
         reset_current_identity(context_token)
 
-DB_PATH = Path(__file__).with_name("geo_growth.db")
+def _default_db_path() -> Path:
+    raw = os.getenv("DATABASE_URL", "").strip()
+    if raw.startswith("sqlite:///"):
+        return Path(raw.removeprefix("sqlite:///"))
+    return Path(__file__).with_name("geo_growth.db")
+
+
+DB_PATH = _default_db_path()
 EXPORT_DIR = Path(__file__).resolve().parent.parent / "exports"
 ADMIN_INDEX = Path(__file__).resolve().parent.parent / "admin" / "index.html"
-TASK_STORE: dict[str, dict] = {}
-VERSION_STORE: dict[str, dict] = {}
-RETEST_STORE: dict[str, list[dict]] = {}
 
 
 class GEOAuditRequest(BaseModel):
@@ -135,6 +339,8 @@ class GEOUrlAuditRequest(BaseModel):
 
 class GEOAnalyzeRequest(BaseModel):
     url: str
+    workspace_id: str | None = None
+    customer_id: str | None = None
     page_type: str = "transport_pass"
     page_goal: str = "推广页"
     market: str = "Hong Kong"
@@ -211,6 +417,50 @@ class GEOProjectUpdateRequest(BaseModel):
     business_goal: str | None = None
     service_tier: str | None = None
     package_id: str | None = None
+
+
+class WorkspaceCreateRequest(BaseModel):
+    name: str
+    organization_name: str = "GEO Internal"
+    market: str | None = None
+    language: str | None = None
+    status: str = "active"
+
+
+class CustomerCreateRequest(BaseModel):
+    workspace_id: str
+    name: str
+    market: str | None = None
+    language: str | None = None
+    status: str = "active"
+
+
+class AuthInviteRequest(BaseModel):
+    workspace_id: str
+    customer_id: str | None = None
+    email: str
+    role: str = "client_viewer"
+    display_name: str | None = None
+    note: str | None = None
+    expires_in_days: int = 7
+
+
+class AuthInviteAcceptRequest(BaseModel):
+    token: str
+    display_name: str | None = None
+
+
+class CustomerMemberCreateRequest(BaseModel):
+    email: str
+    role: str = "client_viewer"
+    display_name: str | None = None
+    status: str = "active"
+
+
+class CustomerReportRequest(BaseModel):
+    task_id: str
+    period_label: str = "近 7 天"
+    notes: str | None = None
 
 
 class CMSPublishTargetRequest(BaseModel):
@@ -413,10 +663,101 @@ def _current_actor() -> str:
     return current_identity().name
 
 
-def _db() -> sqlite3.Connection:
+@contextmanager
+def _db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _scope_from_headers(headers) -> RequestScope:
+    workspace_id = (headers.get(_workspace_id_header()) or "").strip() or None
+    customer_id = (headers.get(_customer_id_header()) or "").strip() or None
+    if customer_id and not workspace_id:
+        raise HTTPException(status_code=400, detail="Customer scope requires a workspace scope.")
+    return RequestScope(workspace_id=workspace_id, customer_id=customer_id)
+
+
+def _append_scope_filters(filters: list[str], params: list, *, alias: str | None = None) -> None:
+    scope = _current_scope()
+    prefix = f"{alias}." if alias else ""
+    if scope.workspace_id:
+        filters.append(f"{prefix}workspace_id = ?")
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        filters.append(f"{prefix}customer_id = ?")
+        params.append(scope.customer_id)
+
+
+def _bootstrap_scope() -> tuple[str, str]:
+    return BOOTSTRAP_WORKSPACE_ID, BOOTSTRAP_CUSTOMER_ID
+
+
+def _validate_scope_or_404(
+    workspace_id: str | None,
+    customer_id: str | None = None,
+) -> tuple[dict | None, dict | None]:
+    if not workspace_id:
+        return None, None
+    workspace = _db_get_workspace(workspace_id, ignore_scope=True)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    customer = None
+    if customer_id:
+        customer = _db_get_customer(customer_id, ignore_scope=True)
+        if not customer or customer["workspace_id"] != workspace_id:
+            raise HTTPException(status_code=404, detail="Customer not found in workspace.")
+    return workspace, customer
+
+
+def _resolve_scope_ids(
+    workspace_id: str | None = None,
+    customer_id: str | None = None,
+    *,
+    task_id: str | None = None,
+    require_customer: bool = False,
+    allow_bootstrap: bool = True,
+) -> tuple[str | None, str | None]:
+    if task_id:
+        task = _db_get_task(task_id, ignore_scope=True)
+        if task:
+            workspace_id = workspace_id or task.get("workspace_id")
+            customer_id = customer_id or task.get("customer_id")
+
+    scope = _current_scope()
+    if scope.workspace_id:
+        if workspace_id and workspace_id != scope.workspace_id:
+            raise HTTPException(status_code=403, detail="Cross-workspace access is not allowed.")
+        workspace_id = workspace_id or scope.workspace_id
+    if scope.customer_id:
+        if customer_id and customer_id != scope.customer_id:
+            raise HTTPException(status_code=403, detail="Cross-customer access is not allowed.")
+        customer_id = customer_id or scope.customer_id
+
+    if not workspace_id and allow_bootstrap:
+        workspace_id, fallback_customer_id = _bootstrap_scope()
+        customer_id = customer_id or fallback_customer_id
+
+    if customer_id and not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id is required when customer_id is provided.")
+    if require_customer and not customer_id:
+        raise HTTPException(status_code=400, detail="customer_id is required for this operation.")
+    if workspace_id:
+        _validate_scope_or_404(workspace_id, customer_id)
+    return workspace_id, customer_id
+
+
+def _record_scope_from_task(task_id: str | None) -> tuple[str | None, str | None]:
+    if not task_id:
+        return _resolve_scope_ids()
+    return _resolve_scope_ids(task_id=task_id)
 
 
 def _json_dumps(value) -> str:
@@ -433,7 +774,8 @@ def _json_loads(value: str | None, fallback):
 
 
 def _init_db() -> None:
-    EXPORT_DIR.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     with _db() as conn:
         conn.execute(
             """
@@ -776,6 +1118,101 @@ def _init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS organizations (
+                organization_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workspaces (
+                workspace_id TEXT PRIMARY KEY,
+                organization_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                market TEXT,
+                language TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS customers (
+                customer_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                market TEXT,
+                language TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workspace_memberships (
+                membership_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                customer_id TEXT,
+                email TEXT NOT NULL,
+                display_name TEXT,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                invited_by TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS viewer_invites (
+                invite_id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                customer_id TEXT,
+                email TEXT NOT NULL,
+                role TEXT NOT NULL,
+                display_name TEXT,
+                token_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                note TEXT,
+                invited_by TEXT,
+                expires_at TEXT NOT NULL,
+                accepted_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS browser_sessions (
+                session_id TEXT PRIMARY KEY,
+                membership_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                customer_id TEXT,
+                session_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                user_agent TEXT,
+                ip_address TEXT,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            )
+            """
+        )
         retest_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(retests)").fetchall()
         }
@@ -831,10 +1268,565 @@ def _init_db() -> None:
         }.items():
             if column not in publication_columns:
                 conn.execute(f"ALTER TABLE publications ADD COLUMN {column} {definition}")
+        for table_name in SCOPED_TABLES:
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+            if "workspace_id" not in columns:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN workspace_id TEXT")
+            if "customer_id" not in columns:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN customer_id TEXT")
+
+        now = _now_iso()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO organizations (
+                organization_id, name, slug, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                BOOTSTRAP_ORG_ID,
+                os.getenv("GEO_BOOTSTRAP_ORG_NAME", "GEO Internal"),
+                _slugify(os.getenv("GEO_BOOTSTRAP_ORG_NAME", "GEO Internal")),
+                "active",
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO workspaces (
+                workspace_id, organization_id, name, slug, market, language, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                BOOTSTRAP_WORKSPACE_ID,
+                BOOTSTRAP_ORG_ID,
+                os.getenv("GEO_BOOTSTRAP_WORKSPACE_NAME", "Internal Ops"),
+                _slugify(os.getenv("GEO_BOOTSTRAP_WORKSPACE_NAME", "Internal Ops")),
+                os.getenv("GEO_BOOTSTRAP_MARKET", "Hong Kong/Japan"),
+                os.getenv("GEO_BOOTSTRAP_LANGUAGE", "zh-HK"),
+                "active",
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO customers (
+                customer_id, workspace_id, name, slug, market, language, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                BOOTSTRAP_CUSTOMER_ID,
+                BOOTSTRAP_WORKSPACE_ID,
+                os.getenv("GEO_BOOTSTRAP_CUSTOMER_NAME", "Internal Pilot"),
+                _slugify(os.getenv("GEO_BOOTSTRAP_CUSTOMER_NAME", "Internal Pilot")),
+                os.getenv("GEO_BOOTSTRAP_MARKET", "Hong Kong/Japan"),
+                os.getenv("GEO_BOOTSTRAP_LANGUAGE", "zh-HK"),
+                "active",
+                now,
+                now,
+            ),
+        )
+        for table_name in SCOPED_TABLES:
+            conn.execute(
+                f"UPDATE {table_name} SET workspace_id = ? WHERE workspace_id IS NULL OR workspace_id = ''",
+                (BOOTSTRAP_WORKSPACE_ID,),
+            )
+            conn.execute(
+                f"UPDATE {table_name} SET customer_id = ? WHERE customer_id IS NULL OR customer_id = ''",
+                (BOOTSTRAP_CUSTOMER_ID,),
+            )
+
+
+def _organization_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _workspace_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _customer_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _membership_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _invite_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _db_workspaces(ignore_scope: bool = False) -> list[dict]:
+    query = "SELECT * FROM workspaces"
+    filters: list[str] = []
+    params: list[str] = []
+    if not ignore_scope:
+        scope = _current_scope()
+        if scope.workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(scope.workspace_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC, name ASC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_workspace_from_row(row) for row in rows]
+
+
+def _db_get_workspace(workspace_id: str, *, ignore_scope: bool = False) -> dict | None:
+    query = "SELECT * FROM workspaces WHERE workspace_id = ?"
+    params: list[str] = [workspace_id]
+    if not ignore_scope:
+        scope = _current_scope()
+        if scope.workspace_id:
+            query += " AND workspace_id = ?"
+            params.append(scope.workspace_id)
+    with _db() as conn:
+        row = conn.execute(query, params).fetchone()
+    return _workspace_from_row(row) if row else None
+
+
+def _db_save_workspace(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO workspaces (
+                workspace_id, organization_id, name, slug, market, language, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(workspace_id) DO UPDATE SET
+                name=excluded.name,
+                slug=excluded.slug,
+                market=excluded.market,
+                language=excluded.language,
+                status=excluded.status,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["workspace_id"],
+                item["organization_id"],
+                item["name"],
+                item["slug"],
+                item.get("market"),
+                item.get("language"),
+                item["status"],
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
+
+
+def _db_customers(
+    workspace_id: str | None = None,
+    *,
+    ignore_scope: bool = False,
+) -> list[dict]:
+    query = "SELECT * FROM customers"
+    filters: list[str] = []
+    params: list[str] = []
+    effective_workspace_id = workspace_id
+    effective_customer_id = None
+    if not ignore_scope:
+        scope = _current_scope()
+        effective_workspace_id = effective_workspace_id or scope.workspace_id
+        effective_customer_id = scope.customer_id
+    if effective_workspace_id:
+        filters.append("workspace_id = ?")
+        params.append(effective_workspace_id)
+    if effective_customer_id:
+        filters.append("customer_id = ?")
+        params.append(effective_customer_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC, name ASC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_customer_from_row(row) for row in rows]
+
+
+def _db_get_customer(customer_id: str, *, ignore_scope: bool = False) -> dict | None:
+    query = "SELECT * FROM customers WHERE customer_id = ?"
+    params: list[str] = [customer_id]
+    if not ignore_scope:
+        scope = _current_scope()
+        if scope.workspace_id:
+            query += " AND workspace_id = ?"
+            params.append(scope.workspace_id)
+        if scope.customer_id:
+            query += " AND customer_id = ?"
+            params.append(scope.customer_id)
+    with _db() as conn:
+        row = conn.execute(query, params).fetchone()
+    return _customer_from_row(row) if row else None
+
+
+def _db_save_customer(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO customers (
+                customer_id, workspace_id, name, slug, market, language, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(customer_id) DO UPDATE SET
+                name=excluded.name,
+                slug=excluded.slug,
+                market=excluded.market,
+                language=excluded.language,
+                status=excluded.status,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["customer_id"],
+                item["workspace_id"],
+                item["name"],
+                item["slug"],
+                item.get("market"),
+                item.get("language"),
+                item["status"],
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
+
+
+def _db_memberships(
+    workspace_id: str | None = None,
+    customer_id: str | None = None,
+    *,
+    ignore_scope: bool = False,
+) -> list[dict]:
+    query = "SELECT * FROM workspace_memberships"
+    filters: list[str] = []
+    params: list[str] = []
+    effective_workspace_id = workspace_id
+    effective_customer_id = customer_id
+    if not ignore_scope:
+        scope = _current_scope()
+        effective_workspace_id = effective_workspace_id or scope.workspace_id
+        effective_customer_id = effective_customer_id or scope.customer_id
+    if effective_workspace_id:
+        filters.append("workspace_id = ?")
+        params.append(effective_workspace_id)
+    if effective_customer_id:
+        filters.append("customer_id = ?")
+        params.append(effective_customer_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY updated_at DESC"
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_membership_from_row(row) for row in rows]
+
+
+def _db_get_membership_by_email(
+    workspace_id: str,
+    customer_id: str | None,
+    email: str,
+    *,
+    ignore_scope: bool = False,
+) -> dict | None:
+    query = """
+        SELECT * FROM workspace_memberships
+        WHERE workspace_id = ? AND email = ?
+    """
+    params: list[str | None] = [workspace_id, email.strip().lower()]
+    if customer_id:
+        query += " AND customer_id = ?"
+        params.append(customer_id)
+    else:
+        query += " AND customer_id IS NULL"
+    if not ignore_scope:
+        scope = _current_scope()
+        if scope.workspace_id:
+            query += " AND workspace_id = ?"
+            params.append(scope.workspace_id)
+        if scope.customer_id:
+            query += " AND customer_id = ?"
+            params.append(scope.customer_id)
+    with _db() as conn:
+        row = conn.execute(query, params).fetchone()
+    return _membership_from_row(row) if row else None
+
+
+def _db_save_membership(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO workspace_memberships (
+                membership_id, workspace_id, customer_id, email, display_name, role, status,
+                invited_by, created_at, updated_at, last_login_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(membership_id) DO UPDATE SET
+                display_name=excluded.display_name,
+                role=excluded.role,
+                status=excluded.status,
+                invited_by=excluded.invited_by,
+                updated_at=excluded.updated_at,
+                last_login_at=excluded.last_login_at
+            """,
+            (
+                item["membership_id"],
+                item["workspace_id"],
+                item.get("customer_id"),
+                item["email"].strip().lower(),
+                item.get("display_name"),
+                item["role"],
+                item["status"],
+                item.get("invited_by"),
+                item["created_at"],
+                item["updated_at"],
+                item.get("last_login_at"),
+            ),
+        )
+
+
+def _db_save_invite(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO viewer_invites (
+                invite_id, workspace_id, customer_id, email, role, display_name, token_hash,
+                status, note, invited_by, expires_at, accepted_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(invite_id) DO UPDATE SET
+                role=excluded.role,
+                display_name=excluded.display_name,
+                token_hash=excluded.token_hash,
+                status=excluded.status,
+                note=excluded.note,
+                invited_by=excluded.invited_by,
+                expires_at=excluded.expires_at,
+                accepted_at=excluded.accepted_at
+            """,
+            (
+                item["invite_id"],
+                item["workspace_id"],
+                item.get("customer_id"),
+                item["email"].strip().lower(),
+                item["role"],
+                item.get("display_name"),
+                item["token_hash"],
+                item["status"],
+                item.get("note"),
+                item.get("invited_by"),
+                item["expires_at"],
+                item.get("accepted_at"),
+                item["created_at"],
+            ),
+        )
+
+
+def _db_get_invite_by_token(token: str) -> dict | None:
+    token_hash = _hash_secret(token)
+    with _db() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM viewer_invites
+            WHERE token_hash = ? AND status = 'pending'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (token_hash,),
+        ).fetchone()
+    return _invite_from_row(row) if row else None
+
+
+def _db_mark_invite_accepted(invite_id: str) -> None:
+    with _db() as conn:
+        conn.execute(
+            "UPDATE viewer_invites SET status = 'accepted', accepted_at = ? WHERE invite_id = ?",
+            (_now_iso(), invite_id),
+        )
+
+
+def _db_save_browser_session(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO browser_sessions (
+                session_id, membership_id, workspace_id, customer_id, session_hash, status,
+                expires_at, user_agent, ip_address, created_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                status=excluded.status,
+                expires_at=excluded.expires_at,
+                user_agent=excluded.user_agent,
+                ip_address=excluded.ip_address,
+                last_seen_at=excluded.last_seen_at
+            """,
+            (
+                item["session_id"],
+                item["membership_id"],
+                item["workspace_id"],
+                item.get("customer_id"),
+                item["session_hash"],
+                item["status"],
+                item["expires_at"],
+                item.get("user_agent"),
+                item.get("ip_address"),
+                item["created_at"],
+                item["last_seen_at"],
+            ),
+        )
+
+
+def _db_get_browser_session(token: str) -> dict | None:
+    session_hash = _hash_secret(token)
+    with _db() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                sessions.*,
+                memberships.email,
+                memberships.display_name,
+                memberships.role,
+                memberships.status AS membership_status
+            FROM browser_sessions AS sessions
+            JOIN workspace_memberships AS memberships
+              ON memberships.membership_id = sessions.membership_id
+            WHERE sessions.session_hash = ?
+              AND sessions.status = 'active'
+              AND memberships.status = 'active'
+            LIMIT 1
+            """,
+            (session_hash,),
+        ).fetchone()
+        if not row:
+            return None
+        if row["expires_at"] <= _now_iso():
+            conn.execute(
+                "UPDATE browser_sessions SET status = 'expired', last_seen_at = ? WHERE session_id = ?",
+                (_now_iso(), row["session_id"]),
+            )
+            return None
+        conn.execute(
+            "UPDATE browser_sessions SET last_seen_at = ? WHERE session_id = ?",
+            (_now_iso(), row["session_id"]),
+        )
+    return dict(row)
+
+
+def _db_revoke_browser_session(token: str) -> None:
+    with _db() as conn:
+        conn.execute(
+            "UPDATE browser_sessions SET status = 'revoked', last_seen_at = ? WHERE session_hash = ?",
+            (_now_iso(), _hash_secret(token)),
+        )
+
+
+def _invite_accept_url(token: str) -> str:
+    suffix = f"/admin?invite_token={token}"
+    base = _browser_base_url()
+    return f"{base}{suffix}" if base else suffix
+
+
+def _validate_membership_role(role: str, *, customer_id: str | None = None) -> str:
+    normalized = role.strip().lower()
+    allowed = {
+        "workspace_admin",
+        "operator",
+        "reviewer",
+        "client_viewer",
+        "client_approver",
+    }
+    if normalized not in allowed:
+        raise HTTPException(status_code=400, detail="Unsupported membership role.")
+    if normalized in CLIENT_SESSION_ROLES and not customer_id:
+        raise HTTPException(status_code=400, detail="Client viewer roles require a customer scope.")
+    return normalized
+
+
+def _upsert_membership(
+    *,
+    workspace_id: str,
+    customer_id: str | None,
+    email: str,
+    role: str,
+    display_name: str | None,
+    invited_by: str | None = None,
+    status: str = "active",
+    last_login_at: str | None = None,
+) -> dict:
+    existing = _db_get_membership_by_email(
+        workspace_id,
+        customer_id,
+        email,
+        ignore_scope=True,
+    )
+    now = _now_iso()
+    membership = {
+        "membership_id": existing["membership_id"] if existing else f"member_{uuid.uuid4().hex[:12]}",
+        "workspace_id": workspace_id,
+        "customer_id": customer_id,
+        "email": email.strip().lower(),
+        "display_name": (display_name or "").strip() or (existing or {}).get("display_name"),
+        "role": _validate_membership_role(role, customer_id=customer_id),
+        "status": status,
+        "invited_by": invited_by or (existing or {}).get("invited_by"),
+        "created_at": (existing or {}).get("created_at") or now,
+        "updated_at": now,
+        "last_login_at": last_login_at or (existing or {}).get("last_login_at"),
+    }
+    _db_save_membership(membership)
+    return _db_get_membership_by_email(
+        workspace_id,
+        customer_id,
+        email,
+        ignore_scope=True,
+    ) or membership
+
+
+def _create_browser_session(
+    membership: dict,
+    request: FastAPIRequest,
+) -> tuple[str, dict]:
+    raw_token = secrets.token_urlsafe(32)
+    now = _now_iso()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=_session_ttl_hours())).isoformat()
+    session = {
+        "session_id": f"session_{uuid.uuid4().hex[:12]}",
+        "membership_id": membership["membership_id"],
+        "workspace_id": membership["workspace_id"],
+        "customer_id": membership.get("customer_id"),
+        "session_hash": _hash_secret(raw_token),
+        "status": "active",
+        "expires_at": expires_at,
+        "user_agent": request.headers.get("user-agent"),
+        "ip_address": request.client.host if request.client else None,
+        "created_at": now,
+        "last_seen_at": now,
+    }
+    _db_save_browser_session(session)
+    return raw_token, session
+
+
+def _session_response(payload: dict, token: str | None = None) -> JSONResponse:
+    response = JSONResponse(payload)
+    if token:
+        response.set_cookie(
+            _session_cookie_name(),
+            token,
+            httponly=True,
+            secure=_session_cookie_secure(),
+            samesite=_session_cookie_samesite(),
+            max_age=_session_ttl_hours() * 3600,
+            path="/",
+        )
+    return response
+
+
+def _clear_session_cookie(response: JSONResponse) -> JSONResponse:
+    response.delete_cookie(_session_cookie_name(), path="/")
+    return response
 
 
 def _db_upsert_task(task: dict) -> None:
-    TASK_STORE[task["task_id"]] = task
+    workspace_id, customer_id = _resolve_scope_ids(
+        task.get("workspace_id"),
+        task.get("customer_id"),
+        allow_bootstrap=True,
+    )
     with _db() as conn:
         conn.execute(
             """
@@ -842,10 +1834,9 @@ def _db_upsert_task(task: dict) -> None:
                 task_id, url, title, status, latest_result, latest_workflow,
                 latest_version_id, latest_retest, owner, target_score, todos,
                 client_name, brand_name, target_engines, business_goal, service_tier,
-                package_id,
-                created_at, updated_at
+                package_id, workspace_id, customer_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 url=excluded.url,
                 title=excluded.title,
@@ -863,6 +1854,8 @@ def _db_upsert_task(task: dict) -> None:
                 business_goal=excluded.business_goal,
                 service_tier=excluded.service_tier,
                 package_id=excluded.package_id,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id,
                 updated_at=excluded.updated_at
             """,
             (
@@ -883,18 +1876,28 @@ def _db_upsert_task(task: dict) -> None:
                 task.get("business_goal"),
                 task.get("service_tier"),
                 task.get("package_id"),
+                workspace_id,
+                customer_id,
                 task.get("created_at") or _now_iso(),
                 task.get("updated_at") or _now_iso(),
             ),
         )
 
 
-def _db_get_task(task_id: str) -> dict | None:
+def _db_get_task(task_id: str, *, ignore_scope: bool = False) -> dict | None:
+    query = "SELECT * FROM tasks WHERE task_id = ?"
+    params: list[str] = [task_id]
+    if not ignore_scope:
+        scope = _current_scope()
+        if scope.workspace_id:
+            query += " AND workspace_id = ?"
+            params.append(scope.workspace_id)
+        if scope.customer_id:
+            query += " AND customer_id = ?"
+            params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-    if not row:
-        return TASK_STORE.get(task_id)
-    return _task_from_row(row)
+        row = conn.execute(query, params).fetchone()
+    return _task_from_row(row) if row else None
 
 
 def _task_from_row(row: sqlite3.Row) -> dict:
@@ -916,6 +1919,8 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "business_goal": row["business_goal"],
         "service_tier": row["service_tier"],
         "package_id": row["package_id"],
+        "workspace_id": row["workspace_id"],
+        "customer_id": row["customer_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -937,19 +1942,26 @@ def _version_from_row(row: sqlite3.Row) -> dict:
         "updated_at": row["updated_at"],
         "approved_at": row["approved_at"],
         "quality_report": _json_loads(row["quality_report"], None),
+        "workspace_id": row["workspace_id"],
+        "customer_id": row["customer_id"],
     }
 
 
 def _db_save_version(version: dict) -> None:
-    VERSION_STORE[version["version_id"]] = version
+    workspace_id, customer_id = _resolve_scope_ids(
+        version.get("workspace_id"),
+        version.get("customer_id"),
+        task_id=version.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO versions (
                 version_id, task_id, url, status, editor, reviewer, review_comment,
-                modules, workflow, injection_payload, created_at, updated_at, approved_at, quality_report
+                modules, workflow, injection_payload, created_at, updated_at, approved_at, quality_report,
+                workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(version_id) DO UPDATE SET
                 status=excluded.status,
                 reviewer=excluded.reviewer,
@@ -958,8 +1970,10 @@ def _db_save_version(version: dict) -> None:
                 workflow=excluded.workflow,
                 injection_payload=excluded.injection_payload,
                 updated_at=excluded.updated_at,
-                approved_at=excluded.approved_at
-                ,quality_report=excluded.quality_report
+                approved_at=excluded.approved_at,
+                quality_report=excluded.quality_report,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
             (
                 version.get("version_id"),
@@ -976,34 +1990,57 @@ def _db_save_version(version: dict) -> None:
                 version.get("updated_at") or _now_iso(),
                 version.get("approved_at"),
                 _json_dumps(version.get("quality_report")) if version.get("quality_report") else None,
+                workspace_id,
+                customer_id,
             ),
         )
 
 
-def _db_get_version(version_id: str) -> dict | None:
+def _db_get_version(version_id: str, *, ignore_scope: bool = False) -> dict | None:
+    query = "SELECT * FROM versions WHERE version_id = ?"
+    params: list[str] = [version_id]
+    if not ignore_scope:
+        scope = _current_scope()
+        if scope.workspace_id:
+            query += " AND workspace_id = ?"
+            params.append(scope.workspace_id)
+        if scope.customer_id:
+            query += " AND customer_id = ?"
+            params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT * FROM versions WHERE version_id = ?", (version_id,)).fetchone()
-    if not row:
-        return VERSION_STORE.get(version_id)
-    return _version_from_row(row)
+        row = conn.execute(query, params).fetchone()
+    return _version_from_row(row) if row else None
 
 
 def _db_count_versions(task_id: str) -> int:
+    query = "SELECT COUNT(*) AS count FROM versions WHERE task_id = ?"
+    params: list[str] = [task_id]
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT COUNT(*) AS count FROM versions WHERE task_id = ?", (task_id,)).fetchone()
+        row = conn.execute(query, params).fetchone()
     return int(row["count"]) if row else 0
 
 
 def _db_add_retest(retest: dict) -> None:
-    RETEST_STORE.setdefault(retest["task_id"], []).append(retest)
+    workspace_id, customer_id = _resolve_scope_ids(
+        retest.get("workspace_id"),
+        retest.get("customer_id"),
+        task_id=retest.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO retests (
                 task_id, version_id, injection_id, url, title, previous_score, current_score, score_delta,
-                status, breakdown, recommendations, effect_details, created_at
+                status, breakdown, recommendations, effect_details, created_at, workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 retest.get("task_id"),
@@ -1019,24 +2056,33 @@ def _db_add_retest(retest: dict) -> None:
                 _json_dumps(retest.get("recommendations")),
                 _json_dumps(retest.get("effect_details", {})),
                 retest.get("created_at"),
+                workspace_id,
+                customer_id,
             ),
         )
 
 
 def _db_save_injection(injection: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        injection.get("workspace_id"),
+        injection.get("customer_id"),
+        task_id=injection.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO injections (
                 injection_id, task_id, version_id, url, target, status,
-                response_summary, artifact_path, created_at, completed_at
+                response_summary, artifact_path, created_at, completed_at, workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(injection_id) DO UPDATE SET
                 status=excluded.status,
                 response_summary=excluded.response_summary,
                 artifact_path=excluded.artifact_path,
-                completed_at=excluded.completed_at
+                completed_at=excluded.completed_at,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
             (
                 injection.get("injection_id"),
@@ -1049,6 +2095,8 @@ def _db_save_injection(injection: dict) -> None:
                 injection.get("artifact_path"),
                 injection.get("created_at"),
                 injection.get("completed_at"),
+                workspace_id,
+                customer_id,
             ),
         )
 
@@ -1065,15 +2113,23 @@ def _injection_from_row(row: sqlite3.Row) -> dict:
         "artifact_path": row["artifact_path"],
         "created_at": row["created_at"],
         "completed_at": row["completed_at"],
+        "workspace_id": row["workspace_id"],
+        "customer_id": row["customer_id"],
     }
 
 
 def _db_get_injection(injection_id: str) -> dict | None:
+    query = "SELECT * FROM injections WHERE injection_id = ?"
+    params: list[str] = [injection_id]
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute(
-            "SELECT * FROM injections WHERE injection_id = ?",
-            (injection_id,),
-        ).fetchone()
+        row = conn.execute(query, params).fetchone()
     return _injection_from_row(row) if row else None
 
 
@@ -1083,6 +2139,13 @@ def _db_latest_successful_injection(task_id: str, version_id: str | None = None)
     if version_id:
         query += " AND version_id = ?"
         params.append(version_id)
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     query += " ORDER BY completed_at DESC LIMIT 1"
     with _db() as conn:
         row = conn.execute(query, params).fetchone()
@@ -1097,14 +2160,22 @@ def _db_add_audit(
     task_id: str | None = None,
     outcome: str = "success",
     detail: dict | None = None,
+    workspace_id: str | None = None,
+    customer_id: str | None = None,
 ) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        workspace_id,
+        customer_id,
+        task_id=task_id,
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO audit_logs (
-                actor, action, entity_type, entity_id, task_id, outcome, detail, created_at
+                actor, action, entity_type, entity_id, task_id, outcome, detail, created_at,
+                workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 actor,
@@ -1115,6 +2186,8 @@ def _db_add_audit(
                 outcome,
                 _json_dumps(detail or {}),
                 _now_iso(),
+                workspace_id,
+                customer_id,
             ),
         )
 
@@ -1141,6 +2214,7 @@ def _db_audit_logs(
     if actor:
         filters.append("actor = ?")
         params.append(actor)
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY id DESC LIMIT ?"
@@ -1157,6 +2231,8 @@ def _db_audit_logs(
             "task_id": row["task_id"],
             "outcome": row["outcome"],
             "detail": _json_loads(row["detail"], {}),
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
             "created_at": row["created_at"],
         }
         for row in rows
@@ -1177,18 +2253,25 @@ def _job_from_row(row: sqlite3.Row) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "completed_at": row["completed_at"],
+        "workspace_id": row["workspace_id"],
+        "customer_id": row["customer_id"],
     }
 
 
 def _db_save_job(job: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        job.get("workspace_id"),
+        job.get("customer_id"),
+        task_id=(job.get("payload") or {}).get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO jobs (
                 job_id, job_type, status, payload, result, attempts, max_attempts,
-                run_at, last_error, created_at, updated_at, completed_at
+                run_at, last_error, created_at, updated_at, completed_at, workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
                 status=excluded.status,
                 result=excluded.result,
@@ -1197,7 +2280,9 @@ def _db_save_job(job: dict) -> None:
                 run_at=excluded.run_at,
                 last_error=excluded.last_error,
                 updated_at=excluded.updated_at,
-                completed_at=excluded.completed_at
+                completed_at=excluded.completed_at,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
             (
                 job["job_id"],
@@ -1212,13 +2297,24 @@ def _db_save_job(job: dict) -> None:
                 job["created_at"],
                 job["updated_at"],
                 job.get("completed_at"),
+                workspace_id,
+                customer_id,
             ),
         )
 
 
 def _db_get_job(job_id: str) -> dict | None:
+    query = "SELECT * FROM jobs WHERE job_id = ?"
+    params: list[str] = [job_id]
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        row = conn.execute(query, params).fetchone()
     return _job_from_row(row) if row else None
 
 
@@ -1233,6 +2329,7 @@ def _db_jobs(status: str | None = None, limit: int = 50, due_only: bool = False)
         filters.append("status IN ('queued', 'retry_wait')")
         filters.append("run_at <= ?")
         params.append(_now_iso())
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC LIMIT ?"
@@ -1460,6 +2557,7 @@ def _project_view(
     return {
         **task,
         "project_id": task["task_id"],
+        "geo_score": score,
         "owner": task.get("owner") or "待分配",
         "target_score": target_score,
         "current_stage": status,
@@ -1500,6 +2598,36 @@ def _project_view(
     }
 
 
+def _client_safe_task_detail(detail: dict) -> dict:
+    versions = []
+    for version in detail.get("versions", []):
+        versions.append(
+            {
+                "version_id": version["version_id"],
+                "task_id": version["task_id"],
+                "status": version["status"],
+                "editor": version.get("editor"),
+                "reviewer": version.get("reviewer"),
+                "review_comment": version.get("review_comment"),
+                "modules": version.get("modules", []),
+                "quality_report": version.get("quality_report"),
+                "created_at": version.get("created_at"),
+                "updated_at": version.get("updated_at"),
+                "approved_at": version.get("approved_at"),
+            }
+        )
+    return {
+        "task": detail["task"],
+        "versions": versions,
+        "injections": detail.get("injections", []),
+        "retests": detail.get("retests", []),
+        "project": detail.get("project"),
+        "publications": detail.get("publications", []),
+        "monitoring": detail.get("monitoring"),
+        "reports": detail.get("reports", []),
+    }
+
+
 def _db_cms_targets() -> list[dict]:
     with _db() as conn:
         rows = conn.execute("SELECT * FROM cms_targets ORDER BY updated_at DESC").fetchall()
@@ -1537,13 +2665,18 @@ def _db_set_cms_target_enabled(target_id: str, enabled: bool) -> dict | None:
 
 
 def _db_save_knowledge_item(item: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        item.get("workspace_id"),
+        item.get("customer_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO knowledge_items (
-                knowledge_id, brand, category, title, content, source, status, created_at, updated_at
+                knowledge_id, brand, category, title, content, source, status, created_at, updated_at,
+                workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(knowledge_id) DO UPDATE SET
                 brand=excluded.brand,
                 category=excluded.category,
@@ -1551,7 +2684,9 @@ def _db_save_knowledge_item(item: dict) -> None:
                 content=excluded.content,
                 source=excluded.source,
                 status=excluded.status,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
             (
                 item["knowledge_id"],
@@ -1563,6 +2698,8 @@ def _db_save_knowledge_item(item: dict) -> None:
                 item["status"],
                 item["created_at"],
                 item["updated_at"],
+                workspace_id,
+                customer_id,
             ),
         )
 
@@ -1577,6 +2714,7 @@ def _db_knowledge_items(status: str | None = None, brand: str | None = None, lim
     if brand:
         filters.append("brand = ?")
         params.append(brand)
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY updated_at DESC LIMIT ?"
@@ -1592,6 +2730,8 @@ def _db_knowledge_items(status: str | None = None, brand: str | None = None, lim
             "content": row["content"],
             "source": row["source"],
             "status": row["status"],
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -1600,13 +2740,19 @@ def _db_knowledge_items(status: str | None = None, brand: str | None = None, lim
 
 
 def _db_add_feedback(entry: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        entry.get("workspace_id"),
+        entry.get("customer_id"),
+        task_id=entry.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO feedback_entries (
-                feedback_id, task_id, version_id, publication_id, verdict, notes, source, actor, created_at
+                feedback_id, task_id, version_id, publication_id, verdict, notes, source, actor, created_at,
+                workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry["feedback_id"],
@@ -1618,6 +2764,8 @@ def _db_add_feedback(entry: dict) -> None:
                 entry["source"],
                 entry["actor"],
                 entry["created_at"],
+                workspace_id,
+                customer_id,
             ),
         )
 
@@ -1625,9 +2773,13 @@ def _db_add_feedback(entry: dict) -> None:
 def _db_feedback(task_id: str | None = None, limit: int = 100) -> list[dict]:
     query = "SELECT * FROM feedback_entries"
     params: list[str | int] = []
+    filters: list[str] = []
     if task_id:
-        query += " WHERE task_id = ?"
+        filters.append("task_id = ?")
         params.append(task_id)
+    _append_scope_filters(filters, params)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(max(1, min(limit, 200)))
     with _db() as conn:
@@ -1642,6 +2794,8 @@ def _db_feedback(task_id: str | None = None, limit: int = 100) -> list[dict]:
             "notes": row["notes"],
             "source": row["source"],
             "actor": row["actor"],
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
             "created_at": row["created_at"],
         }
         for row in rows
@@ -1649,14 +2803,19 @@ def _db_feedback(task_id: str | None = None, limit: int = 100) -> list[dict]:
 
 
 def _db_add_llm_log(entry: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        entry.get("workspace_id"),
+        entry.get("customer_id"),
+        task_id=entry.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO llm_logs (
                 log_id, task_id, action, provider, model, status, prompt_excerpt, response_excerpt,
-                error_message, created_at
+                error_message, created_at, workspace_id, customer_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry["log_id"],
@@ -1669,6 +2828,8 @@ def _db_add_llm_log(entry: dict) -> None:
                 entry.get("response_excerpt"),
                 entry.get("error_message"),
                 entry["created_at"],
+                workspace_id,
+                customer_id,
             ),
         )
 
@@ -1676,9 +2837,13 @@ def _db_add_llm_log(entry: dict) -> None:
 def _db_llm_logs(task_id: str | None = None, limit: int = 100) -> list[dict]:
     query = "SELECT * FROM llm_logs"
     params: list[str | int] = []
+    filters: list[str] = []
     if task_id:
-        query += " WHERE task_id = ?"
+        filters.append("task_id = ?")
         params.append(task_id)
+    _append_scope_filters(filters, params)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(max(1, min(limit, 200)))
     with _db() as conn:
@@ -1694,6 +2859,8 @@ def _db_llm_logs(task_id: str | None = None, limit: int = 100) -> list[dict]:
             "prompt_excerpt": row["prompt_excerpt"],
             "response_excerpt": row["response_excerpt"],
             "error_message": row["error_message"],
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
             "created_at": row["created_at"],
         }
         for row in rows
@@ -1709,6 +2876,7 @@ def _db_monitor_queries(task_id: str | None = None, active_only: bool = False) -
         params.append(task_id)
     if active_only:
         filters.append("active = 1")
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY updated_at DESC"
@@ -1728,6 +2896,8 @@ def _db_monitor_queries(task_id: str | None = None, active_only: bool = False) -
             "language": row["language"],
             "status": row["status"] or ("active" if row["active"] else "paused"),
             "updated_at": row["updated_at"],
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
         }
         for row in rows
     ]
@@ -1736,9 +2906,13 @@ def _db_monitor_queries(task_id: str | None = None, active_only: bool = False) -
 def _db_source_observations(task_id: str | None = None) -> list[dict]:
     query = "SELECT * FROM source_observations"
     params: list[str] = []
+    filters: list[str] = []
     if task_id:
-        query += " WHERE task_id = ?"
+        filters.append("task_id = ?")
         params.append(task_id)
+    _append_scope_filters(filters, params)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY observed_at DESC"
     with _db() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1749,6 +2923,8 @@ def _db_source_observations(task_id: str | None = None) -> list[dict]:
             "source_url": row["source_url"], "page_type": row["page_type"],
             "citation_count": row["citation_count"], "notes": row["notes"],
             "observed_at": row["observed_at"],
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
         }
         for row in rows
     ]
@@ -1757,9 +2933,13 @@ def _db_source_observations(task_id: str | None = None) -> list[dict]:
 def _db_trust_anchors(task_id: str | None = None) -> list[dict]:
     query = "SELECT * FROM trust_anchor_tasks"
     params: list[str] = []
+    filters: list[str] = []
     if task_id:
-        query += " WHERE task_id = ?"
+        filters.append("task_id = ?")
         params.append(task_id)
+    _append_scope_filters(filters, params)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY updated_at DESC"
     with _db() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1769,9 +2949,13 @@ def _db_trust_anchors(task_id: str | None = None) -> list[dict]:
 def _db_mention_checks(task_id: str | None = None) -> list[dict]:
     query = "SELECT * FROM mention_checks"
     params: list[str] = []
+    filters: list[str] = []
     if task_id:
-        query += " WHERE task_id = ?"
+        filters.append("task_id = ?")
         params.append(task_id)
+    _append_scope_filters(filters, params)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY checked_at DESC"
     with _db() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1867,6 +3051,7 @@ def _db_experiments(task_id: str | None = None, status: str | None = None) -> li
     if status:
         filters.append("status = ?")
         params.append(status)
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY updated_at DESC"
@@ -1876,20 +3061,34 @@ def _db_experiments(task_id: str | None = None, status: str | None = None) -> li
 
 
 def _db_get_experiment(experiment_id: str) -> dict | None:
+    query = "SELECT * FROM content_experiments WHERE experiment_id = ?"
+    params: list[str] = [experiment_id]
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT * FROM content_experiments WHERE experiment_id = ?", (experiment_id,)).fetchone()
+        row = conn.execute(query, params).fetchone()
     return _experiment_from_row(row) if row else None
 
 
 def _db_save_experiment(item: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        item.get("workspace_id"),
+        item.get("customer_id"),
+        task_id=item.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO content_experiments (
                 experiment_id, task_id, name, hypothesis, channel, primary_metric,
                 variant_a, variant_b, status, winner, notes, created_at, updated_at,
-                confirmed_by, confirmed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                confirmed_by, confirmed_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(experiment_id) DO UPDATE SET
                 name=excluded.name,
                 hypothesis=excluded.hypothesis,
@@ -1902,13 +3101,29 @@ def _db_save_experiment(item: dict) -> None:
                 notes=excluded.notes,
                 updated_at=excluded.updated_at,
                 confirmed_by=excluded.confirmed_by,
-                confirmed_at=excluded.confirmed_at
+                confirmed_at=excluded.confirmed_at,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
-            tuple(item[key] for key in [
-                "experiment_id", "task_id", "name", "hypothesis", "channel", "primary_metric",
-                "variant_a", "variant_b", "status", "winner", "notes", "created_at", "updated_at",
-                "confirmed_by", "confirmed_at",
-            ]),
+            (
+                item["experiment_id"],
+                item["task_id"],
+                item["name"],
+                item["hypothesis"],
+                item["channel"],
+                item["primary_metric"],
+                item["variant_a"],
+                item["variant_b"],
+                item["status"],
+                item["winner"],
+                item["notes"],
+                item["created_at"],
+                item["updated_at"],
+                item["confirmed_by"],
+                item["confirmed_at"],
+                workspace_id,
+                customer_id,
+            ),
         )
 
 
@@ -1926,6 +3141,7 @@ def _db_attributions(task_id: str | None = None, status: str | None = None) -> l
     if status:
         filters.append("status = ?")
         params.append(status)
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY updated_at DESC"
@@ -1935,14 +3151,19 @@ def _db_attributions(task_id: str | None = None, status: str | None = None) -> l
 
 
 def _db_save_attribution(item: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        item.get("workspace_id"),
+        item.get("customer_id"),
+        task_id=item.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO lead_attributions (
                 attribution_id, task_id, source_type, source_name, session_ref,
                 lead_stage, attributed_revenue, evidence_url, status, notes, actor,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(attribution_id) DO UPDATE SET
                 source_type=excluded.source_type,
                 source_name=excluded.source_name,
@@ -1952,13 +3173,27 @@ def _db_save_attribution(item: dict) -> None:
                 evidence_url=excluded.evidence_url,
                 status=excluded.status,
                 notes=excluded.notes,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
-            tuple(item[key] for key in [
-                "attribution_id", "task_id", "source_type", "source_name", "session_ref",
-                "lead_stage", "attributed_revenue", "evidence_url", "status", "notes", "actor",
-                "created_at", "updated_at",
-            ]),
+            (
+                item["attribution_id"],
+                item["task_id"],
+                item["source_type"],
+                item["source_name"],
+                item["session_ref"],
+                item["lead_stage"],
+                item["attributed_revenue"],
+                item["evidence_url"],
+                item["status"],
+                item["notes"],
+                item["actor"],
+                item["created_at"],
+                item["updated_at"],
+                workspace_id,
+                customer_id,
+            ),
         )
 
 
@@ -1976,6 +3211,8 @@ def _report_from_row(row: sqlite3.Row) -> dict:
         "confirmed_by": row["confirmed_by"],
         "confirmed_at": row["confirmed_at"],
         "notes": row["notes"],
+        "workspace_id": row["workspace_id"],
+        "customer_id": row["customer_id"],
     }
 
 
@@ -1989,6 +3226,7 @@ def _db_reports(task_id: str | None = None, status: str | None = None) -> list[d
     if status:
         filters.append("status = ?")
         params.append(status)
+    _append_scope_filters(filters, params)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY generated_at DESC"
@@ -1998,19 +3236,33 @@ def _db_reports(task_id: str | None = None, status: str | None = None) -> list[d
 
 
 def _db_get_report(report_id: str) -> dict | None:
+    query = "SELECT * FROM effect_reports WHERE report_id = ?"
+    params: list[str] = [report_id]
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT * FROM effect_reports WHERE report_id = ?", (report_id,)).fetchone()
+        row = conn.execute(query, params).fetchone()
     return _report_from_row(row) if row else None
 
 
 def _db_save_report(item: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        item.get("workspace_id"),
+        item.get("customer_id"),
+        task_id=item.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
             INSERT INTO effect_reports (
                 report_id, task_id, period_label, status, summary, metrics, findings,
-                next_actions, generated_at, confirmed_by, confirmed_at, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                next_actions, generated_at, confirmed_by, confirmed_at, notes, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(report_id) DO UPDATE SET
                 period_label=excluded.period_label,
                 status=excluded.status,
@@ -2020,7 +3272,9 @@ def _db_save_report(item: dict) -> None:
                 next_actions=excluded.next_actions,
                 confirmed_by=excluded.confirmed_by,
                 confirmed_at=excluded.confirmed_at,
-                notes=excluded.notes
+                notes=excluded.notes,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
             (
                 item["report_id"],
@@ -2035,6 +3289,8 @@ def _db_save_report(item: dict) -> None:
                 item.get("confirmed_by"),
                 item.get("confirmed_at"),
                 item.get("notes"),
+                workspace_id,
+                customer_id,
             ),
         )
 
@@ -2130,6 +3386,7 @@ def _generate_monitor_queries(task: dict, query_count: int, languages: list[str]
     generated: list[dict] = []
     now = _now_iso()
     task_id = task["task_id"]
+    workspace_id, customer_id = _resolve_scope_ids(task_id=task_id)
     with _db() as conn:
         for engine in engines:
             for language in selected_languages:
@@ -2143,8 +3400,8 @@ def _generate_monitor_queries(task: dict, query_count: int, languages: list[str]
                         INSERT INTO monitor_queries (
                             query_id, task_id, query_text, category, competitor, engine,
                             active, query_type, intent_stage, priority, reason,
-                            sample_target, language, status, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            sample_target, language, status, created_at, updated_at, workspace_id, customer_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(query_id) DO UPDATE SET
                             query_type=excluded.query_type,
                             intent_stage=excluded.intent_stage,
@@ -2172,6 +3429,8 @@ def _generate_monitor_queries(task: dict, query_count: int, languages: list[str]
                             "active",
                             now,
                             now,
+                            workspace_id,
+                            customer_id,
                         ),
                     )
                     generated.append(query_id)
@@ -2244,6 +3503,7 @@ def _parse_ai_sources(request: GEOSourceParseRequest, query: dict, task: dict) -
 
     now = _now_iso()
     observations = []
+    workspace_id, customer_id = _resolve_scope_ids(task_id=request.task_id)
     with _db() as conn:
         for source in domains_seen.values():
             observation = {
@@ -2256,12 +3516,14 @@ def _parse_ai_sources(request: GEOSourceParseRequest, query: dict, task: dict) -
                 "citation_count": max(1, source["count"]),
                 "notes": f"Parsed from {request.platform} answer.",
                 "observed_at": now,
+                "workspace_id": workspace_id,
+                "customer_id": customer_id,
             }
             conn.execute(
                 """INSERT INTO source_observations (
                     observation_id, task_id, query_id, source_domain, source_url, page_type,
-                    citation_count, notes, observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    citation_count, notes, observed_at, workspace_id, customer_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 tuple(observation.values()),
             )
             observations.append(observation)
@@ -2436,6 +3698,7 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
 
 
 def _seed_monitor_queries(task_id: str, brand_name: str, engines: list[str]) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(task_id=task_id)
     now = _now_iso()
     templates = [
         ("category", f"What is {brand_name} and who is it for?"),
@@ -2453,14 +3716,30 @@ def _seed_monitor_queries(task_id: str, brand_name: str, engines: list[str]) -> 
                     """
                     INSERT OR IGNORE INTO monitor_queries (
                         query_id, task_id, query_text, category, competitor, engine,
-                        active, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        active, created_at, updated_at, workspace_id, customer_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                     """,
-                    (query_id, task_id, query_text, category, None, normalized_engine, now, now),
+                    (
+                        query_id,
+                        task_id,
+                        query_text,
+                        category,
+                        None,
+                        normalized_engine,
+                        now,
+                        now,
+                        workspace_id,
+                        customer_id,
+                    ),
                 )
 
 
 def _db_save_publication(publication: dict) -> None:
+    workspace_id, customer_id = _resolve_scope_ids(
+        publication.get("workspace_id"),
+        publication.get("customer_id"),
+        task_id=publication.get("task_id"),
+    )
     with _db() as conn:
         conn.execute(
             """
@@ -2468,8 +3747,8 @@ def _db_save_publication(publication: dict) -> None:
                 publication_id, task_id, version_id, target_id, status, preview,
                 quality_report, injection_id, confirmed_by, confirmed_at,
                 response_summary, live_status, live_summary, live_confirmed_by,
-                live_confirmed_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                live_confirmed_at, created_at, updated_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(publication_id) DO UPDATE SET
                 status=excluded.status,
                 injection_id=excluded.injection_id,
@@ -2480,7 +3759,9 @@ def _db_save_publication(publication: dict) -> None:
                 live_summary=excluded.live_summary,
                 live_confirmed_by=excluded.live_confirmed_by,
                 live_confirmed_at=excluded.live_confirmed_at,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                workspace_id=excluded.workspace_id,
+                customer_id=excluded.customer_id
             """,
             (
                 publication["publication_id"], publication["task_id"], publication["version_id"],
@@ -2491,6 +3772,7 @@ def _db_save_publication(publication: dict) -> None:
                 _json_dumps(publication.get("live_summary")) if publication.get("live_summary") is not None else None,
                 publication.get("live_confirmed_by"),
                 publication.get("live_confirmed_at"), publication["created_at"], publication["updated_at"],
+                workspace_id, customer_id,
             ),
         )
 
@@ -2498,9 +3780,13 @@ def _db_save_publication(publication: dict) -> None:
 def _db_publications(task_id: str | None = None) -> list[dict]:
     query = "SELECT * FROM publications"
     params: list[str] = []
+    filters: list[str] = []
     if task_id:
-        query += " WHERE task_id = ?"
+        filters.append("task_id = ?")
         params.append(task_id)
+    _append_scope_filters(filters, params)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC"
     with _db() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -2514,14 +3800,24 @@ def _db_publications(task_id: str | None = None) -> list[dict]:
             "live_status": row["live_status"], "live_summary": _json_loads(row["live_summary"], None),
             "live_confirmed_by": row["live_confirmed_by"], "live_confirmed_at": row["live_confirmed_at"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "workspace_id": row["workspace_id"], "customer_id": row["customer_id"],
         }
         for row in rows
     ]
 
 
 def _db_get_publication(publication_id: str) -> dict | None:
+    query = "SELECT * FROM publications WHERE publication_id = ?"
+    params: list[str] = [publication_id]
+    scope = _current_scope()
+    if scope.workspace_id:
+        query += " AND workspace_id = ?"
+        params.append(scope.workspace_id)
+    if scope.customer_id:
+        query += " AND customer_id = ?"
+        params.append(scope.customer_id)
     with _db() as conn:
-        row = conn.execute("SELECT * FROM publications WHERE publication_id = ?", (publication_id,)).fetchone()
+        row = conn.execute(query, params).fetchone()
     if not row:
         return None
     return {
@@ -2540,9 +3836,13 @@ def _db_get_publication(publication_id: str) -> dict | None:
         "live_summary": _json_loads(row["live_summary"], None),
         "live_confirmed_by": row["live_confirmed_by"],
         "live_confirmed_at": row["live_confirmed_at"],
+        "workspace_id": row["workspace_id"],
+        "customer_id": row["customer_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
 def _run_job(job_id: str) -> dict:
     job = _db_get_job(job_id)
     if not job:
@@ -2601,11 +3901,34 @@ def _run_job(job_id: str) -> dict:
 
 
 def _db_history() -> dict:
+    task_filters: list[str] = []
+    task_params: list[str] = []
+    _append_scope_filters(task_filters, task_params)
+    task_query = "SELECT * FROM tasks"
+    version_query = "SELECT * FROM versions"
+    retest_query = "SELECT * FROM retests"
+    injection_query = "SELECT * FROM injections"
+    version_filters = list(task_filters)
+    version_params = list(task_params)
+    retest_filters = list(task_filters)
+    retest_params = list(task_params)
+    injection_filters = list(task_filters)
+    injection_params = list(task_params)
+    if task_filters:
+        where_clause = " WHERE " + " AND ".join(task_filters)
+        task_query += where_clause
+        version_query += " WHERE " + " AND ".join(version_filters)
+        retest_query += " WHERE " + " AND ".join(retest_filters)
+        injection_query += " WHERE " + " AND ".join(injection_filters)
+    task_query += " ORDER BY updated_at DESC"
+    version_query += " ORDER BY updated_at DESC"
+    retest_query += " ORDER BY created_at DESC"
+    injection_query += " ORDER BY created_at DESC"
     with _db() as conn:
-        task_rows = conn.execute("SELECT * FROM tasks ORDER BY updated_at DESC").fetchall()
-        version_rows = conn.execute("SELECT * FROM versions ORDER BY updated_at DESC").fetchall()
-        retest_rows = conn.execute("SELECT * FROM retests ORDER BY created_at DESC").fetchall()
-        injection_rows = conn.execute("SELECT * FROM injections ORDER BY created_at DESC").fetchall()
+        task_rows = conn.execute(task_query, task_params).fetchall()
+        version_rows = conn.execute(version_query, version_params).fetchall()
+        retest_rows = conn.execute(retest_query, retest_params).fetchall()
+        injection_rows = conn.execute(injection_query, injection_params).fetchall()
 
     retests: dict[str, list[dict]] = {}
     for row in retest_rows:
@@ -2622,6 +3945,8 @@ def _db_history() -> dict:
             "breakdown": _json_loads(row["breakdown"], {}),
             "recommendations": _json_loads(row["recommendations"], []),
             "effect_details": _json_loads(row["effect_details"], {}),
+            "workspace_id": row["workspace_id"],
+            "customer_id": row["customer_id"],
             "created_at": row["created_at"],
         }
         retests.setdefault(row["task_id"], []).append(item)
@@ -2661,13 +3986,32 @@ def _build_version_id(task_id: str) -> str:
     return f"{task_id}_v{existing_count + 1}"
 
 
-def _build_task_id(url: str) -> str:
-    return f"geo_{hashlib.sha256(url.encode('utf-8')).hexdigest()[:12]}"
+def _build_task_id(
+    url: str,
+    workspace_id: str | None = None,
+    customer_id: str | None = None,
+) -> str:
+    scope = _current_scope()
+    workspace_id = workspace_id or scope.workspace_id
+    customer_id = customer_id or scope.customer_id
+    material = f"{workspace_id}:{customer_id}:{url}" if workspace_id or customer_id else url
+    return f"geo_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:12]}"
 
 
 def _build_injection_id(version_id: str) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
     return f"inject_{version_id}_{stamp}"
+
+
+class _BlockRedirectHandler(HTTPRedirectHandler):
+    def _raise_redirect(self, req, fp, code, msg, headers):
+        raise HTTPError(req.full_url, code, msg, headers, fp)
+
+    http_error_301 = _raise_redirect
+    http_error_302 = _raise_redirect
+    http_error_303 = _raise_redirect
+    http_error_307 = _raise_redirect
+    http_error_308 = _raise_redirect
 
 
 def _validate_public_url(raw_url: str, label: str) -> str:
@@ -2689,7 +4033,37 @@ def _validate_public_webhook_url(raw_url: str) -> str:
     return _validate_public_url(raw_url, "Webhook")
 
 
-_init_db()
+def _open_outbound_request(request: Request, timeout: int):
+    opener = build_opener(_BlockRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+def _perform_outbound_request(
+    raw_url: str,
+    *,
+    label: str,
+    timeout: int,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    data: bytes | None = None,
+):
+    url = _validate_public_url(raw_url, label)
+    request = Request(url, data=data, headers=headers or {}, method=method)
+    try:
+        return _open_outbound_request(request, timeout)
+    except HTTPError as exc:
+        if exc.code in {301, 302, 303, 307, 308}:
+            location = exc.headers.get("Location") if exc.headers else None
+            if not location:
+                raise ValueError(f"{label} redirect response is missing a Location header.") from exc
+            _validate_public_url(urljoin(url, location), label)
+            raise ValueError(f"{label} URL redirects are not allowed.") from exc
+        raise
+
+
+@app.on_event("startup")
+def startup_event():
+    _init_db()
 
 
 class _ReadableTextParser(HTMLParser):
@@ -2732,16 +4106,17 @@ def _normalize_url(raw_url: str) -> str:
 
 
 def _fetch_page_text(url: str) -> tuple[str, str]:
-    request = Request(
+    with _perform_outbound_request(
         url,
+        label="Page",
+        timeout=12,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (compatible; GEOGrowthOS/1.0; "
                 "+https://example.com/geo-audit)"
             )
         },
-    )
-    with urlopen(request, timeout=12) as response:
+    ) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         html = response.read().decode(charset, errors="ignore")
 
@@ -2990,6 +4365,7 @@ def _try_ai_content_package(
     if not request.use_ai:
         return None
 
+    scoped_task_id = _build_task_id(url, request.workspace_id, request.customer_id)
     knowledge_items = _knowledge_context(url, title)
     knowledge_block = "\n".join(
         f"- [{item['category']}] {item['title']}: {item['content'][:220]}"
@@ -3037,7 +4413,7 @@ Rules:
             model=request.model,
             status="success",
             prompt=prompt,
-            task_id=_build_task_id(url),
+            task_id=scoped_task_id,
             response=output,
         )
         package = _extract_json_object(output)
@@ -3053,7 +4429,7 @@ Rules:
             model=request.model,
             status="failed",
             prompt=prompt,
-            task_id=_build_task_id(url),
+            task_id=scoped_task_id,
             error=str(exc),
         )
         return {
@@ -3257,7 +4633,283 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "database": str(DB_PATH), "export_dir": str(EXPORT_DIR)}
+    return {
+        "status": "ok",
+        "database": str(DB_PATH),
+        "database_url": _database_url(),
+        "export_dir": str(EXPORT_DIR),
+    }
+
+
+@app.post("/auth/invites")
+def auth_create_invite(request: AuthInviteRequest):
+    role = _validate_membership_role(request.role, customer_id=request.customer_id)
+    workspace_id, customer_id = _resolve_scope_ids(
+        request.workspace_id,
+        request.customer_id,
+        require_customer=role in CLIENT_SESSION_ROLES,
+        allow_bootstrap=False,
+    )
+    raw_token = secrets.token_urlsafe(24)
+    now = _now_iso()
+    invite = {
+        "invite_id": f"invite_{uuid.uuid4().hex[:12]}",
+        "workspace_id": workspace_id,
+        "customer_id": customer_id,
+        "email": request.email.strip().lower(),
+        "role": role,
+        "display_name": (request.display_name or "").strip() or None,
+        "token_hash": _hash_secret(raw_token),
+        "status": "pending",
+        "note": (request.note or "").strip() or None,
+        "invited_by": _current_actor(),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=max(1, min(request.expires_in_days, 30)))).isoformat(),
+        "accepted_at": None,
+        "created_at": now,
+    }
+    _db_save_invite(invite)
+    _db_add_audit(
+        _current_actor(),
+        "create_invite",
+        "viewer_invite",
+        invite["invite_id"],
+        outcome="pending",
+        detail={"workspace_id": workspace_id, "customer_id": customer_id, "email": invite["email"], "role": role},
+        workspace_id=workspace_id,
+        customer_id=customer_id,
+    )
+    return {
+        **{key: value for key, value in invite.items() if key != "token_hash"},
+        "token": raw_token,
+        "accept_url": _invite_accept_url(raw_token),
+    }
+
+
+@app.post("/auth/invites/accept")
+def auth_accept_invite(payload: AuthInviteAcceptRequest, request: FastAPIRequest):
+    invite = _db_get_invite_by_token(payload.token)
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found or already used.")
+    if invite["expires_at"] <= _now_iso():
+        raise HTTPException(status_code=410, detail="Invite has expired.")
+    membership = _upsert_membership(
+        workspace_id=invite["workspace_id"],
+        customer_id=invite.get("customer_id"),
+        email=invite["email"],
+        role=invite["role"],
+        display_name=(payload.display_name or invite.get("display_name") or invite["email"]),
+        invited_by=invite.get("invited_by"),
+        status="active",
+        last_login_at=_now_iso(),
+    )
+    _db_mark_invite_accepted(invite["invite_id"])
+    session_token, _ = _create_browser_session(membership, request)
+    workspace = _db_get_workspace(membership["workspace_id"], ignore_scope=True)
+    customer = _db_get_customer(membership["customer_id"], ignore_scope=True) if membership.get("customer_id") else None
+    _db_add_audit(
+        membership["email"],
+        "accept_invite",
+        "viewer_invite",
+        invite["invite_id"],
+        outcome="accepted",
+        detail={"membership_id": membership["membership_id"]},
+        workspace_id=membership["workspace_id"],
+        customer_id=membership.get("customer_id"),
+    )
+    return _session_response(
+        {
+            "authenticated": True,
+            "membership_id": membership["membership_id"],
+            "email": membership["email"],
+            "display_name": membership.get("display_name"),
+            "role": membership["role"],
+            "workspace": workspace,
+            "customer": customer,
+        },
+        token=session_token,
+    )
+
+
+@app.get("/auth/session/me")
+def auth_session_me(request: FastAPIRequest):
+    api_key = extract_api_key(
+        request.headers.get("authorization"),
+        request.headers.get("x-geo-api-key"),
+    )
+    if api_key:
+        identity = resolve_identity(api_key, allow_unsafe_local_dev=False)
+        if not identity:
+            raise HTTPException(status_code=401, detail="Invalid API key.")
+        scope = _scope_from_headers(request.headers)
+        workspace = _db_get_workspace(scope.workspace_id, ignore_scope=True) if scope.workspace_id else None
+        customer = _db_get_customer(scope.customer_id, ignore_scope=True) if scope.customer_id else None
+        return {
+            "authenticated": True,
+            "mode": "api_key",
+            "actor": identity.name,
+            "role": identity.role,
+            "workspace": workspace,
+            "customer": customer,
+        }
+
+    session_token = request.cookies.get(_session_cookie_name())
+    if not session_token:
+        raise HTTPException(status_code=401, detail="No active browser session.")
+    session = _db_get_browser_session(session_token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Browser session expired or invalid.")
+    workspace = _db_get_workspace(session["workspace_id"], ignore_scope=True)
+    customer = _db_get_customer(session["customer_id"], ignore_scope=True) if session.get("customer_id") else None
+    return {
+        "authenticated": True,
+        "mode": "session",
+        "membership_id": session["membership_id"],
+        "email": session["email"],
+        "display_name": session.get("display_name"),
+        "actor": session.get("display_name") or session["email"],
+        "role": session["role"],
+        "workspace": workspace,
+        "customer": customer,
+        "expires_at": session["expires_at"],
+    }
+
+
+@app.post("/auth/session/logout")
+def auth_session_logout(request: FastAPIRequest):
+    session_token = request.cookies.get(_session_cookie_name())
+    if session_token:
+        _db_revoke_browser_session(session_token)
+    return _clear_session_cookie(JSONResponse({"ok": True}))
+
+
+@app.get("/workspaces")
+def workspaces_list():
+    return {"items": _db_workspaces()}
+
+
+@app.post("/workspaces")
+def workspaces_create(request: WorkspaceCreateRequest):
+    now = _now_iso()
+    workspace = {
+        "workspace_id": f"ws_{uuid.uuid4().hex[:12]}",
+        "organization_id": BOOTSTRAP_ORG_ID,
+        "name": request.name.strip(),
+        "slug": _slugify(request.name),
+        "market": (request.market or "").strip() or None,
+        "language": (request.language or "").strip() or None,
+        "status": request.status.strip() or "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+    _db_save_workspace(workspace)
+    _db_add_audit(_current_actor(), "create_workspace", "workspace", workspace["workspace_id"], workspace_id=workspace["workspace_id"])
+    return workspace
+
+
+@app.get("/customers")
+def customers_list(workspace_id: str | None = None):
+    scoped_workspace_id, _ = _resolve_scope_ids(workspace_id, _current_scope().customer_id, allow_bootstrap=False)
+    return {"items": _db_customers(scoped_workspace_id)}
+
+
+@app.post("/customers")
+def customers_create(request: CustomerCreateRequest):
+    workspace_id, _ = _resolve_scope_ids(request.workspace_id, allow_bootstrap=False)
+    now = _now_iso()
+    customer = {
+        "customer_id": f"cust_{uuid.uuid4().hex[:12]}",
+        "workspace_id": workspace_id,
+        "name": request.name.strip(),
+        "slug": _slugify(request.name),
+        "market": (request.market or "").strip() or None,
+        "language": (request.language or "").strip() or None,
+        "status": request.status.strip() or "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+    _db_save_customer(customer)
+    _db_add_audit(
+        _current_actor(),
+        "create_customer",
+        "customer",
+        customer["customer_id"],
+        detail={"workspace_id": workspace_id},
+        workspace_id=workspace_id,
+        customer_id=customer["customer_id"],
+    )
+    return customer
+
+
+@app.get("/customers/{customer_id}/members")
+def customer_members(customer_id: str):
+    _require_internal_panel_access()
+    customer = _db_get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found.")
+    return {"items": _db_memberships(workspace_id=customer["workspace_id"], customer_id=customer_id)}
+
+
+@app.post("/customers/{customer_id}/members")
+def customer_member_create(customer_id: str, request: CustomerMemberCreateRequest):
+    _require_internal_panel_access()
+    customer = _db_get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found.")
+    membership = _upsert_membership(
+        workspace_id=customer["workspace_id"],
+        customer_id=customer_id,
+        email=request.email,
+        role=request.role,
+        display_name=request.display_name,
+        invited_by=_current_actor(),
+        status=request.status.strip() or "active",
+    )
+    _db_add_audit(
+        _current_actor(),
+        "create_membership",
+        "workspace_membership",
+        membership["membership_id"],
+        detail={"customer_id": customer_id, "email": membership["email"], "role": membership["role"]},
+        workspace_id=customer["workspace_id"],
+        customer_id=customer_id,
+    )
+    return membership
+
+
+@app.get("/customers/{customer_id}/reports")
+def customer_reports(customer_id: str, status: str | None = None):
+    customer = _db_get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found.")
+    scope_token = _set_current_scope(
+        RequestScope(workspace_id=customer["workspace_id"], customer_id=customer_id, via_session=_current_scope().via_session)
+    )
+    try:
+        return {"items": _db_reports(status=status)}
+    finally:
+        _reset_current_scope(scope_token)
+
+
+@app.post("/customers/{customer_id}/reports")
+def customer_report_create(customer_id: str, request: CustomerReportRequest):
+    customer = _db_get_customer(customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found.")
+    task = _db_get_task(request.task_id)
+    if not task or task.get("customer_id") != customer_id:
+        raise HTTPException(status_code=404, detail="Task not found for customer.")
+    report = _build_effect_report(task, request.period_label, request.notes)
+    _db_save_report(report)
+    _db_add_audit(
+        _current_actor(),
+        "generate_customer_report",
+        "report",
+        report["report_id"],
+        request.task_id,
+        workspace_id=customer["workspace_id"],
+        customer_id=customer_id,
+    )
+    return report
 
 
 @app.get("/admin", include_in_schema=False)
@@ -3267,16 +4919,19 @@ def admin_console():
 
 @app.get("/admin/api/overview")
 def admin_overview():
+    _require_internal_panel_access()
     return build_admin_overview(_db_history())
 
 
 @app.get("/admin/api/tasks")
 def admin_tasks(status: str | None = None, q: str | None = None, limit: int = 50):
+    _require_internal_panel_access()
     return {"items": filter_admin_tasks(_db_history(), status, q, limit)}
 
 
 @app.get("/admin/api/tasks/{task_id}")
 def admin_task_detail(task_id: str):
+    _require_internal_panel_access()
     detail = geo_task_detail(task_id)
     detail["audit_logs"] = _db_audit_logs(limit=100, task_id=task_id)
     return detail
@@ -3290,6 +4945,7 @@ def admin_audit_logs(
     outcome: str | None = None,
     actor: str | None = None,
 ):
+    _require_internal_panel_access()
     return {
         "items": _db_audit_logs(
             limit=limit,
@@ -3303,32 +4959,38 @@ def admin_audit_logs(
 
 @app.get("/admin/api/knowledge")
 def admin_knowledge(status: str | None = None, brand: str | None = None, limit: int = 100):
+    _require_internal_panel_access()
     return {"items": _db_knowledge_items(status=status, brand=brand, limit=limit)}
 
 
 @app.get("/admin/api/feedback")
 def admin_feedback(task_id: str | None = None, limit: int = 100):
+    _require_internal_panel_access()
     return {"items": _db_feedback(task_id=task_id, limit=limit)}
 
 
 @app.get("/admin/api/llm-logs")
 def admin_llm_logs(task_id: str | None = None, limit: int = 100):
+    _require_internal_panel_access()
     return {"items": _db_llm_logs(task_id=task_id, limit=limit)}
 
 
 @app.get("/admin/api/jobs")
 def admin_jobs(status: str | None = None, limit: int = 50):
+    _require_internal_panel_access()
     return {"items": _db_jobs(status=status, limit=limit)}
 
 
 @app.post("/admin/api/jobs/run-due")
 def admin_run_due_jobs(limit: int = 20):
+    _require_internal_panel_access()
     jobs = _db_jobs(limit=limit, due_only=True)
     return {"items": [_run_job(job["job_id"]) for job in reversed(jobs)]}
 
 
 @app.post("/admin/api/jobs/{job_id}/retry")
 def admin_retry_job(job_id: str, background_tasks: BackgroundTasks):
+    _require_internal_panel_access()
     job = _db_get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -3385,6 +5047,14 @@ def geo_url_audit(request: GEOUrlAuditRequest):
 
 @app.post("/geo/analyze")
 def geo_analyze(request: GEOAnalyzeRequest):
+    allow_bootstrap = current_identity().name == "local-dev" and not _current_scope().workspace_id
+    workspace_id, customer_id = _resolve_scope_ids(
+        request.workspace_id,
+        request.customer_id,
+        require_customer=not allow_bootstrap,
+        allow_bootstrap=allow_bootstrap,
+    )
+    request = request.model_copy(update={"workspace_id": workspace_id, "customer_id": customer_id})
     try:
         url = _normalize_url(request.url)
         title, content = _fetch_page_text(url)
@@ -3409,9 +5079,11 @@ def geo_analyze(request: GEOAnalyzeRequest):
         if ai_package and ai_package.get("ai_status"):
             package["ai_status"] = ai_package["ai_status"]
         package["knowledge_snapshot"] = (ai_package or {}).get("knowledge_snapshot") or _knowledge_context(url, title)
-    task_id = _build_task_id(url)
+    task_id = _build_task_id(url, workspace_id, customer_id)
     result = {
         "task_id": task_id,
+        "workspace_id": workspace_id,
+        "customer_id": customer_id,
         "status": "completed",
         "url": url,
         "title": title,
@@ -3443,6 +5115,8 @@ def geo_analyze(request: GEOAnalyzeRequest):
         "target_engines": request.target_engines or existing_task.get("target_engines") or ["chatgpt", "perplexity"],
         "business_goal": request.business_goal or existing_task.get("business_goal"),
         "service_tier": existing_task.get("service_tier") or "growth",
+        "workspace_id": workspace_id,
+        "customer_id": customer_id,
         "created_at": existing_task.get("created_at") or _now_iso(),
         "updated_at": _now_iso(),
     })
@@ -3563,6 +5237,9 @@ Recent operator feedback:
 def geo_version_save(request: GEOVersionSaveRequest):
     if not request.modules:
         raise HTTPException(status_code=400, detail="No modules to save.")
+    task = _db_get_task(request.task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
 
     actor = _current_actor()
     workflow = request.workflow or {}
@@ -3592,7 +5269,6 @@ def geo_version_save(request: GEOVersionSaveRequest):
     }
     _db_save_version(version)
 
-    task = _db_get_task(request.task_id) or {"task_id": request.task_id, "url": request.url, "created_at": _now_iso()}
     task["status"] = "pending_review"
     task["latest_version_id"] = version_id
     task["latest_workflow"] = workflow
@@ -3710,13 +5386,14 @@ def geo_inject(request: GEOInjectRequest):
                 raise ValueError("webhook_url is required for webhook target.")
             webhook_url = _validate_public_webhook_url(request.webhook_url)
             headers = {"Content-Type": "application/json", **(request.headers or {})}
-            webhook_request = Request(
+            with _perform_outbound_request(
                 webhook_url,
-                data=_json_dumps(payload).encode("utf-8"),
-                headers=headers,
+                label="Webhook",
+                timeout=15,
                 method="POST",
-            )
-            with urlopen(webhook_request, timeout=15) as response:
+                headers=headers,
+                data=_json_dumps(payload).encode("utf-8"),
+            ) as response:
                 response_body = response.read(1000).decode("utf-8", errors="ignore")
                 injection["response_summary"] = (
                     f"HTTP {response.status}: {response_body[:500]}" if response_body else f"HTTP {response.status}"
@@ -3862,7 +5539,7 @@ def geo_schedule_retest(request: GEORetestScheduleRequest, background_tasks: Bac
         "job_id": f"job_{uuid.uuid4().hex[:16]}",
         "job_type": "retest",
         "status": "queued",
-        "payload": request.dict(exclude={"run_at", "max_attempts"}),
+        "payload": request.model_dump(exclude={"run_at", "max_attempts"}),
         "result": None,
         "attempts": 0,
         "max_attempts": max_attempts,
@@ -4131,6 +5808,7 @@ def geo_monitor_query_save(request: GEOMonitorQueryRequest):
         raise HTTPException(status_code=400, detail="Query text is required.")
     query_id = f"query_{hashlib.sha256(f'{request.task_id}:{request.engine}:{query_text}'.encode()).hexdigest()[:12]}"
     now = _now_iso()
+    workspace_id, customer_id = _resolve_scope_ids(task_id=request.task_id)
     with _db() as conn:
         existing = conn.execute("SELECT created_at FROM monitor_queries WHERE query_id = ?", (query_id,)).fetchone()
         conn.execute(
@@ -4138,8 +5816,8 @@ def geo_monitor_query_save(request: GEOMonitorQueryRequest):
             INSERT INTO monitor_queries (
                 query_id, task_id, query_text, category, competitor, engine,
                 active, query_type, intent_stage, priority, reason, sample_target,
-                language, status, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                language, status, created_at, updated_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(query_id) DO UPDATE SET
                 category=excluded.category, competitor=excluded.competitor,
                 engine=excluded.engine, active=excluded.active,
@@ -4160,7 +5838,7 @@ def geo_monitor_query_save(request: GEOMonitorQueryRequest):
                 (request.reason or "").strip() or None,
                 max(1, min(request.sample_target, 30)), request.language,
                 request.status.strip() or ("active" if request.active else "paused"),
-                existing["created_at"] if existing else now, now,
+                existing["created_at"] if existing else now, now, workspace_id, customer_id,
             ),
         )
     _db_add_audit(_current_actor(), "save_monitor_query", "monitor_query", query_id, request.task_id)
@@ -4186,12 +5864,15 @@ def geo_source_observation_save(request: GEOSourceObservationRequest):
         "notes": (request.notes or "").strip() or None,
         "observed_at": _now_iso(),
     }
+    workspace_id, customer_id = _resolve_scope_ids(task_id=request.task_id)
+    observation["workspace_id"] = workspace_id
+    observation["customer_id"] = customer_id
     with _db() as conn:
         conn.execute(
             """INSERT INTO source_observations (
                 observation_id, task_id, query_id, source_domain, source_url, page_type,
-                citation_count, notes, observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                citation_count, notes, observed_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             tuple(observation.values()),
         )
     _db_add_audit(_current_actor(), "save_source_observation", "source_observation", observation["observation_id"], request.task_id)
@@ -4250,12 +5931,15 @@ def geo_trust_anchor_save(request: GEOTrustAnchorRequest):
         "created_at": now,
         "updated_at": now,
     }
+    workspace_id, customer_id = _resolve_scope_ids(task_id=request.task_id)
+    anchor["workspace_id"] = workspace_id
+    anchor["customer_id"] = customer_id
     with _db() as conn:
         conn.execute(
             """INSERT INTO trust_anchor_tasks (
                 anchor_id, task_id, channel, topic, target_url, owner, status,
-                guidance, evidence_url, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                guidance, evidence_url, created_at, updated_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             tuple(anchor.values()),
         )
     _db_add_audit(_current_actor(), "save_trust_anchor", "trust_anchor", anchor["anchor_id"], request.task_id)
@@ -4291,19 +5975,20 @@ def geo_mention_check_save(request: GEOMentionCheckRequest):
         "confidence_weight": max(0.1, min(float(request.confidence_weight or 1), 1.0)),
         "checked_at": _now_iso(),
     }
+    workspace_id, customer_id = _resolve_scope_ids(task_id=request.task_id)
     with _db() as conn:
         conn.execute(
             """INSERT INTO mention_checks (
                 check_id, task_id, query_id, engine, brand_mentioned, mention_position,
                 source_type, source_url, answer_excerpt, notes, cited_our_domain,
-                competitor_mentions, confidence_weight, checked_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                competitor_mentions, confidence_weight, checked_at, workspace_id, customer_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 check["check_id"], check["task_id"], check["query_id"], check["engine"],
                 int(check["brand_mentioned"]), check["mention_position"], check["source_type"],
                 check["source_url"], check["answer_excerpt"], check["notes"],
                 int(check["cited_our_domain"]), _json_dumps(check["competitor_mentions"]),
-                check["confidence_weight"], check["checked_at"],
+                check["confidence_weight"], check["checked_at"], workspace_id, customer_id,
             ),
         )
     _db_add_audit(
@@ -4358,6 +6043,8 @@ def geo_feedback(task_id: str | None = None, limit: int = 100):
 
 @app.post("/geo/feedback")
 def geo_feedback_save(request: GEOFeedbackRequest):
+    if not _db_get_task(request.task_id):
+        raise HTTPException(status_code=404, detail="Project not found.")
     feedback = {
         "feedback_id": f"fb_{uuid.uuid4().hex[:12]}",
         "task_id": request.task_id,
@@ -4607,7 +6294,7 @@ def cms_publication_verify_schedule(
         "job_id": f"job_{uuid.uuid4().hex[:16]}",
         "job_type": "publication_verify",
         "status": "queued",
-        "payload": request.dict(exclude={"run_at", "max_attempts"}),
+        "payload": request.model_dump(exclude={"run_at", "max_attempts"}),
         "result": None,
         "attempts": 0,
         "max_attempts": max_attempts,
@@ -4616,6 +6303,8 @@ def cms_publication_verify_schedule(
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
         "completed_at": None,
+        "workspace_id": publication.get("workspace_id"),
+        "customer_id": publication.get("customer_id"),
     }
     _db_save_job(job)
     _db_add_audit(
@@ -4654,6 +6343,8 @@ def cms_publication_retry(publication_id: str):
 
 @app.get("/geo/history")
 def geo_history():
+    if _is_client_session():
+        raise HTTPException(status_code=403, detail="Client sessions cannot read global history exports.")
     return _db_history()
 
 
@@ -4676,7 +6367,7 @@ def geo_task_detail(task_id: str):
     task_experiments = _db_experiments(task_id)
     task_attributions = _db_attributions(task_id)
     task_reports = _db_reports(task_id)
-    return {
+    detail = {
         "task": task,
         "versions": task_versions,
         "injections": task_injections,
@@ -4700,6 +6391,9 @@ def geo_task_detail(task_id: str):
         "attributions": task_attributions,
         "reports": task_reports,
     }
+    if _is_client_session():
+        return _client_safe_task_detail(detail)
+    return detail
 
 
 @app.get("/geo/versions/{version_id}")

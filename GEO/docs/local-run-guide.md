@@ -41,11 +41,10 @@ GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_API_KEY
 ```
 
-Production API authentication is optional and disabled by default for local
-development. Enable API Key authentication with:
+Protected APIs now require an API key by default. Configure role-based tokens
+with:
 
 ```bash
-export GEO_AUTH_REQUIRED=true
 export GEO_API_KEYS='{"viewer-token":{"name":"viewer@example.com","role":"viewer"},"operator-token":{"name":"operator@example.com","role":"operator"},"reviewer-token":{"name":"reviewer@example.com","role":"reviewer"},"admin-token":{"name":"admin@example.com","role":"admin"}}'
 ```
 
@@ -54,6 +53,45 @@ Clients can send either `Authorization: Bearer <token>` or
 `reviewer`, `admin`. Review approval requires `reviewer`; write workflows
 require `operator`; admin/history reads require `viewer`. The admin console
 stores its entered API Key in browser session storage only.
+
+For local-only development you can explicitly opt into an unsafe bypass:
+
+```bash
+export GEO_UNSAFE_LOCAL_DEV=true
+```
+
+This bypass only works for loopback hosts such as `127.0.0.1`, `localhost`, or
+`[::1]`, and should never be enabled in shared or deployed environments.
+
+Browser CORS is restricted to loopback origins by default. To allow additional
+browser frontends, set:
+
+```bash
+export GEO_CORS_ALLOWED_ORIGINS='https://admin.example.com,https://ops.example.com'
+```
+
+Commercial pilots should also configure persistence and browser session
+settings explicitly:
+
+```bash
+export DATABASE_URL='sqlite:///backend/geo_growth.db'
+export GEO_BROWSER_BASE_URL='https://admin.example.com'
+export GEO_SESSION_COOKIE_NAME='geo_session'
+export GEO_SESSION_COOKIE_SECURE='true'
+export GEO_SESSION_COOKIE_SAMESITE='lax'
+export GEO_SESSION_TTL_HOURS='168'
+```
+
+If you are bootstrapping a fresh pilot environment, you can override the
+default internal tenancy labels used for legacy backfill:
+
+```bash
+export GEO_BOOTSTRAP_ORG_NAME='GEO Internal'
+export GEO_BOOTSTRAP_WORKSPACE_NAME='Internal Ops'
+export GEO_BOOTSTRAP_CUSTOMER_NAME='Internal Pilot'
+export GEO_BOOTSTRAP_MARKET='Hong Kong/Japan'
+export GEO_BOOTSTRAP_LANGUAGE='zh-HK'
+```
 
 ## 5. Run FastAPI
 
@@ -79,6 +117,18 @@ http://127.0.0.1:8000/admin
 |---|---|
 | GET / | health check |
 | GET /health | Runtime health and persistence paths |
+| POST /auth/invites | Create a scoped browser invite for workspace/customer users |
+| POST /auth/invites/accept | Exchange an invite token for a browser session cookie |
+| GET /auth/session/me | Resolve the current browser session or scoped API key identity |
+| POST /auth/session/logout | Revoke the current browser session cookie |
+| GET /workspaces | List workspaces visible to the current identity |
+| POST /workspaces | Create a workspace for a pilot tenant |
+| GET /customers | List customers visible to the current identity or scoped workspace |
+| POST /customers | Create a customer under a workspace |
+| GET /customers/{customer_id}/members | List active memberships for one customer |
+| POST /customers/{customer_id}/members | Create or update a membership for one customer |
+| GET /customers/{customer_id}/reports | List reports for one customer scope |
+| POST /customers/{customer_id}/reports | Generate one scoped report for a customer task |
 | GET /admin/api/overview | Operational metrics and attention queues |
 | GET /admin/api/tasks | Search and filter task summaries |
 | GET /admin/api/tasks/{task_id} | Admin task detail |
@@ -130,10 +180,22 @@ uvicorn backend.main:app --reload
 The mini program calls:
 
 ```text
-http://127.0.0.1:8000
+develop -> http://127.0.0.1:8000
+trial -> https://staging.geo.example.com
+release -> https://api.geo.example.com
 ```
 
-If you test on a real device or production build, replace `apiBase` in `app.js` with your deployed HTTPS API domain.
+You can override the API base, operator API key, workspace ID, and customer ID
+through `wx` storage keys:
+
+- `geoApiBaseOverride`
+- `geoApiKey`
+- `geoWorkspaceId`
+- `geoCustomerId`
+
+The mini-program request helper now forwards `X-GEO-API-Key`,
+`X-GEO-Workspace-ID`, and `X-GEO-Customer-ID` automatically when those values
+exist in `app.globalData`.
 
 ## Persistence and Exports
 
@@ -158,6 +220,8 @@ Both paths are ignored by Git because they are runtime data.
 ```json
 {
   "url": "https://example.com",
+  "workspace_id": "ws_xxx",
+  "customer_id": "cust_xxx",
   "use_ai": true,
   "provider": "openai"
 }

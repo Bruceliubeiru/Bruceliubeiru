@@ -3,11 +3,15 @@ import os
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+TRUE_VALUES = {"1", "true", "yes", "on"}
 
 ROLE_LEVELS = {
+    "client_viewer": 5,
+    "client_approver": 8,
     "viewer": 10,
     "operator": 20,
     "reviewer": 30,
+    "workspace_admin": 35,
     "admin": 40,
 }
 
@@ -18,14 +22,24 @@ class AuthIdentity:
     role: str
 
 
+LOCAL_DEV_IDENTITY = AuthIdentity(name="local-dev", role="admin")
+
 _identity_context: ContextVar[AuthIdentity] = ContextVar(
     "geo_auth_identity",
-    default=AuthIdentity(name="local-dev", role="admin"),
+    default=LOCAL_DEV_IDENTITY,
 )
 
 
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in TRUE_VALUES
+
+
+def unsafe_local_dev_enabled() -> bool:
+    return _env_enabled("GEO_UNSAFE_LOCAL_DEV")
+
+
 def auth_required() -> bool:
-    return os.getenv("GEO_AUTH_REQUIRED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return not unsafe_local_dev_enabled()
 
 
 def load_api_keys() -> dict[str, AuthIdentity]:
@@ -51,19 +65,43 @@ def load_api_keys() -> dict[str, AuthIdentity]:
     return identities
 
 
-def resolve_identity(api_key: str | None) -> AuthIdentity | None:
+def resolve_identity(
+    api_key: str | None,
+    *,
+    allow_unsafe_local_dev: bool = False,
+) -> AuthIdentity | None:
     if api_key:
         return load_api_keys().get(api_key)
-    if auth_required():
-        return None
-    return AuthIdentity(name="local-dev", role="admin")
+    if allow_unsafe_local_dev and unsafe_local_dev_enabled():
+        return LOCAL_DEV_IDENTITY
+    return None
 
 
 def required_role(method: str, path: str) -> str | None:
-    if path in {"/", "/health", "/admin", "/docs", "/openapi.json", "/redoc"}:
+    if method.upper() == "OPTIONS":
+        return None
+    if path in {
+        "/",
+        "/health",
+        "/admin",
+        "/docs",
+        "/openapi.json",
+        "/redoc",
+        "/auth/invites/accept",
+        "/auth/session/me",
+        "/auth/session/logout",
+    }:
         return None
     if path.startswith("/docs/") or path.startswith("/redoc/"):
         return None
+    if path == "/auth/invites":
+        return "operator"
+    if path == "/workspaces":
+        return "viewer" if method.upper() == "GET" else "operator"
+    if path == "/customers":
+        return "viewer" if method.upper() == "GET" else "operator"
+    if path.startswith("/customers/"):
+        return "viewer" if method.upper() == "GET" else "operator"
     if path.startswith("/admin/api/"):
         return "viewer" if method.upper() == "GET" else "operator"
     if path == "/cms/publications/confirm":

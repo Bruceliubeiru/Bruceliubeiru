@@ -144,3 +144,9 @@ GEO Growth OS turns GEO, AI, and growth capabilities into organizational assets.
 The goal is simple:
 
 > Make the business easy for AI to understand, trust, cite, and recommend.
+
+## 11. Strategy Docs
+
+- [Project Charter](docs/project-charter.md)
+- [Closed-loop Readiness](docs/closed-loop-readiness.md)
+- [Commercialization Principles](docs/commercialization-principles.md)

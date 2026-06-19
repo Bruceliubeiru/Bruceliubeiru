@@ -1,10 +1,14 @@
+import socket
+import sqlite3
 import tempfile
 import unittest
 from os import environ
 from pathlib import Path
+from urllib.error import HTTPError
 from unittest.mock import patch
 
 from fastapi import BackgroundTasks, HTTPException
+from fastapi.testclient import TestClient
 
 from backend import auth, main
 
@@ -42,9 +46,6 @@ class GEOWorkflowTest(unittest.TestCase):
         self.export_patch.start()
         self.fetch_patch.start()
         self.dns_patch.start()
-        main.TASK_STORE.clear()
-        main.VERSION_STORE.clear()
-        main.RETEST_STORE.clear()
         main._init_db()
 
     def tearDown(self):
@@ -362,7 +363,7 @@ class GEOWorkflowTest(unittest.TestCase):
             def __exit__(self, *_): return False
             def read(self, *_): return b'{"published":true}'
 
-        with patch.object(main, "urlopen", return_value=Response()):
+        with patch.object(main, "_open_outbound_request", return_value=Response()):
             published = main.cms_publication_confirm(
                 main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
             )
@@ -443,7 +444,7 @@ class GEOWorkflowTest(unittest.TestCase):
             def __exit__(self, *_): return False
             def read(self, *_): return b'{"published":true}'
 
-        with patch.object(main, "urlopen", return_value=Response()):
+        with patch.object(main, "_open_outbound_request", return_value=Response()):
             published = main.cms_publication_confirm(
                 main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
             )
@@ -474,7 +475,7 @@ class GEOWorkflowTest(unittest.TestCase):
         preview = main.cms_publication_preview(
             main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
         )
-        with patch.object(main, "urlopen", side_effect=TimeoutError("timeout")):
+        with patch.object(main, "_open_outbound_request", side_effect=TimeoutError("timeout")):
             failed = main.cms_publication_confirm(
                 main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
             )
@@ -497,7 +498,7 @@ class GEOWorkflowTest(unittest.TestCase):
             def __exit__(self, *_): return False
             def read(self, *_): return b'{"published":true}'
 
-        with patch.object(main, "urlopen", return_value=Response()):
+        with patch.object(main, "_open_outbound_request", return_value=Response()):
             published = main.cms_publication_confirm(
                 main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
             )
@@ -527,7 +528,7 @@ class GEOWorkflowTest(unittest.TestCase):
             def __exit__(self, *_): return False
             def read(self, *_): return b'{"published":true}'
 
-        with patch.object(main, "urlopen", return_value=Response()):
+        with patch.object(main, "_open_outbound_request", return_value=Response()):
             published = main.cms_publication_confirm(
                 main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
             )
@@ -743,6 +744,451 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("low", summary["sampling"]["confidence_level"])
         self.assertEqual(1, summary["competitor_gap"][0]["mentions"])
 
+    def test_fetch_page_blocks_redirect_to_private_target(self):
+        redirect_error = HTTPError(
+            "https://example.com/geo",
+            302,
+            "Found",
+            {"Location": "http://127.0.0.1/internal"},
+            None,
+        )
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            if host == "example.com":
+                return [(2, 1, 6, "", ("93.184.216.34", port))]
+            if host == "127.0.0.1":
+                return [(2, 1, 6, "", ("127.0.0.1", port))]
+            raise socket.gaierror(host)
+
+        self.fetch_patch.stop()
+        try:
+            with patch.object(main.socket, "getaddrinfo", side_effect=fake_getaddrinfo):
+                with patch.object(main, "_open_outbound_request", side_effect=redirect_error):
+                    with self.assertRaises(ValueError) as context:
+                        main._fetch_page_text("https://example.com/geo")
+        finally:
+            self.fetch_patch.start()
+
+        self.assertIn("public network address", str(context.exception))
+
+    def test_webhook_injection_blocks_redirect_to_private_target(self):
+        result, approved = self._approved_version()
+        redirect_error = HTTPError(
+            "https://cms.example.com/publish",
+            302,
+            "Found",
+            {"Location": "http://127.0.0.1/internal"},
+            None,
+        )
+
+        def fake_getaddrinfo(host, port, *args, **kwargs):
+            if host in {"example.com", "cms.example.com"}:
+                return [(2, 1, 6, "", ("93.184.216.34", port))]
+            if host == "127.0.0.1":
+                return [(2, 1, 6, "", ("127.0.0.1", port))]
+            raise socket.gaierror(host)
+
+        with patch.object(main.socket, "getaddrinfo", side_effect=fake_getaddrinfo):
+            with patch.object(main, "_open_outbound_request", side_effect=redirect_error):
+                with self.assertRaises(HTTPException) as context:
+                    main.geo_inject(
+                        main.GEOInjectRequest(
+                            version_id=approved["version_id"],
+                            target="webhook",
+                            webhook_url="https://cms.example.com/publish",
+                        )
+                    )
+        detail = main.geo_task_detail(result["task_id"])
+        injection = detail["injections"][0]
+
+        self.assertEqual(result["task_id"], injection["task_id"])
+        self.assertEqual("failed", injection["status"])
+        self.assertEqual(502, context.exception.status_code)
+        self.assertIn("public network address", injection["response_summary"])
+
+    def test_failed_persistence_does_not_leave_runtime_only_state(self):
+        task_id = "geo_failed_state"
+        now = main._now_iso()
+        task = {
+            "task_id": task_id,
+            "url": "https://example.com/geo",
+            "status": "completed",
+            "created_at": now,
+            "updated_at": now,
+        }
+        version = {
+            "version_id": "geo_failed_state_v1",
+            "task_id": task_id,
+            "url": "https://example.com/geo",
+            "status": "draft",
+            "modules": [],
+            "workflow": {},
+            "created_at": now,
+            "updated_at": now,
+        }
+        retest = {
+            "task_id": task_id,
+            "version_id": version["version_id"],
+            "injection_id": "inject_missing",
+            "url": "https://example.com/geo",
+            "title": "Failed state",
+            "previous_score": 50,
+            "current_score": 40,
+            "score_delta": -10,
+            "status": "retested",
+            "breakdown": {},
+            "recommendations": [],
+            "effect_details": {},
+            "created_at": now,
+        }
+
+        with patch.object(main, "_db", side_effect=sqlite3.OperationalError("db write failed")):
+            with self.assertRaises(sqlite3.OperationalError):
+                main._db_upsert_task(task)
+            with self.assertRaises(sqlite3.OperationalError):
+                main._db_save_version(version)
+            with self.assertRaises(sqlite3.OperationalError):
+                main._db_add_retest(retest)
+
+        self.assertIsNone(main._db_get_task(task_id))
+        self.assertIsNone(main._db_get_version(version["version_id"]))
+        self.assertEqual([], main.geo_history()["retests"].get(task_id, []))
+
+
+class HTTPSecurityTest(unittest.TestCase):
+    API_KEYS = (
+        '{"view-token":{"name":"view@example.com","role":"viewer"},'
+        '"op-token":{"name":"op@example.com","role":"operator"},'
+        '"review-token":{"name":"review@example.com","role":"reviewer"}}'
+    )
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.db_path = root / "http-test.db"
+        self.export_dir = root / "exports"
+        self.db_patch = patch.object(main, "DB_PATH", self.db_path)
+        self.export_patch = patch.object(main, "EXPORT_DIR", self.export_dir)
+        self.db_patch.start()
+        self.export_patch.start()
+
+    def tearDown(self):
+        self.export_patch.stop()
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_startup_initializes_runtime_paths(self):
+        self.assertFalse(self.db_path.exists())
+        self.assertFalse(self.export_dir.exists())
+
+        with TestClient(main.app, base_url="http://127.0.0.1:8000") as client:
+            response = client.get("/health")
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(self.db_path.exists())
+        self.assertTrue(self.export_dir.exists())
+
+    def test_http_auth_role_matrix(self):
+        with patch.dict(
+            environ,
+            {"GEO_UNSAFE_LOCAL_DEV": "false", "GEO_API_KEYS": self.API_KEYS},
+            clear=False,
+        ):
+            with TestClient(main.app, base_url="http://127.0.0.1:8000") as client:
+                anonymous = client.get("/admin/api/overview")
+                viewer = client.get(
+                    "/admin/api/overview",
+                    headers={"Authorization": "Bearer view-token"},
+                )
+                viewer_write = client.post(
+                    "/geo/inject",
+                    json={"version_id": "missing"},
+                    headers={"Authorization": "Bearer view-token"},
+                )
+                operator = client.post(
+                    "/geo/inject",
+                    json={"version_id": "missing"},
+                    headers={"Authorization": "Bearer op-token"},
+                )
+                operator_review = client.post(
+                    "/geo/version/review",
+                    json={"version_id": "missing", "action": "approve"},
+                    headers={"Authorization": "Bearer op-token"},
+                )
+                reviewer = client.post(
+                    "/geo/version/review",
+                    json={"version_id": "missing", "action": "approve"},
+                    headers={"Authorization": "Bearer review-token"},
+                )
+
+        self.assertEqual(401, anonymous.status_code)
+        self.assertEqual(200, viewer.status_code)
+        self.assertEqual("view@example.com", viewer.headers.get("x-geo-actor"))
+        self.assertEqual(403, viewer_write.status_code)
+        self.assertEqual(404, operator.status_code)
+        self.assertEqual(403, operator_review.status_code)
+        self.assertEqual(404, reviewer.status_code)
+
+    def test_unsafe_local_dev_is_limited_to_loopback_requests(self):
+        with patch.dict(
+            environ,
+            {"GEO_UNSAFE_LOCAL_DEV": "true", "GEO_API_KEYS": ""},
+            clear=False,
+        ):
+            with TestClient(main.app, base_url="http://127.0.0.1:8000") as local_client:
+                local_response = local_client.get("/admin/api/overview")
+            with TestClient(main.app, base_url="http://example.com") as remote_client:
+                remote_response = remote_client.get("/admin/api/overview")
+
+        self.assertEqual(200, local_response.status_code)
+        self.assertEqual(401, remote_response.status_code)
+
+    def test_cors_preflight_allows_loopback_and_rejects_external_origin(self):
+        headers = {
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        }
+        with TestClient(main.app, base_url="http://127.0.0.1:8000") as client:
+            allowed = client.options(
+                "/geo/audit",
+                headers={**headers, "Origin": "http://127.0.0.1:3000"},
+            )
+            blocked = client.options(
+                "/geo/audit",
+                headers={**headers, "Origin": "http://evil.example"},
+            )
+
+        self.assertEqual(200, allowed.status_code)
+        self.assertEqual(
+            "http://127.0.0.1:3000",
+            allowed.headers.get("access-control-allow-origin"),
+        )
+        self.assertEqual(400, blocked.status_code)
+        self.assertIsNone(blocked.headers.get("access-control-allow-origin"))
+
+
+class CommercialTenancyTest(unittest.TestCase):
+    API_KEYS = (
+        '{"view-token":{"name":"view@example.com","role":"viewer"},'
+        '"op-token":{"name":"op@example.com","role":"operator"},'
+        '"review-token":{"name":"review@example.com","role":"reviewer"},'
+        '"admin-token":{"name":"admin@example.com","role":"admin"}}'
+    )
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.db_path = root / "commercial.db"
+        self.export_dir = root / "exports"
+        self.db_patch = patch.object(main, "DB_PATH", self.db_path)
+        self.export_patch = patch.object(main, "EXPORT_DIR", self.export_dir)
+        self.fetch_patch = patch.object(
+            main,
+            "_fetch_page_text",
+            return_value=("Commercial GEO Page", SAMPLE_CONTENT),
+        )
+        self.dns_patch = patch.object(
+            main.socket,
+            "getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+        )
+        self.db_patch.start()
+        self.export_patch.start()
+        self.fetch_patch.start()
+        self.dns_patch.start()
+
+    def tearDown(self):
+        self.dns_patch.stop()
+        self.fetch_patch.stop()
+        self.export_patch.stop()
+        self.db_patch.stop()
+        self.temp_dir.cleanup()
+
+    def _operator_headers(self):
+        return {"Authorization": "Bearer op-token"}
+
+    def _create_workspace_and_customer(self, client, workspace_name, customer_name):
+        workspace = client.post(
+            "/workspaces",
+            json={"name": workspace_name, "market": "Hong Kong/Japan", "language": "zh-HK"},
+            headers=self._operator_headers(),
+        ).json()
+        customer = client.post(
+            "/customers",
+            json={"workspace_id": workspace["workspace_id"], "name": customer_name, "market": "Hong Kong/Japan", "language": "zh-HK"},
+            headers=self._operator_headers(),
+        ).json()
+        return workspace, customer
+
+    def _analyze_in_scope(self, client, workspace_id, customer_id, url):
+        return client.post(
+            "/geo/analyze",
+            json={
+                "url": url,
+                "workspace_id": workspace_id,
+                "customer_id": customer_id,
+                "brand_name": "GEO Travel",
+                "client_name": "Partner Travel",
+            },
+            headers=self._operator_headers(),
+        )
+
+    def test_invite_acceptance_creates_scoped_session_and_filters_projects(self):
+        with patch.dict(
+            environ,
+            {"GEO_UNSAFE_LOCAL_DEV": "false", "GEO_API_KEYS": self.API_KEYS},
+            clear=False,
+        ):
+            with TestClient(main.app, base_url="http://127.0.0.1:8000") as operator_client:
+                workspace_a, customer_a = self._create_workspace_and_customer(
+                    operator_client,
+                    "HK Travel Ops",
+                    "Design Partner A",
+                )
+                workspace_b, customer_b = self._create_workspace_and_customer(
+                    operator_client,
+                    "JP Travel Ops",
+                    "Design Partner B",
+                )
+                task_a = self._analyze_in_scope(
+                    operator_client,
+                    workspace_a["workspace_id"],
+                    customer_a["customer_id"],
+                    "https://example.com/partner-a",
+                ).json()
+                task_b = self._analyze_in_scope(
+                    operator_client,
+                    workspace_b["workspace_id"],
+                    customer_b["customer_id"],
+                    "https://example.com/partner-b",
+                ).json()
+                invite = operator_client.post(
+                    "/auth/invites",
+                    json={
+                        "workspace_id": workspace_a["workspace_id"],
+                        "customer_id": customer_a["customer_id"],
+                        "email": "client@example.com",
+                        "role": "client_viewer",
+                    },
+                    headers=self._operator_headers(),
+                ).json()
+
+            with TestClient(main.app, base_url="http://127.0.0.1:8000") as viewer_client:
+                accepted = viewer_client.post(
+                    "/auth/invites/accept",
+                    json={"token": invite["token"], "display_name": "Client Viewer"},
+                )
+                session_me = viewer_client.get("/auth/session/me")
+                projects = viewer_client.get("/geo/projects")
+                customer_list = viewer_client.get("/customers")
+                detail_ok = viewer_client.get(f"/geo/tasks/{task_a['task_id']}")
+                detail_blocked = viewer_client.get(f"/geo/tasks/{task_b['task_id']}")
+                admin_blocked = viewer_client.get("/admin/api/overview")
+
+        self.assertEqual(200, accepted.status_code)
+        self.assertEqual(200, session_me.status_code)
+        self.assertEqual("client_viewer", session_me.json()["role"])
+        self.assertEqual(customer_a["customer_id"], session_me.json()["customer"]["customer_id"])
+        self.assertEqual(200, projects.status_code)
+        self.assertEqual([task_a["task_id"]], [item["task_id"] for item in projects.json()["items"]])
+        self.assertEqual(1, len(customer_list.json()["items"]))
+        self.assertEqual(customer_a["customer_id"], customer_list.json()["items"][0]["customer_id"])
+        self.assertEqual(200, detail_ok.status_code)
+        self.assertNotIn("llm_logs", detail_ok.json())
+        self.assertEqual(404, detail_blocked.status_code)
+        self.assertEqual(403, admin_blocked.status_code)
+
+    def test_client_approver_can_review_only_versions_in_its_customer_scope(self):
+        with patch.dict(
+            environ,
+            {"GEO_UNSAFE_LOCAL_DEV": "false", "GEO_API_KEYS": self.API_KEYS},
+            clear=False,
+        ):
+            with TestClient(main.app, base_url="http://127.0.0.1:8000") as operator_client:
+                workspace_a, customer_a = self._create_workspace_and_customer(
+                    operator_client,
+                    "Scoped Workspace A",
+                    "Scoped Customer A",
+                )
+                workspace_b, customer_b = self._create_workspace_and_customer(
+                    operator_client,
+                    "Scoped Workspace B",
+                    "Scoped Customer B",
+                )
+                analyze_a = self._analyze_in_scope(
+                    operator_client,
+                    workspace_a["workspace_id"],
+                    customer_a["customer_id"],
+                    "https://example.com/customer-a",
+                ).json()
+                workflow_a = operator_client.post(
+                    "/geo/improve",
+                    json={"result": analyze_a},
+                    headers=self._operator_headers(),
+                ).json()
+                version_a = operator_client.post(
+                    "/geo/version/save",
+                    json={
+                        "task_id": analyze_a["task_id"],
+                        "url": analyze_a["url"],
+                        "modules": workflow_a["improved_modules"],
+                        "workflow": workflow_a,
+                    },
+                    headers=self._operator_headers(),
+                ).json()
+
+                analyze_b = self._analyze_in_scope(
+                    operator_client,
+                    workspace_b["workspace_id"],
+                    customer_b["customer_id"],
+                    "https://example.com/customer-b",
+                ).json()
+                workflow_b = operator_client.post(
+                    "/geo/improve",
+                    json={"result": analyze_b},
+                    headers=self._operator_headers(),
+                ).json()
+                version_b = operator_client.post(
+                    "/geo/version/save",
+                    json={
+                        "task_id": analyze_b["task_id"],
+                        "url": analyze_b["url"],
+                        "modules": workflow_b["improved_modules"],
+                        "workflow": workflow_b,
+                    },
+                    headers=self._operator_headers(),
+                ).json()
+
+                invite = operator_client.post(
+                    "/auth/invites",
+                    json={
+                        "workspace_id": workspace_a["workspace_id"],
+                        "customer_id": customer_a["customer_id"],
+                        "email": "approver@example.com",
+                        "role": "client_approver",
+                    },
+                    headers=self._operator_headers(),
+                ).json()
+
+            with TestClient(main.app, base_url="http://127.0.0.1:8000") as approver_client:
+                approver_client.post(
+                    "/auth/invites/accept",
+                    json={"token": invite["token"], "display_name": "Client Approver"},
+                )
+                approved = approver_client.post(
+                    "/geo/version/review",
+                    json={"version_id": version_a["version_id"], "action": "approve"},
+                )
+                blocked = approver_client.post(
+                    "/geo/version/review",
+                    json={"version_id": version_b["version_id"], "action": "approve"},
+                )
+
+        self.assertEqual(200, approved.status_code)
+        self.assertEqual("approved", approved.json()["status"])
+        self.assertEqual("Client Approver", approved.json()["reviewer"])
+        self.assertEqual(404, blocked.status_code)
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (
@@ -751,15 +1197,23 @@ class AuthTest(unittest.TestCase):
         '"review-token":{"name":"review@example.com","role":"reviewer"}}'
     )
 
-    def test_local_development_defaults_to_admin(self):
-        with patch.dict(environ, {"GEO_AUTH_REQUIRED": "false", "GEO_API_KEYS": ""}, clear=False):
+    def test_auth_is_required_by_default(self):
+        with patch.dict(environ, {"GEO_UNSAFE_LOCAL_DEV": "false", "GEO_API_KEYS": ""}, clear=False):
             identity = auth.resolve_identity(None)
-        self.assertEqual(auth.AuthIdentity("local-dev", "admin"), identity)
+        self.assertIsNone(identity)
+
+    def test_unsafe_local_mode_requires_explicit_allowance(self):
+        with patch.dict(environ, {"GEO_UNSAFE_LOCAL_DEV": "true", "GEO_API_KEYS": ""}, clear=False):
+            self.assertIsNone(auth.resolve_identity(None))
+            self.assertEqual(
+                auth.LOCAL_DEV_IDENTITY,
+                auth.resolve_identity(None, allow_unsafe_local_dev=True),
+            )
 
     def test_required_auth_resolves_configured_identity(self):
         with patch.dict(
             environ,
-            {"GEO_AUTH_REQUIRED": "true", "GEO_API_KEYS": self.API_KEYS},
+            {"GEO_UNSAFE_LOCAL_DEV": "false", "GEO_API_KEYS": self.API_KEYS},
             clear=False,
         ):
             self.assertIsNone(auth.resolve_identity(None))
@@ -774,6 +1228,7 @@ class AuthTest(unittest.TestCase):
         self.assertEqual("operator", auth.required_role("POST", "/geo/inject"))
         self.assertEqual("viewer", auth.required_role("GET", "/geo/monitoring/summary"))
         self.assertEqual("reviewer", auth.required_role("POST", "/geo/version/review"))
+        self.assertIsNone(auth.required_role("OPTIONS", "/geo/audit"))
         self.assertFalse(auth.has_role(viewer, "reviewer"))
         self.assertTrue(auth.has_role(reviewer, "operator"))
 

@@ -1,14 +1,30 @@
 const app = getApp()
 
+function buildHeaders(extraHeaders = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...extraHeaders
+  }
+
+  if (app.globalData.apiKey) {
+    headers["X-GEO-API-Key"] = app.globalData.apiKey
+  }
+  if (app.globalData.workspaceId) {
+    headers["X-GEO-Workspace-ID"] = app.globalData.workspaceId
+  }
+  if (app.globalData.customerId) {
+    headers["X-GEO-Customer-ID"] = app.globalData.customerId
+  }
+  return headers
+}
+
 function request(path, data, method = "POST") {
   return new Promise((resolve, reject) => {
     wx.request({
       url: `${app.globalData.apiBase}${path}`,
       method,
       data,
-      header: {
-        "Content-Type": "application/json"
-      },
+      header: buildHeaders(),
       success(res) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(res.data)
@@ -117,6 +133,15 @@ function getServicePackages() {
   return request("/geo/service-packages", {}, "GET")
 }
 
+function getWorkspaces() {
+  return request("/workspaces", {}, "GET")
+}
+
+function getCustomers(workspaceId) {
+  const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ""
+  return request(`/customers${query}`, {}, "GET")
+}
+
 function saveExperiment(payload) {
   return request("/geo/experiments", payload)
 }
@@ -181,6 +206,8 @@ module.exports = {
   getHistory,
   getTaskDetail,
   getServicePackages,
+  getWorkspaces,
+  getCustomers,
   saveExperiment,
   confirmExperiment,
   saveAttribution,

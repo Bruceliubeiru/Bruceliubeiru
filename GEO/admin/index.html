@@ -126,11 +126,11 @@
     <main>
       <header class="topbar">
         <div><h1>运营总览</h1><div class="subtitle">监控 GEO 任务从诊断到复测的完整状态</div></div>
-        <div class="top-actions"><span class="identity" id="identity">本地开发身份</span><input class="key-input" id="apiKey" type="password" placeholder="生产环境 API Key"><button class="refresh" id="saveKey">应用密钥</button><button class="refresh" id="refresh">刷新数据</button></div>
+        <div class="top-actions"><span class="identity" id="identity">本地开发身份</span><input class="key-input" id="apiKey" data-key-auth type="password" placeholder="生产环境 API Key"><button class="refresh" id="saveKey" data-key-auth>应用密钥</button><button class="refresh" id="refresh">刷新数据</button></div>
       </header>
       <div id="error" class="error" hidden></div>
       <section class="metrics" id="metrics"></section>
-      <section class="grid">
+      <section class="grid" data-internal>
         <div class="panel">
           <div class="panel-head">
             <div><div class="panel-title">任务工作台</div><div class="panel-meta" id="taskCount"></div></div>
@@ -143,7 +143,7 @@
           <div class="queue" id="attention"></div>
         </div>
       </section>
-      <section class="grid">
+      <section class="grid" data-internal>
         <div class="panel">
           <div class="panel-head"><div><div class="panel-title">AI 平台可见度</div><div class="panel-meta">按 ChatGPT、Perplexity 等平台记录品牌提及与推荐位置</div></div></div>
           <div class="form-row"><input id="queryTask" placeholder="任务 ID"><input id="queryCount" type="number" min="1" max="50" placeholder="Query 数 12"><input id="queryLanguages" placeholder="语言，逗号分隔"><span></span><button class="refresh" id="generateQueries">生成 Query 池</button></div>
@@ -174,16 +174,16 @@
           <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>类型</th><th>对象</th><th>状态</th><th>摘要</th><th>操作</th></tr></thead><tbody id="growthOpsRows"></tbody></table></div>
         </div>
       </section>
-      <section class="panel" style="margin-top:14px">
+      <section class="panel" style="margin-top:14px" data-internal>
         <div class="panel-head"><div><div class="panel-title">最近操作审计</div><div class="panel-meta">关键业务动作与执行结果</div></div><div class="audit-filters"><input id="auditActor" placeholder="筛选执行者"><select id="auditAction"><option value="">全部动作</option></select><select id="auditOutcome"><option value="">全部结果</option><option value="success">success</option><option value="completed">completed</option><option value="failed">failed</option><option value="approved">approved</option><option value="rejected">rejected</option></select></div></div>
         <div class="table-wrap"><table><thead><tr><th>时间</th><th>执行者</th><th>动作</th><th>对象</th><th>结果</th></tr></thead><tbody id="auditRows"></tbody></table></div>
       </section>
-      <section class="panel" style="margin-top:14px">
+      <section class="panel" style="margin-top:14px" data-internal>
         <div class="panel-head"><div><div class="panel-title">CMS 发布目标</div><div class="panel-meta">凭证使用环境变量引用，不在数据库保存明文</div></div></div>
         <div class="form-row"><input id="cmsName" placeholder="目标名称"><input id="cmsUrl" placeholder="https://cms.example.com/publish"><select id="cmsEnv"><option>staging</option><option>production</option></select><input id="cmsSecretEnv" placeholder="凭证环境变量（可选）"><button class="refresh" id="saveCms">保存目标</button></div>
         <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>名称</th><th>环境</th><th>地址</th><th>凭证</th><th>状态</th></tr></thead><tbody id="cmsRows"></tbody></table></div>
       </section>
-      <section class="grid">
+      <section class="grid" data-internal>
         <div class="panel">
           <div class="panel-head"><div><div class="panel-title">品牌知识库</div><div class="panel-meta">用于分析与改写时的品牌事实约束</div></div></div>
           <div class="form-row"><input id="kbBrand" placeholder="品牌名"><input id="kbTitle" placeholder="知识标题"><input id="kbCategory" placeholder="分类"><input id="kbSource" placeholder="来源"><button class="refresh" id="saveKb">保存</button></div>
@@ -195,7 +195,7 @@
           <div class="table-wrap"><table><thead><tr><th>时间</th><th>动作</th><th>提供方</th><th>状态</th><th>任务</th></tr></thead><tbody id="llmRows"></tbody></table></div>
         </div>
       </section>
-      <section class="panel" style="margin-top:14px">
+      <section class="panel" style="margin-top:14px" data-internal>
         <div class="panel-head"><div><div class="panel-title">异步任务</div><div class="panel-meta">定时复测、失败重试与执行状态</div></div><div class="filters"><select id="jobStatus"><option value="">全部状态</option><option>queued</option><option>running</option><option>retry_wait</option><option>completed</option><option>failed</option></select><button class="refresh" id="runDue">运行到期任务</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>计划时间</th><th>尝试</th><th>错误</th><th>操作</th></tr></thead><tbody id="jobRows"></tbody></table></div>
       </section>
@@ -219,7 +219,10 @@
     let experiments = [];
     let attributions = [];
     let reports = [];
+    let viewerProjects = [];
     let apiKey = sessionStorage.getItem("geoApiKey") || "";
+    let viewerMode = false;
+    let sessionInfo = null;
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
     const badge = (status) => `<span class="badge ${escapeHtml(status)}">${escapeHtml(status || "unknown")}</span>`;
     const formatTime = (value) => value ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "-";
@@ -231,6 +234,63 @@
       if (actor && role) $("identity").textContent = `${actor} · ${role}`;
       if (!response.ok) throw new Error((await response.json()).detail || `请求失败 ${response.status}`);
       return response.json();
+    }
+    async function bootstrapSession() {
+      const params = new URLSearchParams(location.search);
+      const inviteToken = params.get("invite_token");
+      if (inviteToken) {
+        await api("/auth/invites/accept", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({token: inviteToken})
+        });
+        params.delete("invite_token");
+        const next = params.toString() ? `${location.pathname}?${params.toString()}` : location.pathname;
+        history.replaceState({}, "", next);
+      }
+      try {
+        sessionInfo = await api("/auth/session/me");
+        viewerMode = ["client_viewer", "client_approver"].includes(sessionInfo.role);
+        if (viewerMode) {
+          $("identity").textContent = `${sessionInfo.actor} · ${sessionInfo.role}`;
+        }
+      } catch (error) {
+        sessionInfo = null;
+        viewerMode = false;
+      }
+    }
+    function applyViewerMode() {
+      if (!viewerMode) return;
+      document.querySelector("aside")?.setAttribute("hidden", "hidden");
+      document.querySelectorAll("[data-internal], [data-key-auth]").forEach((node) => node.setAttribute("hidden", "hidden"));
+      document.querySelector("h1").textContent = "客户查看面板";
+      document.querySelector(".subtitle").textContent = "查看本工作区的任务、审批状态与周报结果";
+    }
+    function buildViewerOverview(items, reportItems) {
+      const scores = items.map((item) => Number(item.geo_score || 0));
+      const average = scores.length ? Math.round(scores.reduce((sum, item) => sum + item, 0) / scores.length) : 0;
+      return {
+        metrics: {
+          tasks: items.length,
+          average_score: average,
+          pending_reviews: items.filter((item) => item.status === "pending_review").length,
+          completed_injections: items.filter((item) => ["injected", "retested"].includes(item.status)).length,
+          failed_injections: 0,
+          retests: items.filter((item) => item.latest_retest).length,
+          average_delta: 0
+        },
+        attention: {
+          pending_reviews: items.filter((item) => item.status === "pending_review").map((item) => ({
+            version_id: item.latest_version?.version_id || item.task_id,
+            status: item.status
+          })),
+          failed_injections: [],
+          blocked_versions: [],
+          failed_publications: [],
+          needs_more_work: []
+        },
+        reports: reportItems
+      };
     }
     function renderMetrics(metrics) {
       const items = [
@@ -376,6 +436,16 @@
       const query = $("query").value.trim().toLowerCase();
       const status = $("status").value;
       try {
+        if (viewerMode) {
+          const items = viewerProjects.filter((item) => {
+            const matchesStatus = !status || item.status === status;
+            const haystack = `${item.title || ""} ${item.url || ""}`.toLowerCase();
+            const matchesQuery = !query || haystack.includes(query);
+            return matchesStatus && matchesQuery;
+          });
+          renderTasks(items);
+          return;
+        }
         const result = await api(`/admin/api/tasks?limit=200&status=${encodeURIComponent(status)}&q=${encodeURIComponent(query)}`);
         renderTasks(result.items);
       } catch (error) {
@@ -386,6 +456,18 @@
     async function load() {
       $("error").hidden = true;
       try {
+        if (viewerMode) {
+          const [projectResult, reportResult] = await Promise.all([api("/geo/projects"), api("/geo/reports")]);
+          viewerProjects = projectResult.items || [];
+          reports = reportResult.items || [];
+          const viewerOverview = buildViewerOverview(viewerProjects, reports);
+          renderMetrics(viewerOverview.metrics);
+          renderTasks(viewerProjects);
+          renderAttention(viewerOverview.attention);
+          const statuses = [...new Set(["analyzed", "draft_ready", "pending_review", "approved", "injected", "retested", ...viewerProjects.map((item) => item.status).filter(Boolean)])];
+          $("status").innerHTML = `<option value="">全部状态</option>` + statuses.map((status) => `<option>${escapeHtml(status)}</option>`).join("");
+          return;
+        }
         [overview] = await Promise.all([api("/admin/api/overview"), loadAudit(), loadJobs(), loadCmsTargets(), loadKnowledge(), loadLlmLogs(), loadMonitoring(), loadGrowthOps()]);
         renderMetrics(overview.metrics);
         renderTasks(overview.recent_tasks);
@@ -399,7 +481,7 @@
     }
     async function showTask(taskId) {
       try {
-        const detail = await api(`/admin/api/tasks/${encodeURIComponent(taskId)}`);
+        const detail = await api(`${viewerMode ? "/geo/tasks" : "/admin/api/tasks"}/${encodeURIComponent(taskId)}`);
         const task = detail.task;
         $("detailTitle").textContent = task.title || task.task_id;
         const summary = [
@@ -412,7 +494,7 @@
           ["版本", detail.versions, "version_id", "status", "updated_at"],
           ["交付", detail.injections, "injection_id", "status", "completed_at"],
           ["复测", detail.retests, "injection_id", "status", "created_at"],
-          ["审计", detail.audit_logs, "action", "outcome", "created_at"]
+          ["审计", detail.audit_logs || [], "action", "outcome", "created_at"]
         ];
         const version = detail.versions[0];
         const pendingPublication = (detail.publications || []).find((item) => item.status === "pending_confirmation");
@@ -423,7 +505,12 @@
           ? `<select id="previewTarget">${enabledTargets.map((item) => `<option value="${escapeHtml(item.target_id)}">${escapeHtml(item.name)} · ${escapeHtml(item.environment)}${item.auth_env_var && !item.credential_configured ? " · 凭证待配置" : ""}</option>`).join("")}</select>`
           : "";
         const packageSelect = servicePackages.length ? `<select id="projectPackage"><option value="">不绑定套餐</option>${servicePackages.map((item) => `<option value="${escapeHtml(item.package_id)}" ${detail.project?.package_id === item.package_id ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.tier)}</option>`).join("")}</select>` : "";
-        const actions = `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div><div class="project-form"><input id="projectClient" placeholder="客户名称" value="${escapeHtml(detail.project?.client_name || "")}"><input id="projectBrand" placeholder="品牌名称" value="${escapeHtml(detail.project?.brand_name || "")}"><input id="projectEngines" placeholder="目标平台，逗号分隔" value="${escapeHtml((detail.project?.target_engines || []).join(","))}"><button class="action" id="saveCommercial">保存商业配置</button></div><div class="project-form">${packageSelect}<input id="projectTier" placeholder="服务层级" value="${escapeHtml(detail.project?.service_tier || "")}"><span></span><button class="action" id="savePackageAssignment">保存套餐绑定</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.quality_report ? `<span class="badge ${escapeHtml(version.quality_report.status)}">知识引用 ${version.quality_report.citation_coverage?.percent ?? 100}%</span>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${previewTargetSelect}${version?.status === "approved" && enabledTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}${publishedPublication ? `<button class="action" data-verify-publish="${escapeHtml(publishedPublication.publication_id)}">立即上线校验</button><button class="action" data-schedule-verify="${escapeHtml(publishedPublication.publication_id)}">安排自动校验</button>` : ""}</div></section>`;
+        const viewerActions = sessionInfo?.role === "client_approver" && version?.status === "pending_review" && version?.quality_report?.status === "passed"
+          ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">确认审批</button>`
+          : `<span class="panel-meta">当前没有待你审批的版本。</span>`;
+        const actions = viewerMode
+          ? `<section class="section"><h3>客户审批</h3><div class="filters">${viewerActions}</div></section>`
+          : `<section class="section"><h3>项目设置</h3><div class="project-form"><input id="projectOwner" placeholder="负责人" value="${escapeHtml(detail.project?.owner === "待分配" ? "" : detail.project?.owner)}"><input id="projectTarget" type="number" min="1" max="100" value="${detail.project?.target_score || 80}"><input id="projectTodos" placeholder="待办事项，用逗号分隔" value="${escapeHtml((detail.project?.todos || []).join(","))}"><button class="action" id="saveProject">保存项目</button></div><div class="project-form"><input id="projectClient" placeholder="客户名称" value="${escapeHtml(detail.project?.client_name || "")}"><input id="projectBrand" placeholder="品牌名称" value="${escapeHtml(detail.project?.brand_name || "")}"><input id="projectEngines" placeholder="目标平台，逗号分隔" value="${escapeHtml((detail.project?.target_engines || []).join(","))}"><button class="action" id="saveCommercial">保存商业配置</button></div><div class="project-form">${packageSelect}<input id="projectTier" placeholder="服务层级" value="${escapeHtml(detail.project?.service_tier || "")}"><span></span><button class="action" id="savePackageAssignment">保存套餐绑定</button></div></section><section class="section"><h3>运营操作</h3><div class="filters">${version ? `<button class="action" data-quality="${escapeHtml(version.version_id)}">质量检查</button>` : ""}${version?.quality_report ? `<span class="badge ${escapeHtml(version.quality_report.status)}">知识引用 ${version.quality_report.citation_coverage?.percent ?? 100}%</span>` : ""}${version?.status === "pending_review" && version?.quality_report?.status === "passed" ? `<button class="action primary" data-approve="${escapeHtml(version.version_id)}">审核通过</button>` : ""}${previewTargetSelect}${version?.status === "approved" && enabledTargets.length ? `<button class="action primary" data-preview="${escapeHtml(version.version_id)}">创建发布预览</button>` : ""}${pendingPublication ? `<button class="action primary" data-publish="${escapeHtml(pendingPublication.publication_id)}">确认发布</button>` : ""}${failedPublication ? `<button class="action" data-retry-publish="${escapeHtml(failedPublication.publication_id)}">重试发布</button>` : ""}${publishedPublication ? `<button class="action" data-verify-publish="${escapeHtml(publishedPublication.publication_id)}">立即上线校验</button><button class="action" data-schedule-verify="${escapeHtml(publishedPublication.publication_id)}">安排自动校验</button>` : ""}</div></section>`;
         const publicationTimeline = [["发布", detail.publications || [], "publication_id", "status", "updated_at"]];
         const monitoringSection = `<section class="section"><h3>AI 平台监测问题</h3><div class="timeline">${(detail.monitoring?.queries || []).length ? detail.monitoring.queries.map((item) => `<div class="timeline-item"><strong>${escapeHtml(item.engine)}</strong><span>${escapeHtml(item.query_text)}<br><small>${escapeHtml(item.query_id)}</small></span><span>${badge(item.active ? "active" : "paused")}</span></div>`).join("") : `<div class="empty">暂无监测问题</div>`}</div></section>`;
         $("detailBody").innerHTML = `<div class="detail-grid">${summary.map(([label,value]) => `<div class="detail-item"><div class="detail-label">${label}</div><div class="detail-value">${escapeHtml(value)}</div></div>`).join("")}</div>${actions}${monitoringSection}` + [...timelines, ...publicationTimeline].map(([label,items,titleKey,statusKey,timeKey]) => `<section class="section"><h3>${label}记录</h3><div class="timeline">${items.length ? items.map((item) => `<div class="timeline-item"><strong>${label}</strong><span>${escapeHtml(item[titleKey] || "-")}</span><span>${badge(item[statusKey])}<br><small>${formatTime(item[timeKey])}</small></span></div>`).join("") : `<div class="empty">暂无${label}记录</div>`}</div></section>`).join("");
@@ -440,8 +527,8 @@
         document.querySelector("[data-retry-publish]")?.addEventListener("click", async (event) => { await api(`/cms/publications/${event.target.dataset.retryPublish}/retry`, {method:"POST"}); $("detailDialog").close(); await showTask(taskId); });
         document.querySelector("[data-verify-publish]")?.addEventListener("click", async (event) => { await api("/cms/publications/verify", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({publication_id:event.target.dataset.verifyPublish})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         document.querySelector("[data-schedule-verify]")?.addEventListener("click", async (event) => { await api("/cms/publications/verify/schedule", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({publication_id:event.target.dataset.scheduleVerify, max_attempts:5})}); $("detailDialog").close(); await showTask(taskId); await loadJobs(); });
-        $("saveProject").addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({owner:$("projectOwner").value, target_score:Number($("projectTarget").value), todos:$("projectTodos").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
-        $("saveCommercial").addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({client_name:$("projectClient").value, brand_name:$("projectBrand").value, target_engines:$("projectEngines").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
+        $("saveProject")?.addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({owner:$("projectOwner").value, target_score:Number($("projectTarget").value), todos:$("projectTodos").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
+        $("saveCommercial")?.addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({client_name:$("projectClient").value, brand_name:$("projectBrand").value, target_engines:$("projectEngines").value.split(",").map((item) => item.trim()).filter(Boolean)})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("savePackageAssignment")?.addEventListener("click", async () => { await api(`/geo/projects/${encodeURIComponent(taskId)}`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({package_id:$("projectPackage")?.value || null, service_tier:$("projectTier").value || null})}); $("detailDialog").close(); await showTask(taskId); await load(); });
         $("detailDialog").showModal();
       } catch (error) {
@@ -549,7 +636,11 @@
       applyFilters();
       document.querySelector(".panel").scrollIntoView({behavior:"smooth", block:"start"});
     }));
-    load();
+    (async () => {
+      await bootstrapSession();
+      applyViewerMode();
+      await load();
+    })();
   </script>
 </body>
 </html>

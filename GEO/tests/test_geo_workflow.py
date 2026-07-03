@@ -825,6 +825,39 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertIn("已接入 1 个监测连接", report["findings"][2])
         self.assertEqual("done", action["status"])
 
+    def test_geo_article_flow_supports_local_draft_indexing_and_checklist(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="GEO Growth OS",
+                target_engines=["chatgpt"],
+            )
+        )
+        article = main.geo_article_create(
+            main.GEOArticleCreateRequest(
+                task_id=result["task_id"],
+                title="GEO Growth OS 收录实验稿",
+                publish_to_feishu=False,
+            )
+        )
+        updated = main.geo_article_indexing_update(
+            article["article_id"],
+            main.GEOArticleIndexingRequest(
+                public_url="https://example.com/blog/geo-growth-os",
+                index_status="indexed",
+                notes="已提交 sitemap 并完成人工检查",
+            ),
+        )
+        checklist = main.geo_article_indexing_checklist(article["article_id"])
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("local_draft", article["status"])
+        self.assertTrue(Path(article["markdown_path"]).exists())
+        self.assertEqual("indexed", updated["index_status"])
+        self.assertEqual("https://example.com/blog/geo-growth-os", updated["public_url"])
+        self.assertIn("公开 URL", checklist["markdown"])
+        self.assertEqual(article["article_id"], detail["articles"][0]["article_id"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (

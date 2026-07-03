@@ -117,6 +117,10 @@ function getServicePackages() {
   return request("/geo/service-packages", {}, "GET")
 }
 
+function updateProject(taskId, payload) {
+  return request(`/geo/projects/${encodeURIComponent(taskId)}`, payload)
+}
+
 function saveExperiment(payload) {
   return request("/geo/experiments", payload)
 }
@@ -201,6 +205,121 @@ function getGeoArticleIndexingChecklist(articleId) {
   return request(`/geo/articles/${articleId}/indexing-checklist`, {}, "GET")
 }
 
+function feishuAuthCallback(code) {
+  return request("/feishu/auth/callback", { code }, "POST")
+}
+
+function getFeishuTableData(tableId, token) {
+  return request(`/feishu/tables/${tableId}`, { token }, "GET")
+}
+
+function syncFeishuTasks(tableId, token) {
+  return request("/feishu/sync-tasks", { table_id: tableId, token }, "POST")
+}
+
+function sendFeishuNotification(userId, taskInfo) {
+  return request("/feishu/notify", { user_id: userId, task_info: taskInfo }, "POST")
+}
+
+function createFeishuDoc(title, token) {
+  return request("/feishu/create-doc", { title, token }, "POST")
+}
+
+function generateAIMonitoringQueries(brandName, platform = "chatgpt", intentTypes, count = 12) {
+  return request("/monitoring/generate-queries", {
+    brand_name: brandName,
+    platform,
+    intent_types: intentTypes,
+    count
+  }, "POST")
+}
+
+function checkAIVisibility(query, platform, brandTerms) {
+  return request("/monitoring/check-visibility", {
+    query,
+    platform,
+    brand_terms: brandTerms
+  }, "POST")
+}
+
+function getAIMonitoringReport(period = "30d") {
+  return request(`/monitoring/report/${period}`, {}, "GET")
+}
+
+function listMonitoringConnectors() {
+  return request("/monitoring/connectors", {}, "GET")
+}
+
+function exportReportMarkdown(projectName, title, data) {
+  return request("/reports/export/markdown", {
+    project_name: projectName,
+    title,
+    data
+  }, "POST")
+}
+
+function exportReportHTML(projectName, title, data) {
+  return request("/reports/export/html", {
+    project_name: projectName,
+    title,
+    data
+  }, "POST")
+}
+
+function exportReportJSON(projectName, title, data) {
+  return request("/reports/export/json", {
+    project_name: projectName,
+    title,
+    data
+  }, "POST")
+}
+
+function exportReportDocx(projectName, title, data) {
+  return request("/reports/export/docx", {
+    project_name: projectName,
+    title,
+    data
+  }, "POST")
+}
+
+function exportReportPDF(projectName, title, data) {
+  return request("/reports/export/pdf", {
+    project_name: projectName,
+    title,
+    data
+  }, "POST")
+}
+
+// Claude URL Analysis Functions
+function analyzeWithClaude(url, title = null, analysisType = "comprehensive", forceMode = null, clientName = null, brandName = null, businessGoal = null) {
+  return request("/geo/analyze-with-claude", {
+    url,
+    title,
+    analysis_type: analysisType,
+    force_mode: forceMode,
+    client_name: clientName,
+    brand_name: brandName,
+    business_goal: businessGoal
+  }, "POST")
+}
+
+function analyzeClaudeGapAnalysis(url, forceMode = null) {
+  return request("/geo/analyze-claude-gap-analysis", {
+    url,
+    force_mode: forceMode
+  }, "POST")
+}
+
+function getClaudeConfig() {
+  return request("/geo/claude-config", {}, "GET")
+}
+
+function setClaudeAPIKey(apiKey) {
+  return request("/geo/claude-config/set-api-key", {
+    api_key: apiKey
+  }, "POST")
+}
+
 module.exports = {
   auditUrl,
   auditContent,
@@ -221,6 +340,7 @@ module.exports = {
   getHistory,
   getTaskDetail,
   getServicePackages,
+  updateProject,
   saveExperiment,
   confirmExperiment,
   saveAttribution,
@@ -241,5 +361,23 @@ module.exports = {
   updateGapAction,
   createGeoArticle,
   updateGeoArticleIndexing,
-  getGeoArticleIndexingChecklist
+  getGeoArticleIndexingChecklist,
+  feishuAuthCallback,
+  getFeishuTableData,
+  syncFeishuTasks,
+  sendFeishuNotification,
+  createFeishuDoc,
+  generateAIMonitoringQueries,
+  checkAIVisibility,
+  getAIMonitoringReport,
+  listMonitoringConnectors,
+  exportReportMarkdown,
+  exportReportHTML,
+  exportReportJSON,
+  exportReportDocx,
+  exportReportPDF,
+  analyzeWithClaude,
+  analyzeClaudeGapAnalysis,
+  getClaudeConfig,
+  setClaudeAPIKey
 }

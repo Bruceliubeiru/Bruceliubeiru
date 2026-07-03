@@ -1,1 +1,151 @@
 @import "../profile/profile.wxss";
+
+.metric-grid.monitor {
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12rpx;
+  margin: 20rpx 0;
+}
+
+.metric-grid.monitor .metric {
+  padding: 16rpx 12rpx;
+  border: 1rpx solid #e8dfdb;
+  border-radius: 12rpx;
+  background: #ffffff;
+  box-shadow: 0 5rpx 14rpx rgba(68, 43, 37, 0.03);
+}
+
+.metric-grid.monitor .metric-value {
+  font-size: 32rpx;
+}
+
+.metric-grid.monitor .metric-label {
+  font-size: 18rpx;
+}
+
+.picker-field.compact {
+  min-height: 88rpx;
+}
+
+.primary-button.small {
+  height: 76rpx;
+  margin-top: 14rpx;
+  font-size: 26rpx;
+}
+
+.info-grid,
+.mini-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
+
+.info-card,
+.mini-metric,
+.checklist-box {
+  padding: 18rpx;
+  border: 1rpx solid #edf0f2;
+  border-radius: 12rpx;
+  background: #fbfcfd;
+}
+
+.mini-metric .metric-value {
+  font-size: 30rpx;
+}
+
+.picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10rpx;
+  margin-top: 16rpx;
+}
+
+.picker-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 64rpx;
+  padding: 0 18rpx;
+  border: 1rpx solid #edf0f2;
+  border-radius: 999rpx;
+  background: #fbfcfd;
+  color: #3e4852;
+  font-size: 24rpx;
+  font-weight: 800;
+}
+
+.status-stack {
+  display: grid;
+  gap: 10rpx;
+  margin-top: 16rpx;
+}
+
+.status-note {
+  display: block;
+  padding: 16rpx 18rpx;
+  border-radius: 12rpx;
+  background: #f8ece8;
+  color: #7f4238;
+  font-size: 24rpx;
+  line-height: 1.55;
+}
+
+.status-note.solo {
+  margin-top: 16rpx;
+}
+
+.list-card {
+  display: flex;
+  gap: 12rpx;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16rpx 0;
+  border-top: 1rpx solid #edf0f2;
+  background: transparent;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0;
+}
+
+.list-card:first-of-type {
+  padding-top: 0;
+  border-top: none;
+}
+
+.list-card view:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.action-stack {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8rpx;
+  justify-content: flex-end;
+}
+
+.action-stack.column {
+  flex-direction: column;
+}
+
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin-top: 16rpx;
+  padding: 14rpx 4rpx;
+}
+
+.divider {
+  height: 1rpx;
+  margin: 22rpx 0 8rpx;
+  background: #edf0f2;
+}
+
+.multiline {
+  margin-top: 10rpx;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

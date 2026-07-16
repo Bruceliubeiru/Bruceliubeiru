@@ -1,0 +1,40 @@
+GEO/utils/api.js
+  s_48ea825e6bbbdc::t_143f18d3123eeb 136-139,168-175,359,367-368
+GEO/tests/test_geo_workflow.py
+  s_48ea825e6bbbdc::t_c74db525c4125f 690-716,772,856-882
+GEO/pages/monitor/monitor.js
+  s_48ea825e6bbbdc::t_fc6495a950e2f5 154,233,288,327,529-531
+  s_48ea825e6bbbdc::t_d3049fa983c256 14,17-25,28-36,52-72,83-100,114,146-147,149-153,169,171-173,228-232,234,246-248,267-268,272-274,287,289-291,320-326,328-332,394-450,463-484,508-528,532-579,582-624,701-724,736-759,767-782
+  s_48ea825e6bbbdc::t_ea4a77649d091b 459,462,486,732,735,761
+  s_48ea825e6bbbdc::t_d19dd375ab79d6 580-581
+GEO/backend/main.py
+  s_48ea825e6bbbdc::t_74f5409edb446a 347-348,5099-5108
+  s_48ea825e6bbbdc::t_cce660866d3a55 15,346,349-355,411-417,6090-6526
+  s_48ea825e6bbbdc::t_6081822e9c52d2 2735,2813
+  s_48ea825e6bbbdc::t_71a27663838c0a 5089,5094-5098,5109-5129
+  s_48ea825e6bbbdc::t_12e2e5df03792f 1931-1973,2311-2314
+  s_48ea825e6bbbdc::t_147e9cfa3bed3c 4761-4795
+GEO/pages/monitor/monitor.wxml
+  s_48ea825e6bbbdc::t_58d634d6add33b 175,193
+  s_48ea825e6bbbdc::t_1c91693d0e6198 85,105,112-116,137-142,145,147-150,155-156,159-160,167-174,176-192,194-208,237-257,269,275-281,330,334-337,344-348,378
+GEO/pages/monitor/monitor.wxss
+  s_48ea825e6bbbdc::t_614ac587100a5d 132-139,160-170
+GEO/docs/closed-loop-readiness.md
+  s_48ea825e6bbbdc::t_19ef21e4934871 57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "5e36306285bd7274b720e1cb8de6b56ae585ddf5",
+  "prompts": {},
+  "sessions": {
+    "s_48ea825e6bbbdc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6c91-408a-7c63-924b-26206752f8ba",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Bruceliubeiru <109455434+Bruceliubeiru@users.noreply.github.com>"
+    }
+  }
+}

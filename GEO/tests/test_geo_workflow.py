@@ -687,6 +687,33 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertIn("不伪装用户", anchor["guidance"])
         self.assertEqual("planned", anchor["status"])
 
+    def test_trust_anchor_update_persists_owner_status_and_evidence(self):
+        result = self._analyze()
+        anchor = main.geo_trust_anchor_save(
+            main.GEOTrustAnchorRequest(
+                task_id=result["task_id"],
+                channel="reddit",
+                topic="Share verified deployment lessons",
+            )
+        )
+        updated = main.geo_trust_anchor_update(
+            anchor["anchor_id"],
+            main.GEOTrustAnchorUpdateRequest(
+                channel="github",
+                topic="Document verified deployment lessons",
+                status="done",
+                owner="ops@example.com",
+                target_url="https://example.com/geo",
+                evidence_url="https://example.com/evidence",
+            ),
+        )
+
+        self.assertEqual("github", updated["channel"])
+        self.assertEqual("Document verified deployment lessons", updated["topic"])
+        self.assertEqual("done", updated["status"])
+        self.assertEqual("ops@example.com", updated["owner"])
+        self.assertEqual("https://example.com/evidence", updated["evidence_url"])
+
     def test_query_generator_creates_prd_intent_pool(self):
         result = main.geo_analyze(
             main.GEOAnalyzeRequest(
@@ -742,6 +769,7 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual(100, summary["citation_rate"])
         self.assertEqual("low", summary["sampling"]["confidence_level"])
         self.assertEqual(1, summary["competitor_gap"][0]["mentions"])
+        self.assertGreaterEqual(len(summary["source_observations"]), 2)
 
     def test_monitor_connector_and_gap_actions_are_persisted_and_bootstrapped(self):
         result = main.geo_analyze(
@@ -824,6 +852,34 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual(100, report["metrics"]["gap_action_completion"])
         self.assertIn("已接入 1 个监测连接", report["findings"][2])
         self.assertEqual("done", action["status"])
+
+    def test_attribution_update_allows_confirmation_and_revenue_revision(self):
+        result = self._analyze()
+        attribution = main.geo_attribution_save(
+            main.GEOAttributionRequest(
+                task_id=result["task_id"],
+                source_type="ai_platform",
+                source_name="ChatGPT recommendation",
+                status="pending_confirmation",
+            )
+        )
+        updated = main.geo_attribution_update(
+            attribution["attribution_id"],
+            main.GEOAttributionUpdateRequest(
+                session_ref="crm-123",
+                lead_stage="won",
+                attributed_revenue=18888,
+                evidence_url="https://example.com/crm/123",
+                status="confirmed",
+                notes="Sales confirmed the source in CRM.",
+            ),
+        )
+
+        self.assertEqual("crm-123", updated["session_ref"])
+        self.assertEqual("won", updated["lead_stage"])
+        self.assertEqual(18888, updated["attributed_revenue"])
+        self.assertEqual("confirmed", updated["status"])
+        self.assertEqual("https://example.com/crm/123", updated["evidence_url"])
 
     def test_geo_article_flow_supports_local_draft_indexing_and_checklist(self):
         result = main.geo_analyze(

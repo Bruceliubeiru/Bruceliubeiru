@@ -133,6 +133,10 @@ function saveAttribution(payload) {
   return request("/geo/attributions", payload)
 }
 
+function updateAttribution(attributionId, payload) {
+  return request(`/geo/attributions/${attributionId}`, payload, "PATCH")
+}
+
 function generateReport(payload) {
   return request("/geo/reports/generate", payload)
 }
@@ -159,6 +163,14 @@ function parseMonitoringSources(payload) {
 
 function getMonitoringSummary(taskId) {
   return request(`/geo/monitoring/summary?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
+}
+
+function saveTrustAnchor(payload) {
+  return request("/geo/monitoring/trust-anchors", payload)
+}
+
+function updateTrustAnchor(anchorId, payload) {
+  return request(`/geo/monitoring/trust-anchors/${anchorId}`, payload, "PATCH")
 }
 
 function getSourceMap(taskId) {
@@ -344,6 +356,7 @@ module.exports = {
   saveExperiment,
   confirmExperiment,
   saveAttribution,
+  updateAttribution,
   generateReport,
   confirmReport,
   exportJson,
@@ -351,6 +364,8 @@ module.exports = {
   generateMonitoringQueries,
   parseMonitoringSources,
   getMonitoringSummary,
+  saveTrustAnchor,
+  updateTrustAnchor,
   getSourceMap,
   getMonitoringConnectors,
   saveMonitoringConnector,

@@ -129,6 +129,14 @@
   flex-direction: column;
 }
 
+.top-gap {
+  margin-top: 16rpx;
+}
+
+.wide-action {
+  min-width: 240rpx;
+}
+
 .switch-row {
   display: flex;
   align-items: center;
@@ -148,4 +156,16 @@
   margin-top: 10rpx;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.tab-textarea.tall {
+  min-height: 220rpx;
+}
+
+.section-subtitle {
+  display: block;
+  margin-top: 10rpx;
+  color: #7b4235;
+  font-size: 24rpx;
+  font-weight: 800;
 }

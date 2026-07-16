@@ -82,7 +82,7 @@
       <text class="section-title">周报与采样结果</text>
       <button class="ghost-button" loading="{{generatingReport}}" disabled="{{generatingReport}}" bindtap="buildReport">生成报告</button>
     </view>
-    <input class="tab-input" value="{{reportPeriod}}" placeholder="报告周期，例如 近 30 天 / 2026-W27" bindinput="onReportPeriodInput" />
+    <input class="tab-input" value="{{reportPeriod}}" placeholder="报告周期，例如 近 30 天 / 2026-W28" bindinput="onReportPeriodInput" />
     <view class="mini-grid" wx:if="{{monitoring}}">
       <view class="mini-metric">
         <text class="metric-value">{{monitoring.mention_rate || 0}}%</text>
@@ -102,14 +102,18 @@
       </view>
     </view>
     <text wx:if="{{monitoring && monitoring.sampling.warning}}" class="status-note solo">{{monitoring.sampling.warning}}</text>
+    <text wx:if="{{lastReportExport}}" class="status-note solo">{{lastReportExport}}</text>
     <view class="list-card" wx:for="{{reports}}" wx:key="report_id" wx:for-item="report">
       <view>
         <text class="item-title">{{report.period_label}}</text>
         <text class="item-meta">{{report.summary}}</text>
         <text wx:if="{{report.findings && report.findings.length}}" class="item-meta">发现：{{report.findings[0]}}</text>
       </view>
-      <button wx:if="{{report.status !== 'confirmed'}}" class="pill-button" loading="{{confirmingReportId === report.report_id}}" disabled="{{confirmingReportId}}" data-report-id="{{report.report_id}}" bindtap="confirmReport">确认</button>
-      <text wx:else class="status">✓ 已确认</text>
+      <view class="action-stack column">
+        <button wx:if="{{report.status !== 'confirmed'}}" class="pill-button" loading="{{confirmingReportId === report.report_id}}" disabled="{{confirmingReportId}}" data-report-id="{{report.report_id}}" bindtap="confirmReport">确认</button>
+        <text wx:else class="status">✓ 已确认</text>
+        <button class="pill-button" loading="{{reportExportingId === report.report_id}}" disabled="{{reportExportingId}}" data-report-id="{{report.report_id}}" bindtap="exportReport">导出</button>
+      </view>
     </view>
   </view>
 
@@ -130,21 +134,75 @@
         <view class="picker-chip">状态：{{forms.connector.status}}</view>
       </picker>
     </view>
+    <picker mode="selector" range="{{verificationMethodOptions}}" data-path="forms.connector.verification_method" data-options="verificationMethodOptions" bindchange="onPickerChange">
+      <view class="picker-field compact">
+        <text class="item-meta">校验方式</text>
+        <text class="item-title">{{forms.connector.verification_method}}</text>
+      </view>
+    </picker>
     <input class="tab-input" value="{{forms.connector.credential_env_var}}" placeholder="凭证环境变量，例如 OPENAI_API_KEY" data-path="forms.connector.credential_env_var" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.connector.evidence_url}}" placeholder="可审计凭证或截图 URL（可选）" data-path="forms.connector.evidence_url" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.connector.last_error}}" placeholder="失败原因或恢复备注（回填时可写）" data-path="forms.connector.last_error" bindinput="onFieldInput" />
     <textarea class="tab-textarea" value="{{forms.connector.notes}}" placeholder="记录接入限制、人工校验方法、失败恢复说明" data-path="forms.connector.notes" bindinput="onFieldInput"></textarea>
-    <button class="primary-button small" loading="{{savingSection === 'connector'}}" disabled="{{savingSection === 'connector'}}" bindtap="saveConnector">保存监测接入</button>
+    <view class="action-stack top-gap">
+      <button class="primary-button small wide-action" loading="{{savingSection === 'connector'}}" disabled="{{savingSection === 'connector'}}" bindtap="saveConnector">{{editingConnectorId ? '回填接入状态' : '保存监测接入'}}</button>
+      <button wx:if="{{editingConnectorId}}" class="ghost-button" bindtap="clearConnectorDraft">取消回填</button>
+    </view>
     <view class="list-card" wx:for="{{monitoring.connectors}}" wx:key="connector_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.platform}} · {{item.provider_name}}</text>
         <text class="item-meta">{{item.connector_type}} · {{item.status}} · {{item.verification_method}}</text>
-        <text wx:if="{{item.credential_env_var}}" class="item-meta">凭证：{{item.credential_env_var}}</text>
+        <text wx:if="{{item.credential_env_var}}" class="item-meta">凭证：{{item.credential_env_var}} · {{item.credential_configured ? '已配置' : '待配置'}}</text>
+        <text wx:if="{{item.evidence_url}}" class="item-meta">证据：{{item.evidence_url}}</text>
         <text wx:if="{{item.last_error}}" class="item-meta">错误：{{item.last_error}}</text>
       </view>
-      <view class="action-stack">
+      <view class="action-stack column">
+        <button class="pill-button" data-connector-id="{{item.connector_id}}" bindtap="fillConnectorForm">回填</button>
         <button class="pill-button" data-connector-id="{{item.connector_id}}" data-status="connected" bindtap="markConnectorStatus">连通</button>
         <button class="pill-button" data-connector-id="{{item.connector_id}}" data-status="failed" bindtap="markConnectorStatus">失败</button>
       </view>
+    </view>
+  </view>
+
+  <view class="surface" wx:if="{{selectedProject && monitoring}}">
+    <view class="section-head">
+      <text class="section-title">答案解析与信源落库</text>
+      <text class="section-tag">{{monitoring.source_observations.length || 0}} 条</text>
+    </view>
+    <picker wx:if="{{monitoring.queries.length}}" mode="selector" range="{{monitoring.queries}}" range-key="query_text" value="{{sourceQueryIndex}}" bindchange="onSourceQueryChange">
+      <view class="picker-field">
+        <text class="item-meta">监测 Query</text>
+        <text class="item-title">{{selectedSourceQueryLabel || '请选择 Query'}}</text>
+      </view>
+    </picker>
+    <picker mode="selector" range="{{sourceParsePlatformOptions}}" data-path="forms.sourceParse.platform" data-options="sourceParsePlatformOptions" bindchange="onPickerChange">
+      <view class="picker-field compact">
+        <text class="item-meta">回答平台</text>
+        <text class="item-title">{{forms.sourceParse.platform}}</text>
+      </view>
+    </picker>
+    <textarea class="tab-textarea tall" value="{{forms.sourceParse.answer_text}}" placeholder="粘贴 AI 回答全文，系统会解析 Mention、Citation、Competitor 和来源" data-path="forms.sourceParse.answer_text" bindinput="onFieldInput"></textarea>
+    <textarea class="tab-textarea" value="{{forms.sourceParse.sources_text}}" placeholder="粘贴 Sources 列表，一行一个 URL 或域名" data-path="forms.sourceParse.sources_text" bindinput="onFieldInput"></textarea>
+    <input class="tab-input" value="{{forms.sourceParse.competitors}}" placeholder="竞品名，逗号分隔（可选）" data-path="forms.sourceParse.competitors" bindinput="onFieldInput" />
+    <button class="primary-button small" loading="{{savingSection === 'source-parse'}}" disabled="{{savingSection === 'source-parse'}}" bindtap="runSourceParse">解析并落库</button>
+    <view wx:if="{{lastSourceParse}}" class="status-stack">
+      <view class="status-note">
+        Mention：{{lastSourceParse.check.brand_mentioned ? '已提及' : '未提及'}} · Citation：{{lastSourceParse.check.cited_our_domain ? '已引用官网' : '未引用官网'}}
+      </view>
+      <view class="status-note">
+        竞品：{{lastSourceParse.competitor_text}}
+      </view>
+      <view class="status-note">
+        新增信源：{{lastSourceParse.source_observations.length}} 条
+      </view>
+    </view>
+    <view class="list-card" wx:for="{{monitoring.source_observations}}" wx:key="observation_id" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.source_domain}}</text>
+        <text class="item-meta">{{item.page_type}} · 引用 {{item.citation_count}} 次</text>
+        <text wx:if="{{item.source_url}}" class="item-meta">{{item.source_url}}</text>
+      </view>
+      <text class="status">{{item.observed_at}}</text>
     </view>
   </view>
 
@@ -176,6 +234,27 @@
         {{item.title}}：{{item.action}}
       </view>
     </view>
+
+    <view class="divider"></view>
+    <text class="section-subtitle">Trust Anchor 任务</text>
+    <view class="picker-row">
+      <picker mode="selector" range="{{trustAnchorChannelOptions}}" data-path="forms.trustAnchor.channel" data-options="trustAnchorChannelOptions" bindchange="onPickerChange">
+        <view class="picker-chip">渠道：{{forms.trustAnchor.channel}}</view>
+      </picker>
+      <picker mode="selector" range="{{trustAnchorStatusOptions}}" data-path="forms.trustAnchor.status" data-options="trustAnchorStatusOptions" bindchange="onPickerChange">
+        <view class="picker-chip">状态：{{forms.trustAnchor.status}}</view>
+      </picker>
+    </view>
+    <input class="tab-input" value="{{forms.trustAnchor.topic}}" placeholder="主题，例如 回答采购方关于可信 GEO 服务的提问" data-path="forms.trustAnchor.topic" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.trustAnchor.target_url}}" placeholder="目标链接（可选）" data-path="forms.trustAnchor.target_url" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.trustAnchor.owner}}" placeholder="负责人，例如 ops@company.com" data-path="forms.trustAnchor.owner" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.trustAnchor.evidence_url}}" placeholder="完成证据 URL（工单 / 截图 / 发布链接）" data-path="forms.trustAnchor.evidence_url" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.trustAnchor.guidance}}" placeholder="执行说明：必须真实、可验证、可审核，不能伪装用户或虚构体验" data-path="forms.trustAnchor.guidance" bindinput="onFieldInput"></textarea>
+    <view class="action-stack top-gap">
+      <button class="primary-button small wide-action" loading="{{savingSection === 'trust-anchor'}}" disabled="{{savingSection === 'trust-anchor'}}" bindtap="saveTrustAnchorDraft">{{editingTrustAnchorId ? '回填 Trust Anchor' : '创建 Trust Anchor'}}</button>
+      <button wx:if="{{editingTrustAnchorId}}" class="ghost-button" bindtap="clearTrustAnchorDraft">取消回填</button>
+    </view>
+
     <view class="list-card" wx:for="{{gapActions}}" wx:key="action_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.title}}</text>
@@ -187,11 +266,19 @@
         <button class="pill-button" data-action-id="{{item.action_id}}" data-status="done" bindtap="markGapAction">完成</button>
       </view>
     </view>
+
     <view class="list-card" wx:for="{{monitoring.trust_anchors}}" wx:key="anchor_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.channel}} · {{item.topic}}</text>
         <text class="item-meta">{{item.status}} · {{item.owner || '待分配'}}</text>
         <text class="item-meta">{{item.guidance}}</text>
+        <text wx:if="{{item.evidence_url}}" class="item-meta">证据：{{item.evidence_url}}</text>
+      </view>
+      <view class="action-stack column">
+        <button class="pill-button" data-anchor-id="{{item.anchor_id}}" bindtap="fillTrustAnchorForm">回填</button>
+        <button class="pill-button" data-anchor-id="{{item.anchor_id}}" data-status="in_progress" bindtap="updateTrustAnchorStatus">执行中</button>
+        <button class="pill-button" data-anchor-id="{{item.anchor_id}}" data-status="done" bindtap="updateTrustAnchorStatus">完成</button>
+        <button class="pill-button" data-anchor-id="{{item.anchor_id}}" data-status="rollback" bindtap="updateTrustAnchorStatus">回退</button>
       </view>
     </view>
   </view>
@@ -240,15 +327,24 @@
       </picker>
     </view>
     <input class="tab-input" value="{{forms.attribution.source_name}}" placeholder="线索来源，例如 ChatGPT 推荐 / 行业媒体文章" data-path="forms.attribution.source_name" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.attribution.session_ref}}" placeholder="会话 ID / CRM 线索号（可选）" data-path="forms.attribution.session_ref" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.attribution.attributed_revenue}}" placeholder="归因金额" type="digit" data-path="forms.attribution.attributed_revenue" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.attribution.evidence_url}}" placeholder="证据链接（CRM / 表单 / 截图）" data-path="forms.attribution.evidence_url" bindinput="onFieldInput" />
     <textarea class="tab-textarea" value="{{forms.attribution.notes}}" placeholder="说明线索阶段、人工确认人、可复核证据" data-path="forms.attribution.notes" bindinput="onFieldInput"></textarea>
-    <button class="primary-button small" loading="{{savingSection === 'attribution'}}" disabled="{{savingSection === 'attribution'}}" bindtap="createAttribution">登记归因</button>
+    <view class="action-stack top-gap">
+      <button class="primary-button small wide-action" loading="{{savingSection === 'attribution'}}" disabled="{{savingSection === 'attribution'}}" bindtap="saveAttributionDraft">{{editingAttributionId ? '回填归因' : '登记归因'}}</button>
+      <button wx:if="{{editingAttributionId}}" class="ghost-button" bindtap="clearAttributionDraft">取消回填</button>
+    </view>
     <view class="list-card" wx:for="{{attributions}}" wx:key="attribution_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.source_name}}</text>
         <text class="item-meta">{{item.source_type}} · {{item.status}} · {{item.lead_stage}}</text>
         <text class="item-meta">¥{{item.attributed_revenue}} · {{item.evidence_url || '待补证据'}}</text>
+      </view>
+      <view class="action-stack column">
+        <button class="pill-button" data-attribution-id="{{item.attribution_id}}" bindtap="fillAttributionForm">回填</button>
+        <button class="pill-button" data-attribution-id="{{item.attribution_id}}" data-status="confirmed" bindtap="quickUpdateAttribution">确认</button>
+        <button class="pill-button" data-attribution-id="{{item.attribution_id}}" data-status="rejected" bindtap="quickUpdateAttribution">驳回</button>
       </view>
     </view>
   </view>
@@ -279,6 +375,7 @@
       <view class="action-stack column">
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="published" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已发布</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="indexed" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已收录</button>
+        <button class="pill-button" data-article-id="{{item.article_id}}" data-status="ai_cited" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">AI 已引用</button>
         <button class="pill-button" loading="{{loadingChecklistFor === item.article_id}}" data-article-id="{{item.article_id}}" bindtap="copyChecklist">收录清单</button>
       </view>
     </view>

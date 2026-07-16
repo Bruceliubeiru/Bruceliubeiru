@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -342,6 +343,16 @@ class GEOTrustAnchorRequest(BaseModel):
     evidence_url: str | None = None
 
 
+class GEOTrustAnchorUpdateRequest(BaseModel):
+    channel: str | None = None
+    topic: str | None = None
+    status: str | None = None
+    owner: str | None = None
+    target_url: str | None = None
+    guidance: str | None = None
+    evidence_url: str | None = None
+
+
 class GEOMentionCheckRequest(BaseModel):
     task_id: str
     query_id: str
@@ -394,6 +405,16 @@ class GEOAttributionRequest(BaseModel):
     attributed_revenue: float = 0
     evidence_url: str | None = None
     status: str = "pending_confirmation"
+    notes: str | None = None
+
+
+class GEOAttributionUpdateRequest(BaseModel):
+    source_name: str | None = None
+    session_ref: str | None = None
+    lead_stage: str | None = None
+    attributed_revenue: float | None = None
+    evidence_url: str | None = None
+    status: str | None = None
     notes: str | None = None
 
 
@@ -1907,6 +1928,49 @@ def _db_trust_anchors(task_id: str | None = None) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def _db_get_trust_anchor(anchor_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM trust_anchor_tasks WHERE anchor_id = ?", (anchor_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def _db_save_trust_anchor(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO trust_anchor_tasks (
+                anchor_id, task_id, channel, topic, target_url, owner, status,
+                guidance, evidence_url, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(anchor_id) DO UPDATE SET
+                channel=excluded.channel,
+                topic=excluded.topic,
+                target_url=excluded.target_url,
+                owner=excluded.owner,
+                status=excluded.status,
+                guidance=excluded.guidance,
+                evidence_url=excluded.evidence_url,
+                updated_at=excluded.updated_at
+            """,
+            tuple(
+                item[key]
+                for key in [
+                    "anchor_id",
+                    "task_id",
+                    "channel",
+                    "topic",
+                    "target_url",
+                    "owner",
+                    "status",
+                    "guidance",
+                    "evidence_url",
+                    "created_at",
+                    "updated_at",
+                ]
+            ),
+        )
+
+
 def _db_mention_checks(task_id: str | None = None) -> list[dict]:
     query = "SELECT * FROM mention_checks"
     params: list[str] = []
@@ -2242,6 +2306,12 @@ def _db_attributions(task_id: str | None = None, status: str | None = None) -> l
     with _db() as conn:
         rows = conn.execute(query, params).fetchall()
     return [_attribution_from_row(row) for row in rows]
+
+
+def _db_get_attribution(attribution_id: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM lead_attributions WHERE attribution_id = ?", (attribution_id,)).fetchone()
+    return _attribution_from_row(row) if row else None
 
 
 def _db_save_attribution(item: dict) -> None:
@@ -2662,6 +2732,7 @@ def _monitoring_summary(task_id: str) -> dict:
     queries = _db_monitor_queries(task_id)
     checks = _db_mention_checks(task_id)
     connectors = _db_monitor_connectors(task_id)
+    observations = _db_source_observations(task_id)
     mentioned = [item for item in checks if item["brand_mentioned"]]
     positions = [int(item["mention_position"]) for item in mentioned if item.get("mention_position")]
     source_counts: dict[str, int] = {}
@@ -2739,6 +2810,7 @@ def _monitoring_summary(task_id: str) -> dict:
             "planned": connector_status_counts.get("planned", 0),
             "auditable": len([item for item in connectors if item["connector_type"] in {"official_api", "manual_export", "manual_audit"}]),
         },
+        "source_observations": observations,
         "competitor_gap": [
             {"competitor": key, "mentions": value}
             for key, value in sorted(competitor_counter.items(), key=lambda item: (-item[1], item[0]))
@@ -4686,6 +4758,41 @@ def geo_attribution_save(request: GEOAttributionRequest):
     return item
 
 
+@app.patch("/geo/attributions/{attribution_id}")
+def geo_attribution_update(attribution_id: str, request: GEOAttributionUpdateRequest):
+    item = _db_get_attribution(attribution_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Attribution not found.")
+    if request.source_name is not None:
+        source_name = request.source_name.strip()
+        if not source_name:
+            raise HTTPException(status_code=400, detail="Source name cannot be empty.")
+        item["source_name"] = source_name
+    if request.session_ref is not None:
+        item["session_ref"] = request.session_ref.strip() or None
+    if request.lead_stage is not None:
+        item["lead_stage"] = request.lead_stage.strip() or item["lead_stage"]
+    if request.attributed_revenue is not None:
+        item["attributed_revenue"] = round(float(request.attributed_revenue), 2)
+    if request.evidence_url is not None:
+        item["evidence_url"] = request.evidence_url.strip() or None
+    if request.status is not None:
+        item["status"] = request.status.strip() or item["status"]
+    if request.notes is not None:
+        item["notes"] = request.notes.strip() or None
+    item["updated_at"] = _now_iso()
+    _db_save_attribution(item)
+    _db_add_audit(
+        _current_actor(),
+        "update_attribution",
+        "attribution",
+        attribution_id,
+        item["task_id"],
+        outcome=item["status"],
+    )
+    return _db_get_attribution(attribution_id)
+
+
 @app.get("/geo/reports")
 def geo_reports(task_id: str | None = None, status: str | None = None):
     return {"items": _db_reports(task_id=task_id, status=status)}
@@ -4979,16 +5086,47 @@ def geo_trust_anchor_save(request: GEOTrustAnchorRequest):
         "created_at": now,
         "updated_at": now,
     }
-    with _db() as conn:
-        conn.execute(
-            """INSERT INTO trust_anchor_tasks (
-                anchor_id, task_id, channel, topic, target_url, owner, status,
-                guidance, evidence_url, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            tuple(anchor.values()),
-        )
+    _db_save_trust_anchor(anchor)
     _db_add_audit(_current_actor(), "save_trust_anchor", "trust_anchor", anchor["anchor_id"], request.task_id)
     return anchor
+
+
+@app.patch("/geo/monitoring/trust-anchors/{anchor_id}")
+def geo_trust_anchor_update(anchor_id: str, request: GEOTrustAnchorUpdateRequest):
+    anchor = _db_get_trust_anchor(anchor_id)
+    if not anchor:
+        raise HTTPException(status_code=404, detail="Trust anchor not found.")
+    if request.channel is not None:
+        channel = request.channel.strip().lower()
+        if not channel:
+            raise HTTPException(status_code=400, detail="Channel cannot be empty.")
+        anchor["channel"] = channel
+    if request.topic is not None:
+        topic = request.topic.strip()
+        if not topic:
+            raise HTTPException(status_code=400, detail="Topic cannot be empty.")
+        anchor["topic"] = topic
+    if request.status is not None:
+        anchor["status"] = request.status.strip() or anchor["status"]
+    if request.owner is not None:
+        anchor["owner"] = request.owner.strip() or None
+    if request.target_url is not None:
+        anchor["target_url"] = request.target_url.strip() or None
+    if request.guidance is not None:
+        anchor["guidance"] = request.guidance.strip() or anchor.get("guidance")
+    if request.evidence_url is not None:
+        anchor["evidence_url"] = request.evidence_url.strip() or None
+    anchor["updated_at"] = _now_iso()
+    _db_save_trust_anchor(anchor)
+    _db_add_audit(
+        _current_actor(),
+        "update_trust_anchor",
+        "trust_anchor",
+        anchor_id,
+        anchor["task_id"],
+        outcome=anchor["status"],
+    )
+    return _db_get_trust_anchor(anchor_id)
 
 
 @app.get("/geo/monitoring/checks")
@@ -5949,3 +6087,440 @@ Product or service:
             error=str(exc),
         )
         raise HTTPException(status_code=500, detail=f"FAQ generation failed: {exc}") from exc
+
+
+# Feishu API Endpoints
+@app.post("/feishu/auth/callback")
+async def feishu_auth_callback(code: str | None = None, state: str | None = None):
+    """Handle Feishu OAuth callback."""
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code required")
+
+    try:
+        from .feishu_service import get_feishu_service
+        service = get_feishu_service()
+        token_data = service.auth.get_user_token(code)
+
+        return {
+            "ok": True,
+            "access_token": token_data.get("access_token"),
+            "expires_in": token_data.get("expire")
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Auth failed: {str(exc)}") from exc
+
+
+@app.get("/feishu/tables/{table_id}")
+async def get_feishu_table_data(table_id: str, token: str | None = None):
+    """Fetch data from a Feishu table."""
+    try:
+        from .feishu_service import get_feishu_service
+        service = get_feishu_service()
+        records = service.table_client.get_table_records(table_id, token)
+
+        return {
+            "ok": True,
+            "table_id": table_id,
+            "records": records
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch table: {str(exc)}") from exc
+
+
+@app.post("/feishu/sync-tasks")
+async def feishu_sync_geo_tasks(table_id: str, token: str | None = None):
+    """Sync GEO tasks from Feishu table into system."""
+    try:
+        from .feishu_service import get_feishu_service
+        service = get_feishu_service()
+        tasks = service.sync_geo_tasks(table_id, token)
+
+        return {
+            "ok": True,
+            "synced_count": len(tasks),
+            "tasks": tasks
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)}") from exc
+
+
+@app.post("/feishu/notify")
+async def feishu_send_notification(user_id: str, task_info: dict):
+    """Send notification to Feishu user about task update."""
+    try:
+        from .feishu_service import get_feishu_service
+        service = get_feishu_service()
+        success = service.notify_task_update(user_id, task_info)
+
+        if not success:
+            raise Exception("Failed to send message")
+
+        return {
+            "ok": True,
+            "user_id": user_id,
+            "message": "Notification sent"
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Notification failed: {str(exc)}") from exc
+
+
+@app.post("/feishu/create-doc")
+async def feishu_create_article_doc(title: str, token: str | None = None):
+    """Create a new GEO article template document in Feishu."""
+    try:
+        from .feishu_service import get_feishu_service
+        service = get_feishu_service()
+        doc = service.create_geo_template_doc(title, token)
+
+        return {
+            "ok": True,
+            "doc": doc
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Document creation failed: {str(exc)}") from exc
+
+
+# AI Monitoring API Endpoints
+@app.post("/monitoring/generate-queries")
+async def monitoring_generate_queries(brand_name: str, platform: str = "chatgpt",
+                                     intent_types: List[str] | None = None, count: int = 12):
+    """Generate monitoring queries for a brand."""
+    if not intent_types:
+        intent_types = ["comparison", "how-to", "buy", "worth", "scenario"]
+
+    try:
+        from .ai_monitoring_service import get_monitoring_service, AIPlatform
+        service = get_monitoring_service()
+
+        platform_enum = AIPlatform(platform.lower())
+        queries = service.create_monitoring_queries(brand_name, intent_types, platform_enum, count=count)
+
+        return {
+            "ok": True,
+            "brand_name": brand_name,
+            "platform": platform,
+            "queries_count": len(queries),
+            "queries": queries
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Query generation failed: {str(exc)}") from exc
+
+
+@app.post("/monitoring/check-visibility")
+async def monitoring_check_visibility(query: str, platform: str, brand_terms: List[str]):
+    """Check brand visibility for a query on a specific platform."""
+    try:
+        from .ai_monitoring_service import get_monitoring_service, AIPlatform
+        service = get_monitoring_service()
+        service.tracker.set_brand_terms(brand_terms)
+
+        # For now, return mock response
+        # In production, would use actual connector
+        result = service.tracker.track_mention(
+            AIPlatform(platform.lower()),
+            query,
+            mentioned=True,
+            position=2
+        )
+
+        return {
+            "ok": True,
+            "result": result
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Visibility check failed: {str(exc)}") from exc
+
+
+@app.post("/monitoring/parse-sources")
+async def monitoring_parse_sources(answer_text: str, sources_text: str, brand_terms: List[str]):
+    """Parse AI response and extract visibility metrics."""
+    try:
+        from .ai_monitoring_service import SourceParser
+        parser = SourceParser()
+        parsed = parser.parse_sources(answer_text, sources_text, brand_terms)
+
+        return {
+            "ok": True,
+            "parsed_result": parsed
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Parsing failed: {str(exc)}") from exc
+
+
+@app.get("/monitoring/report/{period}")
+async def monitoring_get_report(period: str = "30d"):
+    """Get AI visibility report for a period."""
+    try:
+        from .ai_monitoring_service import get_monitoring_service
+        service = get_monitoring_service()
+        report = service.get_visibility_report(period)
+
+        return {
+            "ok": True,
+            "report": report
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(exc)}") from exc
+
+
+@app.get("/monitoring/connectors")
+async def monitoring_list_connectors():
+    """List configured monitoring connectors."""
+    try:
+        from .ai_monitoring_service import get_monitoring_service
+        service = get_monitoring_service()
+        connectors = [conn.to_dict() for conn in service.connectors.values()]
+
+        return {
+            "ok": True,
+            "connectors": connectors,
+            "count": len(connectors)
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list connectors: {str(exc)}") from exc
+
+
+# Report Export API Endpoints
+@app.post("/reports/export/markdown")
+async def export_report_markdown(project_name: str, title: str, data: dict):
+    """Export report as Markdown."""
+    try:
+        from .report_export_service import get_report_export_service
+        service = get_report_export_service()
+        result = service.generate_markdown_report(title, data, project_name)
+
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Markdown export failed: {str(exc)}") from exc
+
+
+@app.post("/reports/export/html")
+async def export_report_html(project_name: str, title: str, data: dict):
+    """Export report as HTML."""
+    try:
+        from .report_export_service import get_report_export_service
+        service = get_report_export_service()
+        result = service.generate_html_report(title, data, project_name)
+
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"HTML export failed: {str(exc)}") from exc
+
+
+@app.post("/reports/export/json")
+async def export_report_json(project_name: str, title: str, data: dict):
+    """Export report as JSON."""
+    try:
+        from .report_export_service import get_report_export_service
+        service = get_report_export_service()
+        result = service.generate_json_report(title, data, project_name)
+
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"JSON export failed: {str(exc)}") from exc
+
+
+@app.post("/reports/export/docx")
+async def export_report_docx(project_name: str, title: str, data: dict):
+    """Export report as Word (.docx)."""
+    try:
+        from .report_export_service import get_report_export_service
+        service = get_report_export_service()
+        result = service.generate_word_report(title, data, project_name)
+
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Word export failed: {str(exc)}") from exc
+
+
+@app.post("/reports/export/pdf")
+async def export_report_pdf(project_name: str, title: str, data: dict):
+    """Export report as PDF."""
+    try:
+        from .report_export_service import get_report_export_service
+        service = get_report_export_service()
+        result = service.generate_pdf_report(title, data, project_name)
+
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {str(exc)}") from exc
+
+
+# Claude URL Analysis API Endpoints
+@app.post("/geo/analyze-with-claude")
+async def geo_analyze_with_claude(
+    url: str,
+    title: str | None = None,
+    analysis_type: str = "comprehensive",
+    force_mode: str | None = None,
+    client_name: str | None = None,
+    brand_name: str | None = None,
+    business_goal: str | None = None
+):
+    """Analyze URL using Claude-powered GEO analysis (dual-mode support)."""
+    try:
+        # Normalize and fetch URL
+        url = _normalize_url(url)
+        page_title, content = _fetch_page_text(url)
+        title = title or page_title
+
+        if len(content.split()) < 20:
+            raise HTTPException(
+                status_code=422,
+                detail="Page content too short for analysis (minimum 20 words)"
+            )
+
+        # Get Claude analyzer with optional API key from env
+        try:
+            from backend.claude_url_analyzer import get_dual_mode_analyzer
+        except ImportError:
+            from claude_url_analyzer import get_dual_mode_analyzer
+        analyzer = get_dual_mode_analyzer()
+
+        # Perform analysis
+        analysis_result = analyzer.analyze(url, title, content, force_mode)
+        score_result = analyzer.score(url, title, content, force_mode)
+
+        # Combine with basic GEO scoring
+        base_score = score_content(content)
+
+        # Create comprehensive result
+        task_id = _build_task_id(url)
+        result = {
+            "task_id": task_id,
+            "url": url,
+            "title": title,
+            "analysis_mode": analysis_result.get("mode_used"),
+            "claude_analysis": analysis_result,
+            "ai_score": score_result.get("ai_readiness_score", 0),
+            "geo_score": base_score.get("geo_score", 0),
+            "gaps": analysis_result.get("analysis", {}).get("content_gaps", score_result.get("gaps", [])),
+            "recommendations": analysis_result.get("analysis", {}).get("recommendations", []),
+            "analyzed_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        # Save task if provided with business details
+        if client_name or brand_name or business_goal:
+            existing_task = _db_get_task(task_id) or {}
+            _db_upsert_task({
+                **existing_task,
+                "task_id": task_id,
+                "url": url,
+                "title": title,
+                "status": "analyzed",
+                "latest_result": result,
+                "client_name": client_name or existing_task.get("client_name"),
+                "brand_name": brand_name or existing_task.get("brand_name") or title,
+                "business_goal": business_goal or existing_task.get("business_goal"),
+                "created_at": existing_task.get("created_at") or _now_iso(),
+                "updated_at": _now_iso(),
+            })
+
+        return result
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=_fetch_error_detail(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Claude analysis failed: {str(exc)}") from exc
+
+
+@app.post("/geo/analyze-claude-gap-analysis")
+async def geo_analyze_claude_gap_analysis(url: str, force_mode: str | None = None):
+    """Perform Claude-powered gap analysis for a URL."""
+    try:
+        url = _normalize_url(url)
+        title, content = _fetch_page_text(url)
+
+        if len(content.split()) < 20:
+            raise HTTPException(
+                status_code=422,
+                detail="Page content too short (minimum 20 words)"
+            )
+
+        try:
+            from backend.claude_url_analyzer import get_dual_mode_analyzer
+        except ImportError:
+            from claude_url_analyzer import get_dual_mode_analyzer
+        analyzer = get_dual_mode_analyzer()
+
+        # Perform gap analysis
+        gap_analysis = analyzer.claude_analyzer.analyze_content(
+            url, title, content, "gap_analysis"
+        )
+
+        return {
+            "ok": True,
+            "url": url,
+            "title": title,
+            "gap_analysis": gap_analysis,
+            "mode_used": gap_analysis.get("mode", "claude_api" if not gap_analysis.get("error") else "error")
+        }
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (HTTPError, URLError, TimeoutError, ssl.SSLError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=_fetch_error_detail(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gap analysis failed: {str(exc)}") from exc
+
+
+@app.get("/geo/claude-config")
+async def geo_get_claude_config():
+    """Get Claude API configuration status."""
+    try:
+        import os
+        try:
+            from backend.claude_url_analyzer import get_dual_mode_analyzer
+        except ImportError:
+            from claude_url_analyzer import get_dual_mode_analyzer
+
+        analyzer = get_dual_mode_analyzer()
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+        return {
+            "claude_configured": bool(api_key),
+            "api_key_length": len(api_key),
+            "api_key_preview": f"{api_key[:7]}...{api_key[-4:]}" if api_key else "Not configured",
+            "default_model": "claude-3-5-sonnet-20241022",
+            "modes_available": ["claude_api", "built_in"],
+            "dual_mode_enabled": True,
+            "fallback_mode": "built_in" if not bool(api_key) else "auto"
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Config check failed: {str(exc)}") from exc
+
+
+@app.post("/geo/claude-config/set-api-key")
+async def geo_set_claude_api_key(api_key: str):
+    """Set Claude API key for current session."""
+    try:
+        if not api_key or not api_key.startswith("sk-ant-"):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid API key format. Must start with 'sk-ant-'"
+            )
+
+        # Set in environment for this session
+        import os
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+
+        # Reinitialize analyzer with new key
+        try:
+            from backend.claude_url_analyzer import get_dual_mode_analyzer
+        except ImportError:
+            from claude_url_analyzer import get_dual_mode_analyzer
+        global _analyzer
+        _analyzer = None  # Reset global instance
+
+        analyzer = get_dual_mode_analyzer(api_key)
+
+        return {
+            "ok": True,
+            "message": "API key configured successfully",
+            "configured": True,
+            "key_preview": f"{api_key[:7]}...{api_key[-4:]}"
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Configuration failed: {str(exc)}") from exc

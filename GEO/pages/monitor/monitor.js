@@ -11,10 +11,28 @@ const {
   saveExperiment,
   confirmExperiment,
   saveAttribution,
+  updateAttribution,
   createGeoArticle,
   updateGeoArticleIndexing,
-  getGeoArticleIndexingChecklist
+  getGeoArticleIndexingChecklist,
+  parseMonitoringSources,
+  saveTrustAnchor,
+  updateTrustAnchor,
+  exportReportMarkdown,
+  exportReportHTML,
+  exportReportJSON,
+  exportReportDocx,
+  exportReportPDF
 } = require("../../utils/api")
+
+const connectorPlatformOptions = ["chatgpt", "perplexity", "gemini", "google_ai_overviews", "claude", "doubao", "deepseek"]
+const reportExportOptions = [
+  { label: "Markdown", key: "markdown", action: exportReportMarkdown },
+  { label: "HTML", key: "html", action: exportReportHTML },
+  { label: "JSON", key: "json", action: exportReportJSON },
+  { label: "Word(.docx)", key: "docx", action: exportReportDocx },
+  { label: "PDF", key: "pdf", action: exportReportPDF }
+]
 
 function buildStats(history = {}) {
   const checks = history.mention_checks || []
@@ -31,6 +49,27 @@ function buildStats(history = {}) {
   }
 }
 
+function splitKeywords(value = "") {
+  return value
+    .split(/[\n,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function buildReportPayload(report = {}, monitoring = {}) {
+  return {
+    summary: {
+      mention_rate: report.metrics && report.metrics.mention_rate || 0,
+      citation_rate: report.metrics && report.metrics.citation_rate || 0,
+      total_checks: report.metrics && report.metrics.check_count || 0,
+      platforms_tracked: (monitoring.platform_breakdown || []).length
+    },
+    findings: report.findings || [],
+    recommendations: report.next_actions || [],
+    metrics: report.metrics || {}
+  }
+}
+
 function emptyProjectForms() {
   return {
     connector: {
@@ -41,7 +80,24 @@ function emptyProjectForms() {
       credential_env_var: "",
       evidence_url: "",
       verification_method: "human_recorded",
-      notes: ""
+      notes: "",
+      last_error: ""
+    },
+    sourceParse: {
+      query_id: "",
+      platform: "perplexity",
+      answer_text: "",
+      sources_text: "",
+      competitors: ""
+    },
+    trustAnchor: {
+      channel: "reddit",
+      topic: "",
+      target_url: "",
+      owner: "",
+      status: "planned",
+      guidance: "",
+      evidence_url: ""
     },
     experiment: {
       name: "",
@@ -55,6 +111,7 @@ function emptyProjectForms() {
     attribution: {
       source_type: "ai_platform",
       source_name: "",
+      session_ref: "",
       lead_stage: "new",
       attributed_revenue: "",
       evidence_url: "",
@@ -86,7 +143,15 @@ Page({
     reportPeriod: "近 30 天",
     generatingReport: false,
     confirmingReportId: "",
+    reportExportingId: "",
+    lastReportExport: "",
     assigningPackage: false,
+    editingConnectorId: "",
+    editingTrustAnchorId: "",
+    editingAttributionId: "",
+    sourceQueryIndex: 0,
+    lastSourceParse: null,
+    selectedSourceQueryLabel: "",
     experiments: [],
     attributions: [],
     reports: [],
@@ -101,8 +166,11 @@ Page({
     forms: emptyProjectForms(),
     connectorStatusOptions: ["planned", "connected", "failed"],
     connectorTypeOptions: ["official_api", "manual_export", "manual_audit"],
-    connectorPlatformOptions: ["chatgpt", "perplexity", "gemini", "google_ai_overviews", "claude", "doubao", "deepseek"],
+    connectorPlatformOptions,
     verificationMethodOptions: ["human_recorded", "api_response", "export_screenshot", "ops_checklist"],
+    sourceParsePlatformOptions: connectorPlatformOptions,
+    trustAnchorChannelOptions: ["reddit", "zhihu", "xiaohongshu", "medium", "linkedin", "github", "forum", "media"],
+    trustAnchorStatusOptions: ["planned", "in_progress", "done", "rollback"],
     experimentChannelOptions: ["onsite", "cms", "media", "community", "knowledge_base"],
     experimentMetricOptions: ["mention_rate", "citation_rate", "lead_rate", "conversion_rate"],
     attributionSourceOptions: ["ai_platform", "organic_search", "community", "partner", "media"],
@@ -157,6 +225,13 @@ Page({
       articles: [],
       articleChecklist: "",
       loadingChecklistFor: "",
+      editingConnectorId: "",
+      editingTrustAnchorId: "",
+      editingAttributionId: "",
+      sourceQueryIndex: 0,
+      lastSourceParse: null,
+      selectedSourceQueryLabel: "",
+      lastReportExport: "",
       forms: emptyProjectForms()
     })
   },
@@ -168,7 +243,9 @@ Page({
       selectedTaskIndex,
       selectedTask,
       articleChecklist: "",
-      loadingChecklistFor: ""
+      loadingChecklistFor: "",
+      lastSourceParse: null,
+      lastReportExport: ""
     })
     if (selectedTask) {
       this.loadProjectDetail(selectedTask.task_id)
@@ -187,9 +264,14 @@ Page({
       const packageIndex = Math.max(servicePackages.findIndex((item) => item.package_id === packageId), 0)
       const monitoring = detail.monitoring || null
       const forms = emptyProjectForms()
+      const sourceQueries = monitoring && monitoring.queries || []
+      const sourceQuery = sourceQueries[0] || null
       forms.article.title = detail.project && detail.project.brand_name
         ? `${detail.project.brand_name} GEO 内容实验稿`
         : ""
+      forms.sourceParse.query_id = sourceQuery ? sourceQuery.query_id : ""
+      forms.sourceParse.platform = sourceQuery ? sourceQuery.engine : "perplexity"
+      forms.trustAnchor.target_url = (detail.task && detail.task.url) || ""
       this.setData({
         selectedProject: detail.project || null,
         monitoring,
@@ -202,6 +284,11 @@ Page({
         gapActions: detail.gap_actions || [],
         articles: detail.articles || [],
         forms,
+        sourceQueryIndex: 0,
+        selectedSourceQueryLabel: sourceQuery ? sourceQuery.query_text : "",
+        editingConnectorId: "",
+        editingTrustAnchorId: "",
+        editingAttributionId: "",
         detailLoading: false
       })
     } catch (error) {
@@ -228,6 +315,19 @@ Page({
     const selected = options[Number(event.detail.value)]
     if (!path || selected === undefined) return
     this.setData({ [path]: selected })
+  },
+
+  onSourceQueryChange(event) {
+    const sourceQueryIndex = Number(event.detail.value)
+    const queries = this.data.monitoring && this.data.monitoring.queries || []
+    const selected = queries[sourceQueryIndex]
+    if (!selected) return
+    this.setData({
+      sourceQueryIndex,
+      selectedSourceQueryLabel: selected.query_text,
+      "forms.sourceParse.query_id": selected.query_id,
+      "forms.sourceParse.platform": selected.engine
+    })
   },
 
   onPackageChange(event) {
@@ -291,6 +391,63 @@ Page({
     }
   },
 
+  async exportReport(event) {
+    const reportId = event.currentTarget.dataset.reportId
+    const task = this.data.selectedTask
+    if (!reportId || !task) return
+    const report = (this.data.reports || []).find((item) => item.report_id === reportId)
+    if (!report) return
+    const projectName = this.data.selectedProject && (this.data.selectedProject.brand_name || this.data.selectedProject.client_name) || task.title || task.task_id
+    const payload = buildReportPayload(report, this.data.monitoring || {})
+    const labels = reportExportOptions.map((item) => item.label)
+    wx.showActionSheet({
+      itemList: labels,
+      success: async ({ tapIndex }) => {
+        const selected = reportExportOptions[tapIndex]
+        if (!selected) return
+        this.setData({ reportExportingId: reportId, error: "" })
+        try {
+          const result = await selected.action(projectName, `${projectName} ${report.period_label} GEO 报告`, payload)
+          const message = `${selected.key}: ${result.filepath || result.filename || "已导出"}`
+          this.setData({ reportExportingId: "", lastReportExport: message })
+          wx.setClipboardData({
+            data: result.filepath || result.filename || message,
+            success() {
+              wx.showToast({ title: "导出路径已复制", icon: "success" })
+            }
+          })
+        } catch (error) {
+          this.setData({ reportExportingId: "", error: error.message || "导出报告失败" })
+        }
+      }
+    })
+  },
+
+  fillConnectorForm(event) {
+    const connectorId = event.currentTarget.dataset.connectorId
+    const connectors = this.data.monitoring && this.data.monitoring.connectors || []
+    const item = connectors.find((entry) => entry.connector_id === connectorId)
+    if (!item) return
+    this.setData({
+      editingConnectorId: connectorId,
+      "forms.connector.provider_name": item.provider_name || "",
+      "forms.connector.platform": item.platform || "chatgpt",
+      "forms.connector.connector_type": item.connector_type || "official_api",
+      "forms.connector.status": item.status || "planned",
+      "forms.connector.credential_env_var": item.credential_env_var || "",
+      "forms.connector.evidence_url": item.evidence_url || "",
+      "forms.connector.verification_method": item.verification_method || "human_recorded",
+      "forms.connector.notes": item.notes || "",
+      "forms.connector.last_error": item.last_error || ""
+    })
+  },
+
+  clearConnectorDraft() {
+    const forms = this.data.forms
+    forms.connector = emptyProjectForms().connector
+    this.setData({ forms, editingConnectorId: "" })
+  },
+
   async saveConnector() {
     const task = this.data.selectedTask
     const form = this.data.forms.connector
@@ -299,24 +456,34 @@ Page({
       wx.showToast({ title: "请输入接入名称", icon: "none" })
       return
     }
+    const isEditing = !!this.data.editingConnectorId
     this.setData({ savingSection: "connector", error: "" })
     try {
-      await saveMonitoringConnector({
-        task_id: task.task_id,
-        platform: form.platform,
-        connector_type: form.connector_type,
-        provider_name: form.provider_name.trim(),
-        status: form.status,
-        credential_env_var: form.credential_env_var.trim(),
-        evidence_url: form.evidence_url.trim(),
-        verification_method: form.verification_method,
-        notes: form.notes.trim()
-      })
-      const forms = this.data.forms
-      forms.connector = emptyProjectForms().connector
-      this.setData({ forms, savingSection: "" })
+      if (isEditing) {
+        await updateMonitoringConnector(this.data.editingConnectorId, {
+          status: form.status,
+          evidence_url: form.evidence_url.trim(),
+          last_error: form.last_error.trim(),
+          notes: form.notes.trim(),
+          verification_method: form.verification_method
+        })
+      } else {
+        await saveMonitoringConnector({
+          task_id: task.task_id,
+          platform: form.platform,
+          connector_type: form.connector_type,
+          provider_name: form.provider_name.trim(),
+          status: form.status,
+          credential_env_var: form.credential_env_var.trim(),
+          evidence_url: form.evidence_url.trim(),
+          verification_method: form.verification_method,
+          notes: form.notes.trim()
+        })
+      }
+      this.clearConnectorDraft()
+      this.setData({ savingSection: "" })
       await this.loadProjectDetail(task.task_id)
-      wx.showToast({ title: "接入已保存", icon: "success" })
+      wx.showToast({ title: isEditing ? "接入已回填" : "接入已保存", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "保存接入失败" })
     }
@@ -335,6 +502,123 @@ Page({
       wx.showToast({ title: "接入状态已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新接入失败" })
+    }
+  },
+
+  async runSourceParse() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.sourceParse
+    if (!task || !form.query_id) {
+      wx.showToast({ title: "请先选择 Query", icon: "none" })
+      return
+    }
+    if (!form.answer_text.trim() && !form.sources_text.trim()) {
+      wx.showToast({ title: "请粘贴回答或来源", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: "source-parse", error: "" })
+    try {
+      const result = await parseMonitoringSources({
+        task_id: task.task_id,
+        query_id: form.query_id,
+        platform: form.platform,
+        answer_text: form.answer_text.trim(),
+        sources_text: form.sources_text.trim(),
+        competitors: splitKeywords(form.competitors)
+      })
+      result.competitor_text = result.check && result.check.competitor_mentions && result.check.competitor_mentions.length
+        ? result.check.competitor_mentions.join(" / ")
+        : "未识别"
+      const forms = this.data.forms
+      forms.sourceParse.answer_text = ""
+      forms.sourceParse.sources_text = ""
+      forms.sourceParse.competitors = ""
+      this.setData({ forms, savingSection: "", lastSourceParse: result })
+      await this.loadProjectDetail(task.task_id)
+      wx.showToast({ title: "解析并落库完成", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "解析失败" })
+    }
+  },
+
+  fillTrustAnchorForm(event) {
+    const anchorId = event.currentTarget.dataset.anchorId
+    const anchors = this.data.monitoring && this.data.monitoring.trust_anchors || []
+    const item = anchors.find((entry) => entry.anchor_id === anchorId)
+    if (!item) return
+    this.setData({
+      editingTrustAnchorId: anchorId,
+      "forms.trustAnchor.channel": item.channel || "reddit",
+      "forms.trustAnchor.topic": item.topic || "",
+      "forms.trustAnchor.target_url": item.target_url || "",
+      "forms.trustAnchor.owner": item.owner || "",
+      "forms.trustAnchor.status": item.status || "planned",
+      "forms.trustAnchor.guidance": item.guidance || "",
+      "forms.trustAnchor.evidence_url": item.evidence_url || ""
+    })
+  },
+
+  clearTrustAnchorDraft() {
+    const forms = this.data.forms
+    forms.trustAnchor = emptyProjectForms().trustAnchor
+    forms.trustAnchor.target_url = this.data.selectedTask && this.data.selectedTask.url || ""
+    this.setData({ forms, editingTrustAnchorId: "" })
+  },
+
+  async saveTrustAnchorDraft() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.trustAnchor
+    if (!task) return
+    if (!form.topic.trim()) {
+      wx.showToast({ title: "请输入锚点主题", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: "trust-anchor", error: "" })
+    try {
+      if (this.data.editingTrustAnchorId) {
+        await updateTrustAnchor(this.data.editingTrustAnchorId, {
+          channel: form.channel,
+          topic: form.topic.trim(),
+          status: form.status,
+          owner: form.owner.trim(),
+          target_url: form.target_url.trim(),
+          guidance: form.guidance.trim(),
+          evidence_url: form.evidence_url.trim()
+        })
+      } else {
+        await saveTrustAnchor({
+          task_id: task.task_id,
+          channel: form.channel,
+          topic: form.topic.trim(),
+          target_url: form.target_url.trim(),
+          owner: form.owner.trim(),
+          status: form.status,
+          guidance: form.guidance.trim(),
+          evidence_url: form.evidence_url.trim()
+        })
+      }
+      this.clearTrustAnchorDraft()
+      this.setData({ savingSection: "" })
+      await this.loadProjectDetail(task.task_id)
+      wx.showToast({ title: "Trust Anchor 已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "保存 Trust Anchor 失败" })
+    }
+  },
+
+  async updateTrustAnchorStatus(event) {
+    const task = this.data.selectedTask
+    const anchorId = event.currentTarget.dataset.anchorId
+    const status = event.currentTarget.dataset.status
+    if (!task || !anchorId || !status) return
+    this.setData({ savingSection: `anchor-${anchorId}`, error: "" })
+    try {
+      await updateTrustAnchor(anchorId, { status })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "Trust Anchor 已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "更新 Trust Anchor 失败" })
     }
   },
 
@@ -414,7 +698,30 @@ Page({
     }
   },
 
-  async createAttribution() {
+  fillAttributionForm(event) {
+    const attributionId = event.currentTarget.dataset.attributionId
+    const item = (this.data.attributions || []).find((entry) => entry.attribution_id === attributionId)
+    if (!item) return
+    this.setData({
+      editingAttributionId: attributionId,
+      "forms.attribution.source_type": item.source_type || "ai_platform",
+      "forms.attribution.source_name": item.source_name || "",
+      "forms.attribution.session_ref": item.session_ref || "",
+      "forms.attribution.lead_stage": item.lead_stage || "new",
+      "forms.attribution.attributed_revenue": `${item.attributed_revenue || ""}`,
+      "forms.attribution.evidence_url": item.evidence_url || "",
+      "forms.attribution.status": item.status || "pending_confirmation",
+      "forms.attribution.notes": item.notes || ""
+    })
+  },
+
+  clearAttributionDraft() {
+    const forms = this.data.forms
+    forms.attribution = emptyProjectForms().attribution
+    this.setData({ forms, editingAttributionId: "" })
+  },
+
+  async saveAttributionDraft() {
     const task = this.data.selectedTask
     const form = this.data.forms.attribution
     if (!task) return
@@ -422,25 +729,54 @@ Page({
       wx.showToast({ title: "请输入线索来源", icon: "none" })
       return
     }
+    const isEditing = !!this.data.editingAttributionId
     this.setData({ savingSection: "attribution", error: "" })
     try {
-      await saveAttribution({
-        task_id: task.task_id,
-        source_type: form.source_type,
-        source_name: form.source_name.trim(),
-        lead_stage: form.lead_stage,
-        attributed_revenue: Number(form.attributed_revenue || 0),
-        evidence_url: form.evidence_url.trim(),
-        status: form.status,
-        notes: form.notes.trim()
-      })
-      const forms = this.data.forms
-      forms.attribution = emptyProjectForms().attribution
-      this.setData({ forms, savingSection: "" })
+      if (isEditing) {
+        await updateAttribution(this.data.editingAttributionId, {
+          source_name: form.source_name.trim(),
+          session_ref: form.session_ref.trim(),
+          lead_stage: form.lead_stage,
+          attributed_revenue: Number(form.attributed_revenue || 0),
+          evidence_url: form.evidence_url.trim(),
+          status: form.status,
+          notes: form.notes.trim()
+        })
+      } else {
+        await saveAttribution({
+          task_id: task.task_id,
+          source_type: form.source_type,
+          source_name: form.source_name.trim(),
+          session_ref: form.session_ref.trim(),
+          lead_stage: form.lead_stage,
+          attributed_revenue: Number(form.attributed_revenue || 0),
+          evidence_url: form.evidence_url.trim(),
+          status: form.status,
+          notes: form.notes.trim()
+        })
+      }
+      this.clearAttributionDraft()
+      this.setData({ savingSection: "" })
       await this.loadProjectDetail(task.task_id)
-      wx.showToast({ title: "归因已登记", icon: "success" })
+      wx.showToast({ title: isEditing ? "归因已更新" : "归因已登记", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "登记归因失败" })
+    }
+  },
+
+  async quickUpdateAttribution(event) {
+    const task = this.data.selectedTask
+    const attributionId = event.currentTarget.dataset.attributionId
+    const status = event.currentTarget.dataset.status
+    if (!task || !attributionId || !status) return
+    this.setData({ savingSection: `attribution-${attributionId}`, error: "" })
+    try {
+      await updateAttribution(attributionId, { status })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "归因状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "更新归因失败" })
     }
   },
 

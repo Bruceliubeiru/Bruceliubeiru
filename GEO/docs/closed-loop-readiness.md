@@ -54,6 +54,7 @@ URL analysis
 | Source-map action workflow | High-frequency source observations can be converted into persistent gap actions with accepted/in-progress/done/rollback states |
 | Package delivery tracking | Bound service packages expose checklist-level delivery progress, pending hints, and action completion in the mini-program and project detail |
 | Monitor ops workspace | Mini-program monitoring page can now bind project packages, operate auditable AI-platform connectors, bootstrap source-map actions, register experiments/attribution, generate reports, and advance article indexing with checklist recovery |
+| Parsing and recovery ops | Operators can now paste AI answers to persist mention/source observations, update trust-anchor execution, revise attribution confirmation, and export effect reports for offline review |
 
 ## External Client Delivery Standard
 

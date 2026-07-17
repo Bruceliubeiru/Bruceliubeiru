@@ -5,8 +5,10 @@ const {
   getTaskDetail,
   updateProject,
   saveMonitoringConnector,
+  saveMonitoringConnectorRun,
   updateMonitoringConnector,
   bootstrapGapActions,
+  saveGapAction,
   updateGapAction,
   saveExperiment,
   confirmExperiment,
@@ -58,6 +60,8 @@ function splitKeywords(value = "") {
 
 function buildReportPayload(report = {}, monitoring = {}) {
   return {
+    task_id: report.task_id,
+    report_id: report.report_id,
     summary: {
       mention_rate: report.metrics && report.metrics.mention_rate || 0,
       citation_rate: report.metrics && report.metrics.citation_rate || 0,
@@ -118,12 +122,27 @@ function emptyProjectForms() {
       status: "pending_confirmation",
       notes: ""
     },
+    action: {
+      title: "",
+      priority: "P1",
+      status: "accepted",
+      owner: "",
+      notes: "",
+      evidence_url: ""
+    },
+    connectorRun: {
+      status: "connected",
+      notes: "",
+      evidence_url: "",
+      last_error: ""
+    },
     article: {
       title: "",
       publish_to_feishu: true,
       folder_token: "",
       public_url: "",
-      use_ai: false
+      use_ai: false,
+      notes: ""
     }
   }
 }
@@ -147,6 +166,7 @@ Page({
     lastReportExport: "",
     assigningPackage: false,
     editingConnectorId: "",
+    editingActionId: "",
     editingTrustAnchorId: "",
     editingAttributionId: "",
     sourceQueryIndex: 0,
@@ -155,12 +175,19 @@ Page({
     experiments: [],
     attributions: [],
     reports: [],
+    reportExports: [],
+    recentReportExports: [],
     mentionChecks: [],
     servicePackages: [],
     packageIndex: 0,
     monitoring: null,
     gapActions: [],
+    publications: [],
+    recentPublications: [],
+    jobs: [],
+    recentJobs: [],
     articles: [],
+    recentArticleEvents: [],
     articleChecklist: "",
     loadingChecklistFor: "",
     forms: emptyProjectForms(),
@@ -176,7 +203,9 @@ Page({
     attributionSourceOptions: ["ai_platform", "organic_search", "community", "partner", "media"],
     attributionStageOptions: ["new", "qualified", "proposal", "won", "renewal"],
     attributionStatusOptions: ["pending_confirmation", "confirmed", "rejected"],
-    articleStatusOptions: ["draft", "published", "indexed", "ai_cited"]
+    articleStatusOptions: ["draft", "published", "indexed", "ai_cited"],
+    actionPriorityOptions: ["P0", "P1", "P2"],
+    actionStatusOptions: ["accepted", "in_progress", "done", "rollback", "blocked"]
   },
 
   onShow() {
@@ -220,12 +249,20 @@ Page({
       experiments: [],
       attributions: [],
       reports: [],
+      reportExports: [],
+      recentReportExports: [],
       mentionChecks: [],
       gapActions: [],
+      publications: [],
+      recentPublications: [],
+      jobs: [],
+      recentJobs: [],
       articles: [],
+      recentArticleEvents: [],
       articleChecklist: "",
       loadingChecklistFor: "",
       editingConnectorId: "",
+      editingActionId: "",
       editingTrustAnchorId: "",
       editingAttributionId: "",
       sourceQueryIndex: 0,
@@ -263,6 +300,13 @@ Page({
       const packageId = detail.project && detail.project.package_id
       const packageIndex = Math.max(servicePackages.findIndex((item) => item.package_id === packageId), 0)
       const monitoring = detail.monitoring || null
+      const reportExports = detail.report_exports || []
+      const publications = detail.publications || []
+      const jobs = detail.jobs || []
+      const articles = detail.articles || []
+      const recentArticleEvents = articles.length && articles[0].index_events
+        ? articles[0].index_events.slice(0, 4)
+        : []
       const forms = emptyProjectForms()
       const sourceQueries = monitoring && monitoring.queries || []
       const sourceQuery = sourceQueries[0] || null
@@ -280,13 +324,21 @@ Page({
         experiments: detail.experiments || [],
         attributions: detail.attributions || [],
         reports: detail.reports || [],
+        reportExports,
+        recentReportExports: reportExports.slice(0, 4),
         mentionChecks: (this.data.allMentionChecks || []).filter((item) => item.task_id === taskId).slice(0, 8),
         gapActions: detail.gap_actions || [],
-        articles: detail.articles || [],
+        publications,
+        recentPublications: publications.slice(0, 3),
+        jobs,
+        recentJobs: jobs.slice(0, 2),
+        articles,
+        recentArticleEvents,
         forms,
         sourceQueryIndex: 0,
         selectedSourceQueryLabel: sourceQuery ? sourceQuery.query_text : "",
         editingConnectorId: "",
+        editingActionId: "",
         editingTrustAnchorId: "",
         editingAttributionId: "",
         detailLoading: false
@@ -438,13 +490,18 @@ Page({
       "forms.connector.evidence_url": item.evidence_url || "",
       "forms.connector.verification_method": item.verification_method || "human_recorded",
       "forms.connector.notes": item.notes || "",
-      "forms.connector.last_error": item.last_error || ""
+      "forms.connector.last_error": item.last_error || "",
+      "forms.connectorRun.status": item.status || "connected",
+      "forms.connectorRun.evidence_url": item.evidence_url || "",
+      "forms.connectorRun.last_error": item.last_error || "",
+      "forms.connectorRun.notes": ""
     })
   },
 
   clearConnectorDraft() {
     const forms = this.data.forms
     forms.connector = emptyProjectForms().connector
+    forms.connectorRun = emptyProjectForms().connectorRun
     this.setData({ forms, editingConnectorId: "" })
   },
 
@@ -502,6 +559,30 @@ Page({
       wx.showToast({ title: "接入状态已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新接入失败" })
+    }
+  },
+
+  async logConnectorRun(event) {
+    const task = this.data.selectedTask
+    const connectorId = event.currentTarget.dataset.connectorId || this.data.editingConnectorId
+    const status = event.currentTarget.dataset.status || this.data.forms.connectorRun.status
+    const form = this.data.forms.connectorRun
+    if (!task || !connectorId || !status) return
+    this.setData({ savingSection: "connector-run", error: "" })
+    try {
+      await saveMonitoringConnectorRun(connectorId, {
+        status,
+        notes: form.notes.trim(),
+        evidence_url: form.evidence_url.trim(),
+        last_error: form.last_error.trim()
+      })
+      const forms = this.data.forms
+      forms.connectorRun = emptyProjectForms().connectorRun
+      this.setData({ forms, savingSection: "" })
+      await this.loadProjectDetail(task.task_id)
+      wx.showToast({ title: "执行记录已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "保存执行记录失败" })
     }
   },
 
@@ -649,6 +730,69 @@ Page({
       wx.showToast({ title: "行动项已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新行动项失败" })
+    }
+  },
+
+  fillGapActionForm(event) {
+    const actionId = event.currentTarget.dataset.actionId
+    const item = (this.data.gapActions || []).find((entry) => entry.action_id === actionId)
+    if (!item) return
+    this.setData({
+      "forms.action.title": item.title || "",
+      "forms.action.priority": item.priority || "P1",
+      "forms.action.status": item.status || "accepted",
+      "forms.action.owner": item.owner || "",
+      "forms.action.notes": item.notes || "",
+      "forms.action.evidence_url": item.evidence_url || "",
+      editingActionId: actionId
+    })
+  },
+
+  clearGapActionDraft() {
+    const forms = this.data.forms
+    forms.action = emptyProjectForms().action
+    this.setData({ forms, editingActionId: "" })
+  },
+
+  async saveGapActionDraft() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.action
+    if (!task) return
+    if (!form.title.trim()) {
+      wx.showToast({ title: "请输入行动项标题", icon: "none" })
+      return
+    }
+    const isEditing = !!this.data.editingActionId
+    this.setData({ savingSection: "action-draft", error: "" })
+    try {
+      if (isEditing) {
+        await updateGapAction(this.data.editingActionId, {
+          title: form.title.trim(),
+          priority: form.priority,
+          status: form.status,
+          owner: form.owner.trim(),
+          notes: form.notes.trim(),
+          evidence_url: form.evidence_url.trim()
+        })
+      } else {
+        await saveGapAction({
+          task_id: task.task_id,
+          title: form.title.trim(),
+          action_type: "manual_followup",
+          source: "manual",
+          priority: form.priority,
+          status: form.status,
+          owner: form.owner.trim(),
+          notes: form.notes.trim(),
+          evidence_url: form.evidence_url.trim()
+        })
+      }
+      this.clearGapActionDraft()
+      this.setData({ savingSection: "" })
+      await this.loadProjectDetail(task.task_id)
+      wx.showToast({ title: isEditing ? "行动项已更新" : "行动项已创建", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "保存行动项失败" })
     }
   },
 
@@ -813,7 +957,8 @@ Page({
     try {
       await updateGeoArticleIndexing(articleId, {
         index_status: status,
-        public_url: publicUrl
+        public_url: publicUrl,
+        notes: this.data.forms.article.notes.trim()
       })
       await this.loadProjectDetail(task.task_id)
       this.setData({ savingSection: "" })

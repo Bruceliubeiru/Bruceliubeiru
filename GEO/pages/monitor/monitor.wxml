@@ -115,6 +115,11 @@
         <button class="pill-button" loading="{{reportExportingId === report.report_id}}" disabled="{{reportExportingId}}" data-report-id="{{report.report_id}}" bindtap="exportReport">导出</button>
       </view>
     </view>
+    <view wx:if="{{recentReportExports.length}}" class="status-stack">
+      <view class="status-note" wx:for="{{recentReportExports}}" wx:key="export_id" wx:for-item="item">
+        {{item.format}} · {{item.status}} · {{item.filepath || item.note || '无路径'}} · {{item.created_at}}
+      </view>
+    </view>
   </view>
 
   <view class="surface" wx:if="{{selectedProject && monitoring}}">
@@ -148,6 +153,18 @@
       <button class="primary-button small wide-action" loading="{{savingSection === 'connector'}}" disabled="{{savingSection === 'connector'}}" bindtap="saveConnector">{{editingConnectorId ? '回填接入状态' : '保存监测接入'}}</button>
       <button wx:if="{{editingConnectorId}}" class="ghost-button" bindtap="clearConnectorDraft">取消回填</button>
     </view>
+    <view wx:if="{{editingConnectorId}}" class="checklist-box top-gap">
+      <text class="item-title">接入执行日志</text>
+      <view class="picker-row">
+        <picker mode="selector" range="{{connectorStatusOptions}}" data-path="forms.connectorRun.status" data-options="connectorStatusOptions" bindchange="onPickerChange">
+          <view class="picker-chip">结果：{{forms.connectorRun.status}}</view>
+        </picker>
+      </view>
+      <input class="tab-input" value="{{forms.connectorRun.evidence_url}}" placeholder="本次校验的证据 URL" data-path="forms.connectorRun.evidence_url" bindinput="onFieldInput" />
+      <input class="tab-input" value="{{forms.connectorRun.last_error}}" placeholder="失败或恢复说明" data-path="forms.connectorRun.last_error" bindinput="onFieldInput" />
+      <textarea class="tab-textarea" value="{{forms.connectorRun.notes}}" placeholder="记录执行步骤、人工确认人、恢复动作" data-path="forms.connectorRun.notes" bindinput="onFieldInput"></textarea>
+      <button class="primary-button small" loading="{{savingSection === 'connector-run'}}" disabled="{{savingSection === 'connector-run'}}" bindtap="logConnectorRun">保存执行记录</button>
+    </view>
     <view class="list-card" wx:for="{{monitoring.connectors}}" wx:key="connector_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.platform}} · {{item.provider_name}}</text>
@@ -155,6 +172,7 @@
         <text wx:if="{{item.credential_env_var}}" class="item-meta">凭证：{{item.credential_env_var}} · {{item.credential_configured ? '已配置' : '待配置'}}</text>
         <text wx:if="{{item.evidence_url}}" class="item-meta">证据：{{item.evidence_url}}</text>
         <text wx:if="{{item.last_error}}" class="item-meta">错误：{{item.last_error}}</text>
+        <text wx:if="{{item.latest_run}}" class="item-meta">最近执行：{{item.latest_run.status}} · {{item.latest_run.created_at}}</text>
       </view>
       <view class="action-stack column">
         <button class="pill-button" data-connector-id="{{item.connector_id}}" bindtap="fillConnectorForm">回填</button>
@@ -236,6 +254,25 @@
     </view>
 
     <view class="divider"></view>
+    <text class="section-subtitle">手动行动项</text>
+    <input class="tab-input" value="{{forms.action.title}}" placeholder="行动项标题，例如 补齐 Gemini 导购 Query" data-path="forms.action.title" bindinput="onFieldInput" />
+    <view class="picker-row">
+      <picker mode="selector" range="{{actionPriorityOptions}}" data-path="forms.action.priority" data-options="actionPriorityOptions" bindchange="onPickerChange">
+        <view class="picker-chip">优先级：{{forms.action.priority}}</view>
+      </picker>
+      <picker mode="selector" range="{{actionStatusOptions}}" data-path="forms.action.status" data-options="actionStatusOptions" bindchange="onPickerChange">
+        <view class="picker-chip">状态：{{forms.action.status}}</view>
+      </picker>
+    </view>
+    <input class="tab-input" value="{{forms.action.owner}}" placeholder="负责人（可选）" data-path="forms.action.owner" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.action.evidence_url}}" placeholder="证据链接（可选）" data-path="forms.action.evidence_url" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.action.notes}}" placeholder="补充执行说明、回退理由、恢复步骤" data-path="forms.action.notes" bindinput="onFieldInput"></textarea>
+    <view class="action-stack top-gap">
+      <button class="primary-button small wide-action" loading="{{savingSection === 'action-draft'}}" disabled="{{savingSection === 'action-draft'}}" bindtap="saveGapActionDraft">{{editingActionId ? '更新行动项' : '新增行动项'}}</button>
+      <button wx:if="{{editingActionId}}" class="ghost-button" bindtap="clearGapActionDraft">取消编辑</button>
+    </view>
+
+    <view class="divider"></view>
     <text class="section-subtitle">Trust Anchor 任务</text>
     <view class="picker-row">
       <picker mode="selector" range="{{trustAnchorChannelOptions}}" data-path="forms.trustAnchor.channel" data-options="trustAnchorChannelOptions" bindchange="onPickerChange">
@@ -262,8 +299,10 @@
         <text wx:if="{{item.notes}}" class="item-meta">{{item.notes}}</text>
       </view>
       <view class="action-stack">
+        <button class="pill-button" data-action-id="{{item.action_id}}" bindtap="fillGapActionForm">编辑</button>
         <button class="pill-button" data-action-id="{{item.action_id}}" data-status="in_progress" bindtap="markGapAction">进行中</button>
         <button class="pill-button" data-action-id="{{item.action_id}}" data-status="done" bindtap="markGapAction">完成</button>
+        <button class="pill-button" data-action-id="{{item.action_id}}" data-status="rollback" bindtap="markGapAction">回退</button>
       </view>
     </view>
 
@@ -354,9 +393,20 @@
       <text class="section-title">内容发布与收录</text>
       <text class="section-tag">{{articles.length}} 篇</text>
     </view>
+    <view wx:if="{{recentPublications.length}}" class="status-stack">
+      <view class="status-note" wx:for="{{recentPublications}}" wx:key="publication_id" wx:for-item="item">
+        CMS：{{item.status}} · {{item.preview.target_name || item.target_id}} · 线上 {{item.live_status || 'pending'}}
+      </view>
+    </view>
+    <view wx:if="{{recentJobs.length}}" class="status-stack">
+      <view class="status-note" wx:for="{{recentJobs}}" wx:key="job_id" wx:for-item="item">
+        Job：{{item.job_type}} · {{item.status}} · {{item.run_at}}
+      </view>
+    </view>
     <input class="tab-input" value="{{forms.article.title}}" placeholder="文章标题" data-path="forms.article.title" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.article.folder_token}}" placeholder="飞书文件夹 token（可选）" data-path="forms.article.folder_token" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.article.public_url}}" placeholder="公开 URL（发布或收录时可复用）" data-path="forms.article.public_url" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.article.notes}}" placeholder="收录状态更新备注，例如 sitemap 已提交、已人工抽样确认" data-path="forms.article.notes" bindinput="onFieldInput"></textarea>
     <view class="switch-row">
       <text class="item-meta">发布飞书草稿</text>
       <switch checked="{{forms.article.publish_to_feishu}}" data-path="forms.article.publish_to_feishu" bindchange="onSwitchChange" />
@@ -370,6 +420,7 @@
       <view>
         <text class="item-title">{{item.title}}</text>
         <text class="item-meta">{{item.index_status}} · {{item.public_url || item.feishu_url || item.markdown_path}}</text>
+        <text wx:if="{{item.indexing_notes}}" class="item-meta">备注：{{item.indexing_notes}}</text>
         <text wx:if="{{item.error}}" class="item-meta">错误：{{item.error}}</text>
       </view>
       <view class="action-stack column">
@@ -378,6 +429,10 @@
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="ai_cited" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">AI 已引用</button>
         <button class="pill-button" loading="{{loadingChecklistFor === item.article_id}}" data-article-id="{{item.article_id}}" bindtap="copyChecklist">收录清单</button>
       </view>
+    </view>
+    <view wx:if="{{recentArticleEvents.length}}" class="checklist-box top-gap">
+      <text class="item-title">最近收录轨迹</text>
+      <text class="item-meta multiline" wx:for="{{recentArticleEvents}}" wx:key="event_id" wx:for-item="item">{{item.index_status}} · {{item.public_url || '未填 URL'}} · {{item.notes || '无备注'}} · {{item.created_at}}</text>
     </view>
     <view wx:if="{{articleChecklist}}" class="checklist-box">
       <text class="item-title">最近复制的收录清单</text>

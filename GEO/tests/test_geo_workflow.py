@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import asyncio
 from os import environ
 from pathlib import Path
 from unittest.mock import patch
@@ -802,6 +803,38 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertTrue(any(item["action_type"] == "connector_setup" for item in actions))
         self.assertEqual("done", updated["status"])
 
+    def test_connector_runs_are_persisted_and_attached_to_monitoring_summary(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="GEO Growth OS",
+                target_engines=["chatgpt"],
+            )
+        )
+        connector = main.geo_monitor_connector_save(
+            main.GEOMonitorConnectorRequest(
+                task_id=result["task_id"],
+                platform="chatgpt",
+                connector_type="official_api",
+                provider_name="OpenAI Responses API",
+                status="planned",
+            )
+        )
+        run = main.geo_monitor_connector_run_save(
+            connector["connector_id"],
+            main.GEOMonitorConnectorRunRequest(
+                status="failed",
+                notes="401 from upstream",
+                evidence_url="https://example.com/runs/1",
+                last_error="invalid token",
+            ),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("failed", run["status"])
+        self.assertEqual("failed", detail["monitoring"]["connectors"][0]["latest_run"]["status"])
+        self.assertEqual("https://example.com/runs/1", detail["monitoring"]["connector_runs"][0]["evidence_url"])
+
     def test_effect_report_includes_connector_and_action_metrics(self):
         result = main.geo_analyze(
             main.GEOAnalyzeRequest(
@@ -913,6 +946,48 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("https://example.com/blog/geo-growth-os", updated["public_url"])
         self.assertIn("公开 URL", checklist["markdown"])
         self.assertEqual(article["article_id"], detail["articles"][0]["article_id"])
+
+    def test_report_export_and_article_index_history_are_persisted(self):
+        result = main.geo_analyze(
+            main.GEOAnalyzeRequest(
+                url="https://example.com/geo",
+                brand_name="GEO Growth OS",
+                target_engines=["chatgpt"],
+            )
+        )
+        report = main.geo_report_generate(
+            main.GEOReportGenerateRequest(task_id=result["task_id"], period_label="近 7 天")
+        )
+        export_result = asyncio.run(
+            main.export_report_markdown(
+                "GEO Growth OS",
+                "GEO Growth OS 近 7 天 GEO 报告",
+                {"summary": {}, "findings": [], "recommendations": [], "metrics": {}},
+                task_id=result["task_id"],
+                report_id=report["report_id"],
+            )
+        )
+        article = main.geo_article_create(
+            main.GEOArticleCreateRequest(
+                task_id=result["task_id"],
+                title="GEO Growth OS 收录实验稿",
+                publish_to_feishu=False,
+            )
+        )
+        main.geo_article_indexing_update(
+            article["article_id"],
+            main.GEOArticleIndexingRequest(
+                public_url="https://example.com/blog/geo-growth-os",
+                index_status="published",
+                notes="已进入 CMS 并提交 sitemap",
+            ),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertTrue(export_result["ok"])
+        self.assertEqual(report["report_id"], detail["report_exports"][0]["report_id"])
+        self.assertEqual("published", detail["articles"][0]["index_events"][0]["index_status"])
+        self.assertGreaterEqual(len(detail["articles"][0]["index_events"]), 2)
 
 
 class AuthTest(unittest.TestCase):

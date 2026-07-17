@@ -467,6 +467,13 @@ class GEOMonitorConnectorStatusRequest(BaseModel):
     verification_method: str | None = None
 
 
+class GEOMonitorConnectorRunRequest(BaseModel):
+    status: str
+    evidence_url: str | None = None
+    notes: str | None = None
+    last_error: str | None = None
+
+
 class GEOGapActionRequest(BaseModel):
     task_id: str
     title: str
@@ -481,6 +488,8 @@ class GEOGapActionRequest(BaseModel):
 
 
 class GEOGapActionUpdateRequest(BaseModel):
+    title: str | None = None
+    priority: str | None = None
     status: str | None = None
     owner: str | None = None
     notes: str | None = None
@@ -900,6 +909,38 @@ def _init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS connector_runs (
+                run_id TEXT PRIMARY KEY,
+                connector_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT,
+                evidence_url TEXT,
+                last_error TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_exports (
+                export_id TEXT PRIMARY KEY,
+                report_id TEXT,
+                task_id TEXT,
+                project_name TEXT,
+                title TEXT NOT NULL,
+                format TEXT NOT NULL,
+                filepath TEXT,
+                status TEXT NOT NULL,
+                note TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS geo_articles (
                 article_id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -918,6 +959,20 @@ def _init_db() -> None:
                 error TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS article_index_events (
+                event_id TEXT PRIMARY KEY,
+                article_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                index_status TEXT NOT NULL,
+                public_url TEXT,
+                notes TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -2077,6 +2132,52 @@ def _db_save_monitor_connector(item: dict) -> None:
         )
 
 
+def _connector_run_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _db_connector_runs(connector_id: str | None = None, task_id: str | None = None, limit: int = 50) -> list[dict]:
+    query = "SELECT * FROM connector_runs"
+    filters: list[str] = []
+    params: list[str] = []
+    if connector_id:
+        filters.append("connector_id = ?")
+        params.append(connector_id)
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_connector_run_from_row(row) for row in rows]
+
+
+def _db_save_connector_run(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO connector_runs (
+                run_id, connector_id, task_id, status, notes, evidence_url,
+                last_error, actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["run_id"],
+                item["connector_id"],
+                item["task_id"],
+                item["status"],
+                item.get("notes"),
+                item.get("evidence_url"),
+                item.get("last_error"),
+                item["actor"],
+                item["created_at"],
+            ),
+        )
+
+
 def _gap_action_from_row(row: sqlite3.Row) -> dict:
     return {
         "action_id": row["action_id"],
@@ -2419,6 +2520,54 @@ def _db_save_report(item: dict) -> None:
         )
 
 
+def _report_export_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _db_report_exports(task_id: str | None = None, report_id: str | None = None, limit: int = 50) -> list[dict]:
+    query = "SELECT * FROM report_exports"
+    filters: list[str] = []
+    params: list[str] = []
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if report_id:
+        filters.append("report_id = ?")
+        params.append(report_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_report_export_from_row(row) for row in rows]
+
+
+def _db_save_report_export(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO report_exports (
+                export_id, report_id, task_id, project_name, title, format,
+                filepath, status, note, actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["export_id"],
+                item.get("report_id"),
+                item.get("task_id"),
+                item.get("project_name"),
+                item["title"],
+                item["format"],
+                item.get("filepath"),
+                item["status"],
+                item.get("note"),
+                item["actor"],
+                item["created_at"],
+            ),
+        )
+
+
 def _gap_action_progress(actions: list[dict]) -> dict:
     total = len(actions)
     done = len([item for item in actions if item.get("status") == "done"])
@@ -2732,6 +2881,7 @@ def _monitoring_summary(task_id: str) -> dict:
     queries = _db_monitor_queries(task_id)
     checks = _db_mention_checks(task_id)
     connectors = _db_monitor_connectors(task_id)
+    connector_runs = _db_connector_runs(task_id=task_id, limit=80)
     observations = _db_source_observations(task_id)
     mentioned = [item for item in checks if item["brand_mentioned"]]
     positions = [int(item["mention_position"]) for item in mentioned if item.get("mention_position")]
@@ -2785,6 +2935,12 @@ def _monitoring_summary(task_id: str) -> dict:
     connector_status_counts: dict[str, int] = {}
     for item in connectors:
         connector_status_counts[item["status"]] = connector_status_counts.get(item["status"], 0) + 1
+    runs_by_connector: dict[str, list[dict]] = {}
+    for item in connector_runs:
+        runs_by_connector.setdefault(item["connector_id"], []).append(item)
+    for item in connectors:
+        item["recent_runs"] = runs_by_connector.get(item["connector_id"], [])[:5]
+        item["latest_run"] = item["recent_runs"][0] if item["recent_runs"] else None
     return {
         "task_id": task_id,
         "query_count": len(queries),
@@ -2803,6 +2959,7 @@ def _monitoring_summary(task_id: str) -> dict:
             "warning": "样本不足，周报只能作为方向参考。" if confidence_level in {"none", "low"} else None,
         },
         "connectors": connectors,
+        "connector_runs": connector_runs,
         "connector_status": {
             "count": len(connectors),
             "connected": connector_status_counts.get("connected", 0),
@@ -3150,6 +3307,51 @@ def _article_from_row(row: sqlite3.Row) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _article_index_event_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _db_article_index_events(article_id: str | None = None, task_id: str | None = None, limit: int = 50) -> list[dict]:
+    query = "SELECT * FROM article_index_events"
+    filters: list[str] = []
+    params: list[str] = []
+    if article_id:
+        filters.append("article_id = ?")
+        params.append(article_id)
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_article_index_event_from_row(row) for row in rows]
+
+
+def _db_save_article_index_event(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO article_index_events (
+                event_id, article_id, task_id, index_status, public_url, notes,
+                actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["event_id"],
+                item["article_id"],
+                item["task_id"],
+                item["index_status"],
+                item.get("public_url"),
+                item.get("notes"),
+                item["actor"],
+                item["created_at"],
+            ),
+        )
 
 
 def _db_get_article(article_id: str) -> dict | None:
@@ -4874,6 +5076,35 @@ def geo_monitor_connector_update(connector_id: str, request: GEOMonitorConnector
     return _db_get_monitor_connector(connector_id)
 
 
+@app.post("/geo/monitoring/connectors/{connector_id}/runs")
+def geo_monitor_connector_run_save(connector_id: str, request: GEOMonitorConnectorRunRequest):
+    item = _db_get_monitor_connector(connector_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Monitoring connector not found.")
+    now = _now_iso()
+    run = {
+        "run_id": f"run_{uuid.uuid4().hex[:12]}",
+        "connector_id": connector_id,
+        "task_id": item["task_id"],
+        "status": request.status.strip().lower() or item["status"],
+        "notes": (request.notes or "").strip() or None,
+        "evidence_url": (request.evidence_url or "").strip() or item.get("evidence_url"),
+        "last_error": (request.last_error or "").strip() or None,
+        "actor": _current_actor(),
+        "created_at": now,
+    }
+    _db_save_connector_run(run)
+    item["status"] = run["status"]
+    item["evidence_url"] = run.get("evidence_url") or item.get("evidence_url")
+    item["last_error"] = run.get("last_error")
+    item["notes"] = run.get("notes") or item.get("notes")
+    item["last_checked_at"] = now
+    item["updated_at"] = now
+    _db_save_monitor_connector(item)
+    _db_add_audit(_current_actor(), "save_connector_run", "monitor_connector", connector_id, item["task_id"], outcome=run["status"])
+    return run
+
+
 @app.get("/geo/actions")
 def geo_gap_actions(task_id: str | None = None, status: str | None = None):
     return {"items": _db_gap_actions(task_id=task_id, status=status)}
@@ -4917,6 +5148,13 @@ def geo_gap_action_update(action_id: str, request: GEOGapActionUpdateRequest):
     item = _db_get_gap_action(action_id)
     if not item:
         raise HTTPException(status_code=404, detail="Gap action not found.")
+    if request.title is not None:
+        title = request.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Action title cannot be empty.")
+        item["title"] = title
+    if request.priority is not None:
+        item["priority"] = request.priority.strip().upper() or item["priority"]
     if request.status is not None:
         item["status"] = request.status.strip().lower() or item["status"]
     if request.owner is not None:
@@ -5569,6 +5807,18 @@ def geo_article_create(request: GEOArticleCreateRequest):
             article["error"] = feishu.get("error") or "Failed to create Feishu document."
     article["indexing_plan"] = _article_indexing_plan(task, title, article.get("feishu_url"))
     _db_save_article(article)
+    _db_save_article_index_event(
+        {
+            "event_id": f"aie_{uuid.uuid4().hex[:12]}",
+            "article_id": article_id,
+            "task_id": request.task_id,
+            "index_status": article["index_status"],
+            "public_url": article.get("public_url"),
+            "notes": "文章草稿已创建。" if not article.get("error") else article.get("error"),
+            "actor": _current_actor(),
+            "created_at": now,
+        }
+    )
     _db_add_audit(
         _current_actor(),
         "create_geo_article",
@@ -5600,6 +5850,18 @@ def geo_article_indexing_update(article_id: str, request: GEOArticleIndexingRequ
     article["updated_at"] = now
     article["indexing_plan"] = _article_indexing_plan(task, article["title"], article.get("feishu_url"), article.get("public_url"), status)
     _db_save_article(article)
+    _db_save_article_index_event(
+        {
+            "event_id": f"aie_{uuid.uuid4().hex[:12]}",
+            "article_id": article_id,
+            "task_id": article["task_id"],
+            "index_status": status,
+            "public_url": article.get("public_url"),
+            "notes": article.get("indexing_notes"),
+            "actor": _current_actor(),
+            "created_at": now,
+        }
+    )
     _db_add_audit(
         _current_actor(),
         "update_article_indexing",
@@ -5685,6 +5947,41 @@ def _article_indexing_markdown(article: dict) -> str:
             f"   - {item.get('detail')}",
         ])
     return "\n".join(lines)
+
+
+def _record_report_export(
+    format_name: str,
+    result: dict,
+    title: str,
+    project_name: str | None = None,
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
+    export = {
+        "export_id": f"export_{uuid.uuid4().hex[:12]}",
+        "report_id": report_id,
+        "task_id": task_id,
+        "project_name": project_name,
+        "title": title,
+        "format": format_name,
+        "filepath": result.get("filepath") or result.get("filename"),
+        "status": "success" if result.get("ok") else "failed",
+        "note": result.get("note") or result.get("message") or result.get("error"),
+        "actor": _current_actor(),
+        "created_at": _now_iso(),
+    }
+    _db_save_report_export(export)
+    if task_id:
+        _db_add_audit(
+            _current_actor(),
+            "export_report",
+            "report_export",
+            export["export_id"],
+            task_id,
+            outcome=export["status"],
+            detail={"format": format_name, "report_id": report_id, "filepath": export["filepath"]},
+        )
+    return export
 
 
 def _article_factor_rows(task: dict, result: dict, monitoring: dict) -> list[dict]:
@@ -5888,6 +6185,12 @@ def geo_task_detail(task_id: str):
     task_attributions = _db_attributions(task_id)
     task_reports = _db_reports(task_id)
     task_articles = _db_articles(task_id)
+    article_events = _db_article_index_events(task_id=task_id, limit=200)
+    events_by_article: dict[str, list[dict]] = {}
+    for item in article_events:
+        events_by_article.setdefault(item["article_id"], []).append(item)
+    for item in task_articles:
+        item["index_events"] = events_by_article.get(item["article_id"], [])
     task_gap_actions = _db_gap_actions(task_id)
     return {
         "task": task,
@@ -5912,7 +6215,9 @@ def geo_task_detail(task_id: str):
         "experiments": task_experiments,
         "attributions": task_attributions,
         "reports": task_reports,
+        "report_exports": _db_report_exports(task_id=task_id, limit=100),
         "articles": task_articles,
+        "article_index_events": article_events,
         "gap_actions": task_gap_actions,
     }
 
@@ -6282,65 +6587,95 @@ async def monitoring_list_connectors():
 
 # Report Export API Endpoints
 @app.post("/reports/export/markdown")
-async def export_report_markdown(project_name: str, title: str, data: dict):
+async def export_report_markdown(
+    project_name: str,
+    title: str,
+    data: dict,
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
     """Export report as Markdown."""
     try:
         from .report_export_service import get_report_export_service
         service = get_report_export_service()
         result = service.generate_markdown_report(title, data, project_name)
-
+        _record_report_export("markdown", result, title, project_name, task_id, report_id)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Markdown export failed: {str(exc)}") from exc
 
 
 @app.post("/reports/export/html")
-async def export_report_html(project_name: str, title: str, data: dict):
+async def export_report_html(
+    project_name: str,
+    title: str,
+    data: dict,
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
     """Export report as HTML."""
     try:
         from .report_export_service import get_report_export_service
         service = get_report_export_service()
         result = service.generate_html_report(title, data, project_name)
-
+        _record_report_export("html", result, title, project_name, task_id, report_id)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"HTML export failed: {str(exc)}") from exc
 
 
 @app.post("/reports/export/json")
-async def export_report_json(project_name: str, title: str, data: dict):
+async def export_report_json(
+    project_name: str,
+    title: str,
+    data: dict,
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
     """Export report as JSON."""
     try:
         from .report_export_service import get_report_export_service
         service = get_report_export_service()
         result = service.generate_json_report(title, data, project_name)
-
+        _record_report_export("json", result, title, project_name, task_id, report_id)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"JSON export failed: {str(exc)}") from exc
 
 
 @app.post("/reports/export/docx")
-async def export_report_docx(project_name: str, title: str, data: dict):
+async def export_report_docx(
+    project_name: str,
+    title: str,
+    data: dict,
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
     """Export report as Word (.docx)."""
     try:
         from .report_export_service import get_report_export_service
         service = get_report_export_service()
         result = service.generate_word_report(title, data, project_name)
-
+        _record_report_export("docx", result, title, project_name, task_id, report_id)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Word export failed: {str(exc)}") from exc
 
 
 @app.post("/reports/export/pdf")
-async def export_report_pdf(project_name: str, title: str, data: dict):
+async def export_report_pdf(
+    project_name: str,
+    title: str,
+    data: dict,
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
     """Export report as PDF."""
     try:
         from .report_export_service import get_report_export_service
         service = get_report_export_service()
         result = service.generate_pdf_report(title, data, project_name)
-
+        _record_report_export("pdf", result, title, project_name, task_id, report_id)
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {str(exc)}") from exc

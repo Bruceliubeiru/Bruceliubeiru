@@ -189,6 +189,10 @@ function updateMonitoringConnector(connectorId, payload) {
   return request(`/geo/monitoring/connectors/${connectorId}`, payload, "PATCH")
 }
 
+function saveMonitoringConnectorRun(connectorId, payload) {
+  return request(`/geo/monitoring/connectors/${connectorId}/runs`, payload)
+}
+
 function getGapActions(taskId) {
   return request(`/geo/actions?task_id=${encodeURIComponent(taskId)}`, {}, "GET")
 }
@@ -266,7 +270,9 @@ function exportReportMarkdown(projectName, title, data) {
   return request("/reports/export/markdown", {
     project_name: projectName,
     title,
-    data
+    data,
+    task_id: data.task_id,
+    report_id: data.report_id
   }, "POST")
 }
 
@@ -274,7 +280,9 @@ function exportReportHTML(projectName, title, data) {
   return request("/reports/export/html", {
     project_name: projectName,
     title,
-    data
+    data,
+    task_id: data.task_id,
+    report_id: data.report_id
   }, "POST")
 }
 
@@ -282,7 +290,9 @@ function exportReportJSON(projectName, title, data) {
   return request("/reports/export/json", {
     project_name: projectName,
     title,
-    data
+    data,
+    task_id: data.task_id,
+    report_id: data.report_id
   }, "POST")
 }
 
@@ -290,7 +300,9 @@ function exportReportDocx(projectName, title, data) {
   return request("/reports/export/docx", {
     project_name: projectName,
     title,
-    data
+    data,
+    task_id: data.task_id,
+    report_id: data.report_id
   }, "POST")
 }
 
@@ -298,7 +310,9 @@ function exportReportPDF(projectName, title, data) {
   return request("/reports/export/pdf", {
     project_name: projectName,
     title,
-    data
+    data,
+    task_id: data.task_id,
+    report_id: data.report_id
   }, "POST")
 }
 
@@ -370,6 +384,7 @@ module.exports = {
   getMonitoringConnectors,
   saveMonitoringConnector,
   updateMonitoringConnector,
+  saveMonitoringConnectorRun,
   getGapActions,
   bootstrapGapActions,
   saveGapAction,

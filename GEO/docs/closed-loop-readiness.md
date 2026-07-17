@@ -54,7 +54,8 @@ URL analysis
 | Source-map action workflow | High-frequency source observations can be converted into persistent gap actions with accepted/in-progress/done/rollback states |
 | Package delivery tracking | Bound service packages expose checklist-level delivery progress, pending hints, and action completion in the mini-program and project detail |
 | Monitor ops workspace | Mini-program monitoring page can now bind project packages, operate auditable AI-platform connectors, bootstrap source-map actions, register experiments/attribution, generate reports, and advance article indexing with checklist recovery |
-| Parsing and recovery ops | Operators can now paste AI answers to persist mention/source observations, update trust-anchor execution, revise attribution confirmation, and export effect reports for offline review |
+| Parsing and recovery ops | Operators can now paste AI answers to persist mention/source observations, update trust-anchor execution, revise attribution confirmation, export effect reports for offline review, and retain connector/article execution history for failure recovery |
+| Operational history | Connector verification runs, report exports, article indexing changes, CMS publication states, and manual action edits are persisted for audit and operator handoff |
 
 ## External Client Delivery Standard
 
@@ -84,7 +85,7 @@ the monitoring endpoints instead of relying on unreviewable scraping.
 | P1 | Compliant semi-automated platform collection | Connector registry is implemented for official API / export / audited manual paths; real provider credentials and calling jobs still need production secrets and per-platform adapters. |
 | P1 | Feishu task/table export | Not yet implemented; JSON export and CMS webhook exist. |
 | P1 | Action workflow with accepted/in-progress/done/rollback for individual gap actions | Implemented through persistent `page_gap_actions`, source-map bootstrapping, and mini-program execution tracking. |
-| P2 | Word report export for management | Not yet implemented; persistent effect report data exists and can be exported later. |
+| P2 | Word report export for management | Implemented through `/reports/export/docx` and `/reports/export/pdf`; monitor ops now also records export history for offline delivery audit. |
 | P2 | Analytics/BI integration for traffic, GMV, conversion, AOV | Not yet connected; lead attribution and revenue evidence are available as manual input. |
 
 ## External Production Dependencies

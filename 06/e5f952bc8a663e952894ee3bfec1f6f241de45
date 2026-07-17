@@ -1,0 +1,25 @@
+GEO/pages/index/index.wxml
+  s_6b5bcc7d7d42eb::t_fdf14b02d57721 304-363,401,420-421
+  s_6b5bcc7d7d42eb::t_dc895ee931e911 542-555,582-605,609-611
+GEO/docs/closed-loop-readiness.md
+  s_6b5bcc7d7d42eb::t_6a1cd5b0e243a9 59
+GEO/pages/index/index.js
+  s_6b5bcc7d7d42eb::t_334f83b926eef9 18-19,23,30-40,188-214,624-646,663-668,733-736,747,753-774,851-922,1152,1199-1211,1362-1398,1688-1692,1699-1865,2189-2192,2194-2200,2235-2260
+  s_6b5bcc7d7d42eb::t_44b90a027838c4 2193,2201-2202,2261-2263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "06e5f952bc8a663e952894ee3bfec1f6f241de45",
+  "prompts": {},
+  "sessions": {
+    "s_6b5bcc7d7d42eb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6fde-1e88-7201-9620-0198582222e5",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Bruceliubeiru <109455434+Bruceliubeiru@users.noreply.github.com>"
+    }
+  }
+}

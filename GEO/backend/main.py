@@ -1577,6 +1577,221 @@ def _attach_knowledge_citations(modules: list[dict], knowledge_items: list[dict]
     return [{**module, "knowledge_citations": citations} for module in modules]
 
 
+def _ensure_default_service_packages() -> None:
+    now = _now_iso()
+    defaults = [
+        {
+            "package_id": "pkg_geo_starter",
+            "name": "GEO Starter",
+            "tier": "starter",
+            "price_cny": 6800,
+            "delivery_days": 7,
+            "platforms": ["chatgpt", "perplexity"],
+            "features": ["诊断", "FAQ", "Schema", "CMS", "发布"],
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        },
+        {
+            "package_id": "pkg_geo_growth",
+            "name": "GEO Growth Loop",
+            "tier": "growth",
+            "price_cny": 16800,
+            "delivery_days": 21,
+            "platforms": ["chatgpt", "perplexity", "gemini", "google_ai_overviews"],
+            "features": ["监测", "实验", "Trust Anchor", "CMS", "发布", "复测", "报告"],
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        },
+        {
+            "package_id": "pkg_geo_pro",
+            "name": "GEO Revenue OS",
+            "tier": "pro",
+            "price_cny": 32800,
+            "delivery_days": 30,
+            "platforms": ["chatgpt", "perplexity", "gemini", "google_ai_overviews", "claude", "doubao", "deepseek"],
+            "features": ["监测", "实验", "归因", "报告", "Trust Anchor", "CMS", "发布", "复测", "周报"],
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        },
+    ]
+    for item in defaults:
+        _db_save_service_package(item)
+
+
+def _attribution_summary(attributions: list[dict]) -> dict:
+    confirmed = [item for item in attributions if item.get("status") == "confirmed"]
+    pending = [item for item in attributions if item.get("status") == "pending_confirmation"]
+    revenue = round(sum(float(item.get("attributed_revenue") or 0) for item in confirmed), 2)
+    latest = attributions[0] if attributions else None
+    return {
+        "count": len(attributions),
+        "confirmed": len(confirmed),
+        "pending": len(pending),
+        "revenue": revenue,
+        "latest_source": latest.get("source_name") if latest else None,
+        "latest_stage": latest.get("lead_stage") if latest else None,
+        "needs_confirmation": len(pending) > 0,
+    }
+
+
+def _reporting_summary(reports: list[dict], report_exports: list[dict]) -> dict:
+    latest_report = reports[0] if reports else None
+    latest_export = report_exports[0] if report_exports else None
+    confirmed = [item for item in reports if item.get("status") == "confirmed"]
+    return {
+        "count": len(reports),
+        "confirmed": len(confirmed),
+        "latest_period": latest_report.get("period_label") if latest_report else None,
+        "latest_status": latest_report.get("status") if latest_report else None,
+        "latest_export_format": latest_export.get("format") if latest_export else None,
+        "latest_export_status": latest_export.get("status") if latest_export else None,
+        "ready_for_share": bool(latest_report and latest_report.get("status") == "confirmed"),
+    }
+
+
+def _monitor_connector_blueprints(task: dict, connectors: list[dict]) -> list[dict]:
+    target_engines = list(dict.fromkeys(task.get("target_engines") or ["chatgpt", "perplexity"]))
+    connector_map = {item["platform"]: item for item in connectors}
+    defaults = {
+        "chatgpt": {
+            "provider_name": "OpenAI Responses API",
+            "connector_type": "official_api",
+            "credential_env_var": "OPENAI_API_KEY",
+            "verification_method": "api_response",
+            "audit_requirement": "保留请求日志、提示词版本和人工抽样记录。",
+        },
+        "perplexity": {
+            "provider_name": "Perplexity Export Review",
+            "connector_type": "manual_export",
+            "credential_env_var": "",
+            "verification_method": "export_screenshot",
+            "audit_requirement": "保留导出回答、Sources 截图和人工核对记录。",
+        },
+        "gemini": {
+            "provider_name": "Gemini Answer Audit",
+            "connector_type": "manual_audit",
+            "credential_env_var": "",
+            "verification_method": "ops_checklist",
+            "audit_requirement": "按固定 Query 周期人工复核，保存审计人和时间。",
+        },
+        "google_ai_overviews": {
+            "provider_name": "Google AI Overviews Audit",
+            "connector_type": "manual_audit",
+            "credential_env_var": "",
+            "verification_method": "ops_checklist",
+            "audit_requirement": "保留 SERP 截图、地区与时间戳，避免不可复核抓取。",
+        },
+        "claude": {
+            "provider_name": "Claude Ops Review",
+            "connector_type": "manual_audit",
+            "credential_env_var": "",
+            "verification_method": "ops_checklist",
+            "audit_requirement": "按提示词模板记录回答与来源，人工复核后入库。",
+        },
+        "doubao": {
+            "provider_name": "Doubao Export Review",
+            "connector_type": "manual_export",
+            "credential_env_var": "",
+            "verification_method": "export_screenshot",
+            "audit_requirement": "保存对话导出与截图，注明操作者和版本。",
+        },
+        "deepseek": {
+            "provider_name": "DeepSeek Audit Log",
+            "connector_type": "manual_audit",
+            "credential_env_var": "",
+            "verification_method": "ops_checklist",
+            "audit_requirement": "固定问法、固定时间窗口，保存人工核验凭证。",
+        },
+    }
+    blueprints = []
+    for platform in target_engines:
+        base = defaults.get(
+            platform,
+            {
+                "provider_name": f"{platform} Audit",
+                "connector_type": "manual_audit",
+                "credential_env_var": "",
+                "verification_method": "ops_checklist",
+                "audit_requirement": "保留人工可审计记录。",
+            },
+        )
+        current = connector_map.get(platform)
+        blueprints.append(
+            {
+                "platform": platform,
+                "provider_name": current.get("provider_name") if current else base["provider_name"],
+                "connector_type": current.get("connector_type") if current else base["connector_type"],
+                "credential_env_var": current.get("credential_env_var") if current else base["credential_env_var"],
+                "verification_method": current.get("verification_method") if current else base["verification_method"],
+                "audit_requirement": base["audit_requirement"],
+                "status": current.get("status") if current else "missing",
+                "connected": bool(current and current.get("status") == "connected"),
+                "existing_connector_id": current.get("connector_id") if current else None,
+            }
+        )
+    return blueprints
+
+
+def _source_ops_summary(source_map: dict, trust_anchors: list[dict], gap_actions: list[dict]) -> dict:
+    done_anchors = len([item for item in trust_anchors if item.get("status") == "done"])
+    active_anchors = len([item for item in trust_anchors if item.get("status") == "in_progress"])
+    blocked_actions = len([item for item in gap_actions if item.get("status") in {"blocked", "rollback"}])
+    top_domain = source_map["domains"][0]["domain"] if source_map.get("domains") else None
+    top_page_type = source_map["page_types"][0]["page_type"] if source_map.get("page_types") else None
+    next_focus = source_map["recommendations"][0]["title"] if source_map.get("recommendations") else None
+    return {
+        "top_domain": top_domain,
+        "top_page_type": top_page_type,
+        "trust_anchor_done": done_anchors,
+        "trust_anchor_active": active_anchors,
+        "blocked_actions": blocked_actions,
+        "next_focus": next_focus,
+    }
+
+
+def _recommend_service_package(
+    task: dict,
+    packages: list[dict],
+    monitoring: dict,
+    experiments: list[dict],
+    attributions: list[dict],
+    reports: list[dict],
+) -> dict | None:
+    if not packages:
+        return None
+    target_engines = task.get("target_engines") or []
+    need_level = "starter"
+    reasons = []
+    if len(target_engines) >= 2:
+        need_level = "growth"
+        reasons.append("目标 AI 平台超过 1 个，需要持续监测和复测。")
+    if experiments or monitoring.get("active_query_count", 0) >= 6:
+        need_level = "growth"
+        reasons.append("已进入实验/采样阶段，需要固定运营动作。")
+    if attributions or reports or len(target_engines) >= 4:
+        need_level = "pro"
+        reasons.append("已涉及归因或多平台运营，需要报告和营收视角。")
+    preferred_order = {"starter": 0, "growth": 1, "pro": 2}
+    target_rank = preferred_order[need_level]
+    ranked = sorted(
+        packages,
+        key=lambda item: (abs(preferred_order.get(item.get("tier"), 1) - target_rank), item.get("price_cny", 0)),
+    )
+    selected = ranked[0]
+    return {
+        "package_id": selected["package_id"],
+        "name": selected["name"],
+        "tier": selected["tier"],
+        "price_cny": selected["price_cny"],
+        "delivery_days": selected["delivery_days"],
+        "reason": reasons or ["当前仍处于基础交付阶段，先用入门套餐启动闭环。"],
+        "match_score": 100 - abs(preferred_order.get(selected.get("tier"), 1) - target_rank) * 20,
+    }
+
+
 def _project_view(
     task: dict,
     versions: list[dict] | None = None,
@@ -1656,13 +1871,17 @@ def _project_view(
         if score < target_score:
             todos.append(f"将 GEO 分数从 {score} 提升到 {target_score}")
     monitoring = _monitoring_summary(task["task_id"])
+    active_packages = _db_service_packages(status="active")
     assigned_package = _db_get_service_package(task.get("package_id")) if task.get("package_id") else None
     experiments = _db_experiments(task["task_id"])
     attributions = _db_attributions(task["task_id"])
     reports = _db_reports(task["task_id"])
+    report_exports = _db_report_exports(task_id=task["task_id"], limit=20)
     gap_actions = _db_gap_actions(task["task_id"])
     package_delivery = _package_delivery_view(task, assigned_package, monitoring, gap_actions, experiments, attributions, reports)
     action_progress = _gap_action_progress(gap_actions)
+    attribution_summary = _attribution_summary(attributions)
+    reporting_summary = _reporting_summary(reports, report_exports)
     readiness_checks = [
         bool(task.get("brand_name")),
         bool(task.get("client_name")),
@@ -1683,11 +1902,16 @@ def _project_view(
         "assigned_package": assigned_package,
         "package_id": task.get("package_id"),
         "package_name": assigned_package.get("name") if assigned_package else None,
+        "recommended_package": _recommend_service_package(
+            task, active_packages, monitoring, experiments, attributions, reports
+        ),
         "experiment_count": len(experiments),
         "active_experiment_count": len([item for item in experiments if item.get("status") in {"draft", "running"}]),
         "attribution_count": len(attributions),
         "confirmed_lead_count": len([item for item in attributions if item.get("status") == "confirmed"]),
         "report_count": len(reports),
+        "attribution_summary": attribution_summary,
+        "reporting_summary": reporting_summary,
         "effectiveness": effect,
         "gap_actions": gap_actions,
         "action_progress": action_progress,
@@ -1702,6 +1926,7 @@ def _project_view(
             "ready": commercial_ready,
             "completed": sum(readiness_checks),
             "total": 5,
+            "completion_percent": round(sum(readiness_checks) * 100 / 5),
             "missing": [
                 label
                 for value, label in [
@@ -1712,6 +1937,11 @@ def _project_view(
                     (task.get("owner"), "项目负责人"),
                 ]
                 if not value
+            ],
+            "blockers": [
+                "先补齐基础项，再对外承诺套餐 SLA。"
+                if not commercial_ready
+                else "项目资料齐备，可进入标准交付。"
             ],
         },
     }
@@ -2652,6 +2882,8 @@ def _source_map(task_id: str) -> dict:
         "citation_total": sum(domain_counts.values()),
         "domains": domains,
         "page_types": page_types,
+        "dominant_domain": domains[0]["domain"] if domains else None,
+        "dominant_page_type": page_types[0]["page_type"] if page_types else None,
         "recommendations": recommendations,
     }
 
@@ -2941,6 +3173,11 @@ def _monitoring_summary(task_id: str) -> dict:
     for item in connectors:
         item["recent_runs"] = runs_by_connector.get(item["connector_id"], [])[:5]
         item["latest_run"] = item["recent_runs"][0] if item["recent_runs"] else None
+    task = _db_get_task(task_id) or {"task_id": task_id, "target_engines": []}
+    source_map = _source_map(task_id)
+    trust_anchors = _db_trust_anchors(task_id)
+    gap_actions = _db_gap_actions(task_id)
+    connector_blueprints = _monitor_connector_blueprints(task, connectors)
     return {
         "task_id": task_id,
         "query_count": len(queries),
@@ -2967,6 +3204,13 @@ def _monitoring_summary(task_id: str) -> dict:
             "planned": connector_status_counts.get("planned", 0),
             "auditable": len([item for item in connectors if item["connector_type"] in {"official_api", "manual_export", "manual_audit"}]),
         },
+        "connector_blueprints": connector_blueprints,
+        "connector_plan": {
+            "target_platforms": len(connector_blueprints),
+            "connected": len([item for item in connector_blueprints if item["connected"]]),
+            "missing": len([item for item in connector_blueprints if item["status"] == "missing"]),
+            "next_platform": next((item["platform"] for item in connector_blueprints if item["status"] != "connected"), None),
+        },
         "source_observations": observations,
         "competitor_gap": [
             {"competitor": key, "mentions": value}
@@ -2979,8 +3223,9 @@ def _monitoring_summary(task_id: str) -> dict:
         "platform_breakdown": platform_breakdown,
         "weekly": weekly_series,
         "latest_check": checks[0] if checks else None,
-        "source_map": _source_map(task_id),
-        "trust_anchors": _db_trust_anchors(task_id),
+        "source_map": source_map,
+        "trust_anchors": trust_anchors,
+        "source_ops_summary": _source_ops_summary(source_map, trust_anchors, gap_actions),
     }
 
 
@@ -3511,6 +3756,7 @@ def _validate_public_webhook_url(raw_url: str) -> str:
 
 
 _init_db()
+_ensure_default_service_packages()
 
 
 class _ReadableTextParser(HTMLParser):

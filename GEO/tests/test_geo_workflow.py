@@ -271,6 +271,22 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("增长闭环套餐", detail["project"]["package_name"])
         self.assertTrue(detail["service_packages"])
 
+    def test_default_packages_and_recommendation_are_available(self):
+        result = self._analyze()
+        project = main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(
+                client_name="Acme",
+                brand_name="Acme AI",
+                target_engines=["chatgpt", "perplexity", "gemini", "claude"],
+            ),
+        )
+        packages = main.geo_service_packages()
+
+        self.assertGreaterEqual(len(packages["items"]), 3)
+        self.assertEqual("pro", project["recommended_package"]["tier"])
+        self.assertIn("多平台运营", "".join(project["recommended_package"]["reason"]))
+
     def test_experiment_attribution_and_report_flow(self):
         result = self._analyze()
         experiment = main.geo_experiment_save(
@@ -311,6 +327,36 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertTrue(history["experiments"])
         self.assertTrue(history["attributions"])
         self.assertTrue(history["reports"])
+
+    def test_monitoring_summary_includes_connector_blueprints_and_ops_summary(self):
+        result = self._analyze()
+        main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(
+                client_name="Acme",
+                brand_name="Acme AI",
+                owner="Bruce",
+                target_engines=["chatgpt", "perplexity"],
+            ),
+        )
+        main.geo_monitor_connector_save(
+            main.GEOMonitorConnectorRequest(
+                task_id=result["task_id"],
+                platform="chatgpt",
+                connector_type="official_api",
+                provider_name="OpenAI Responses API",
+                status="connected",
+                credential_env_var="OPENAI_API_KEY",
+                verification_method="api_response",
+            )
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual(2, detail["monitoring"]["connector_plan"]["target_platforms"])
+        self.assertEqual(1, detail["monitoring"]["connector_plan"]["connected"])
+        self.assertEqual("perplexity", detail["monitoring"]["connector_plan"]["next_platform"])
+        self.assertTrue(detail["monitoring"]["connector_blueprints"])
+        self.assertIn("completion_percent", detail["project"]["commercial_readiness"])
 
     def test_failed_job_waits_then_can_be_retried(self):
         result = self._analyze()

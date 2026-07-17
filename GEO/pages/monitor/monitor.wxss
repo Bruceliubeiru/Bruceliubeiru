@@ -79,6 +79,10 @@
   margin-top: 16rpx;
 }
 
+.status-stack.compact {
+  gap: 8rpx;
+}
+
 .status-note {
   display: block;
   padding: 16rpx 18rpx;
@@ -110,6 +114,10 @@
 .list-card:first-of-type {
   padding-top: 0;
   border-top: none;
+}
+
+.mini-card {
+  padding-top: 16rpx;
 }
 
 .list-card view:first-child {

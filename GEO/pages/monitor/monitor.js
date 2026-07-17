@@ -386,10 +386,26 @@ Page({
     this.setData({ packageIndex: Number(event.detail.value) })
   },
 
-  async assignPackage() {
+  applyRecommendedPackage() {
+    const project = this.data.selectedProject
+    const packages = this.data.servicePackages || []
+    const recommended = project && project.recommended_package
+    if (!recommended) return
+    const packageIndex = packages.findIndex((item) => item.package_id === recommended.package_id)
+    if (packageIndex < 0) {
+      wx.showToast({ title: "推荐套餐未在当前列表中", icon: "none" })
+      return
+    }
+    this.setData({ packageIndex })
+  },
+
+  async assignPackage(event) {
     const task = this.data.selectedTask
     if (!task || this.data.assigningPackage) return
-    const selectedPackage = this.data.servicePackages[this.data.packageIndex] || null
+    const packageId = event && event.currentTarget && event.currentTarget.dataset.packageId
+    const selectedPackage = packageId
+      ? (this.data.servicePackages || []).find((item) => item.package_id === packageId) || null
+      : this.data.servicePackages[this.data.packageIndex] || null
     this.setData({ assigningPackage: true, error: "" })
     try {
       await updateProject(task.task_id, {
@@ -503,6 +519,22 @@ Page({
     forms.connector = emptyProjectForms().connector
     forms.connectorRun = emptyProjectForms().connectorRun
     this.setData({ forms, editingConnectorId: "" })
+  },
+
+  useConnectorBlueprint(event) {
+    const platform = event.currentTarget.dataset.platform
+    const blueprints = this.data.monitoring && this.data.monitoring.connector_blueprints || []
+    const item = blueprints.find((entry) => entry.platform === platform)
+    if (!item) return
+    this.clearConnectorDraft()
+    this.setData({
+      "forms.connector.platform": item.platform,
+      "forms.connector.provider_name": item.provider_name || "",
+      "forms.connector.connector_type": item.connector_type || "manual_audit",
+      "forms.connector.credential_env_var": item.credential_env_var || "",
+      "forms.connector.verification_method": item.verification_method || "ops_checklist",
+      "forms.connector.notes": item.audit_requirement || ""
+    })
   },
 
   async saveConnector() {

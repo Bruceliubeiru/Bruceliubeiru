@@ -69,7 +69,22 @@
         <text class="item-title">{{servicePackages[packageIndex].name}} · {{servicePackages[packageIndex].tier}} · ¥{{servicePackages[packageIndex].price_cny}}</text>
       </view>
     </picker>
-    <button wx:if="{{servicePackages.length}}" class="primary-button small" loading="{{assigningPackage}}" disabled="{{assigningPackage}}" bindtap="assignPackage">保存套餐绑定</button>
+    <view class="action-stack top-gap" wx:if="{{servicePackages.length}}">
+      <button class="primary-button small" loading="{{assigningPackage}}" disabled="{{assigningPackage}}" bindtap="assignPackage">保存套餐绑定</button>
+      <button wx:if="{{selectedProject.recommended_package}}" class="ghost-button" bindtap="applyRecommendedPackage">切到推荐套餐</button>
+    </view>
+    <view wx:if="{{selectedProject.recommended_package}}" class="checklist-box top-gap">
+      <text class="item-title">推荐套餐</text>
+      <text class="item-meta">{{selectedProject.recommended_package.name}} · {{selectedProject.recommended_package.tier}} · ¥{{selectedProject.recommended_package.price_cny}} · {{selectedProject.recommended_package.delivery_days}} 天</text>
+      <view class="status-stack compact">
+        <view class="status-note" wx:for="{{selectedProject.recommended_package.reason}}" wx:key="*this" wx:for-item="item">{{item}}</view>
+      </view>
+      <button class="pill-button top-gap" data-package-id="{{selectedProject.recommended_package.package_id}}" loading="{{assigningPackage}}" disabled="{{assigningPackage}}" bindtap="assignPackage">直接绑定推荐套餐</button>
+    </view>
+    <view class="status-stack" wx:if="{{selectedProject.commercial_readiness && !selectedProject.commercial_readiness.ready}}">
+      <view class="status-note">商业准备度 {{selectedProject.commercial_readiness.completion_percent}}%</view>
+      <view class="status-note" wx:for="{{selectedProject.commercial_readiness.missing}}" wx:key="*this" wx:for-item="item">待补齐：{{item}}</view>
+    </view>
     <view wx:if="{{selectedProject.package_delivery && selectedProject.package_delivery.length}}" class="status-stack">
       <view class="status-note" wx:for="{{selectedProject.package_delivery}}" wx:key="feature" wx:for-item="item">
         {{item.feature}} · {{item.status}}
@@ -103,6 +118,24 @@
     </view>
     <text wx:if="{{monitoring && monitoring.sampling.warning}}" class="status-note solo">{{monitoring.sampling.warning}}</text>
     <text wx:if="{{lastReportExport}}" class="status-note solo">{{lastReportExport}}</text>
+    <view class="info-grid" wx:if="{{selectedProject.reporting_summary}}">
+      <view class="info-card">
+        <text class="item-meta">报告总数</text>
+        <text class="item-title">{{selectedProject.reporting_summary.count}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">最新周期</text>
+        <text class="item-title">{{selectedProject.reporting_summary.latest_period || '未生成'}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">已确认</text>
+        <text class="item-title">{{selectedProject.reporting_summary.confirmed}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">最近导出</text>
+        <text class="item-title">{{selectedProject.reporting_summary.latest_export_format || '未导出'}}</text>
+      </view>
+    </view>
     <view class="list-card" wx:for="{{reports}}" wx:key="report_id" wx:for-item="report">
       <view>
         <text class="item-title">{{report.period_label}}</text>
@@ -126,6 +159,34 @@
     <view class="section-head">
       <text class="section-title">多平台监测接入</text>
       <text class="section-tag">{{monitoring.connector_status.count || 0}} 个</text>
+    </view>
+    <view class="info-grid" wx:if="{{monitoring.connector_plan}}">
+      <view class="info-card">
+        <text class="item-meta">目标平台</text>
+        <text class="item-title">{{monitoring.connector_plan.target_platforms}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">已连通</text>
+        <text class="item-title">{{monitoring.connector_plan.connected}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">待补齐</text>
+        <text class="item-title">{{monitoring.connector_plan.missing}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">下一平台</text>
+        <text class="item-title">{{monitoring.connector_plan.next_platform || '已完成'}}</text>
+      </view>
+    </view>
+    <view wx:if="{{monitoring.connector_blueprints && monitoring.connector_blueprints.length}}" class="status-stack">
+      <view class="list-card mini-card" wx:for="{{monitoring.connector_blueprints}}" wx:key="platform" wx:for-item="item">
+        <view>
+          <text class="item-title">{{item.platform}} · {{item.provider_name}}</text>
+          <text class="item-meta">{{item.connector_type}} · {{item.verification_method}} · {{item.status}}</text>
+          <text class="item-meta">{{item.audit_requirement}}</text>
+        </view>
+        <button wx:if="{{item.status !== 'connected'}}" class="pill-button" data-platform="{{item.platform}}" bindtap="useConnectorBlueprint">套用模板</button>
+      </view>
     </view>
     <input class="tab-input" value="{{forms.connector.provider_name}}" placeholder="接入名称，例如 OpenAI Responses API" data-path="forms.connector.provider_name" bindinput="onFieldInput" />
     <view class="picker-row">
@@ -247,6 +308,17 @@
         <text class="item-title">{{gapActions.length}}</text>
       </view>
     </view>
+    <view class="status-stack" wx:if="{{monitoring.source_ops_summary}}">
+      <view class="status-note">当前主导信源：{{monitoring.source_ops_summary.top_domain || '暂无'}} · 页面类型：{{monitoring.source_ops_summary.top_page_type || '暂无'}}</view>
+      <view class="status-note">Trust Anchor 完成 {{monitoring.source_ops_summary.trust_anchor_done}} 个，执行中 {{monitoring.source_ops_summary.trust_anchor_active}} 个，阻塞动作 {{monitoring.source_ops_summary.blocked_actions}} 个。</view>
+      <view class="status-note" wx:if="{{monitoring.source_ops_summary.next_focus}}">下一优先项：{{monitoring.source_ops_summary.next_focus}}</view>
+    </view>
+    <view class="list-card mini-card" wx:for="{{monitoring.source_map.domains}}" wx:key="domain" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.domain}}</text>
+        <text class="item-meta">累计引用 {{item.citations}} 次</text>
+      </view>
+    </view>
     <view wx:if="{{monitoring.source_map.recommendations.length}}" class="status-stack">
       <view class="status-note" wx:for="{{monitoring.source_map.recommendations}}" wx:key="title" wx:for-item="item">
         {{item.title}}：{{item.action}}
@@ -326,6 +398,24 @@
     <view class="section-head">
       <text class="section-title">实验与归因</text>
       <text class="section-tag">{{experiments.length}} / {{attributions.length}}</text>
+    </view>
+    <view class="info-grid" wx:if="{{selectedProject.attribution_summary}}">
+      <view class="info-card">
+        <text class="item-meta">已确认线索</text>
+        <text class="item-title">{{selectedProject.attribution_summary.confirmed}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">待确认</text>
+        <text class="item-title">{{selectedProject.attribution_summary.pending}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">归因收入</text>
+        <text class="item-title">¥{{selectedProject.attribution_summary.revenue}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">最新来源</text>
+        <text class="item-title">{{selectedProject.attribution_summary.latest_source || '暂无'}}</text>
+      </view>
     </view>
     <input class="tab-input" value="{{forms.experiment.name}}" placeholder="实验名称" data-path="forms.experiment.name" bindinput="onFieldInput" />
     <view class="picker-row">

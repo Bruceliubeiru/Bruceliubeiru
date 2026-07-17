@@ -57,6 +57,11 @@ URL analysis
 | Parsing and recovery ops | Operators can now paste AI answers to persist mention/source observations, update trust-anchor execution, revise attribution confirmation, export effect reports for offline review, and retain connector/article execution history for failure recovery |
 | Operational history | Connector verification runs, report exports, article indexing changes, CMS publication states, and manual action edits are persisted for audit and operator handoff |
 | Mini-program delivery console | The main workbench can now edit project owners/todos, assign service packages, manage connector status, maintain trust anchors, create manual actions, confirm leads, and export effect reports without leaving the task |
+| Package SLA execution | Operators can manually mark each bound package feature as in progress, done, or blocked with notes; the task detail keeps actor and timestamp for customer handoff |
+| Experiment execution log | Every experiment now records runtime events such as running, observed, blocked, rollback, sample size, and metric value for later review |
+| Report distribution confirmation | Confirmed effect reports can be marked as shared to WeChat, email, Feishu, Notion, or Drive, with notes and timestamps for client follow-up |
+| Publication recovery timeline | CMS publications now keep preview, publish, verify, retry, schedule, and rollback events so failures and reversions remain traceable |
+| Connector freshness summary | Monitoring connectors now expose fresh/stale state, missing credentials, and last-check age to prioritize audit-safe rechecks |
 
 ## External Client Delivery Standard
 

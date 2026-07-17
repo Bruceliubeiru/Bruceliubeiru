@@ -1035,6 +1035,127 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("published", detail["articles"][0]["index_events"][0]["index_status"])
         self.assertGreaterEqual(len(detail["articles"][0]["index_events"]), 2)
 
+    def test_package_delivery_experiment_events_and_report_share_are_persisted(self):
+        result = self._analyze()
+        main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(
+                client_name="Acme",
+                brand_name="Acme AI",
+                owner="Bruce",
+                package_id="pkg_geo_growth",
+                service_tier="growth",
+                target_engines=["chatgpt", "perplexity"],
+            ),
+        )
+        package_update = main.geo_project_package_delivery_update(
+            result["task_id"],
+            main.GEOPackageDeliveryUpdateRequest(
+                feature_key="监测",
+                status="done",
+                notes="已完成首轮采样。"
+            ),
+        )
+        experiment = main.geo_experiment_save(
+            main.GEOExperimentRequest(
+                task_id=result["task_id"],
+                name="FAQ 结构实验",
+                hypothesis="更短的 FAQ 提高提及率",
+                variant_a="长答案",
+                variant_b="短答案",
+            )
+        )
+        event = main.geo_experiment_event_save(
+            experiment["experiment_id"],
+            main.GEOExperimentEventRequest(
+                status="observed",
+                sample_size=12,
+                metric_value=42.5,
+                notes="已收集第一轮结果。"
+            ),
+        )
+        report = main.geo_report_generate(
+            main.GEOReportGenerateRequest(task_id=result["task_id"], period_label="近 14 天")
+        )
+        main.geo_report_confirm(report["report_id"], main.GEOReportConfirmRequest(status="confirmed"))
+        shared = main.geo_report_share(
+            report["report_id"],
+            main.GEOReportShareRequest(
+                share_channel="wechat",
+                notes="已发给客户并收到确认。"
+            ),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("done", package_update["status"])
+        self.assertEqual("observed", event["status"])
+        self.assertEqual(12, event["sample_size"])
+        self.assertEqual("shared", shared["share_status"])
+        self.assertEqual("wechat", detail["reports"][0]["share_channel"])
+        self.assertEqual("done", detail["project"]["package_delivery"][0]["status"])
+        self.assertEqual("observed", detail["experiment_events"][0]["status"])
+        self.assertEqual(1, detail["project"]["reporting_summary"]["shared"])
+
+    def test_publication_events_rollback_and_connector_freshness_are_available(self):
+        result, approved = self._approved_version()
+        main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(target_engines=["chatgpt"])
+        )
+        connector = main.geo_monitor_connector_save(
+            main.GEOMonitorConnectorRequest(
+                task_id=result["task_id"],
+                platform="chatgpt",
+                connector_type="official_api",
+                provider_name="OpenAI Responses API",
+                status="connected",
+                credential_env_var="OPENAI_API_KEY",
+                verification_method="api_response",
+            )
+        )
+        main.geo_monitor_connector_run_save(
+            connector["connector_id"],
+            main.GEOMonitorConnectorRunRequest(
+                status="connected",
+                notes="fresh run"
+            ),
+        )
+        with main._db() as conn:
+            conn.execute(
+                "UPDATE monitor_connectors SET last_checked_at = ? WHERE connector_id = ?",
+                ("2026-07-01T00:00:00+00:00", connector["connector_id"]),
+            )
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="State CMS", webhook_url="https://cms.example.com/publish")
+        )
+        preview = main.cms_publication_preview(
+            main.CMSPublishPreviewRequest(version_id=approved["version_id"], target_id=target["target_id"])
+        )
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, *_): return b'{"published":true}'
+
+        with patch.object(main, "urlopen", return_value=Response()):
+            published = main.cms_publication_confirm(
+                main.CMSPublishConfirmRequest(publication_id=preview["publication_id"], confirmation="PUBLISH")
+            )
+        rolled_back = main.cms_publication_rollback(
+            main.CMSPublicationRollbackRequest(
+                publication_id=published["publication_id"],
+                status="rollback_completed",
+                notes="客户要求恢复旧版。"
+            ),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("rollback_completed", rolled_back["rollback_status"])
+        self.assertGreaterEqual(len(detail["publication_events"]), 3)
+        self.assertEqual("stale", detail["monitoring"]["connectors"][0]["freshness"])
+        self.assertEqual(1, detail["monitoring"]["connector_status"]["stale"])
+
 
 class AuthTest(unittest.TestCase):
     API_KEYS = (

@@ -93,6 +93,10 @@ function retryPublication(publicationId) {
   return request(`/cms/publications/${publicationId}/retry`, {}, "POST")
 }
 
+function rollbackPublication(payload) {
+  return request("/cms/publications/rollback", payload)
+}
+
 function verifyPublication(payload) {
   return request("/cms/publications/verify", payload)
 }
@@ -121,12 +125,20 @@ function updateProject(taskId, payload) {
   return request(`/geo/projects/${encodeURIComponent(taskId)}`, payload)
 }
 
+function updatePackageDelivery(taskId, payload) {
+  return request(`/geo/projects/${encodeURIComponent(taskId)}/package-delivery`, payload)
+}
+
 function saveExperiment(payload) {
   return request("/geo/experiments", payload)
 }
 
 function confirmExperiment(experimentId, payload) {
   return request(`/geo/experiments/${experimentId}/confirm`, payload)
+}
+
+function saveExperimentEvent(experimentId, payload) {
+  return request(`/geo/experiments/${experimentId}/events`, payload)
 }
 
 function saveAttribution(payload) {
@@ -143,6 +155,10 @@ function generateReport(payload) {
 
 function confirmReport(reportId, payload) {
   return request(`/geo/reports/${reportId}/confirm`, payload)
+}
+
+function shareReport(reportId, payload) {
+  return request(`/geo/reports/${reportId}/share`, payload)
 }
 
 function exportJson(payload) {
@@ -358,6 +374,7 @@ module.exports = {
   createPublicationPreview,
   confirmPublication,
   retryPublication,
+  rollbackPublication,
   verifyPublication,
   schedulePublicationVerify,
   saveFeedback,
@@ -367,12 +384,15 @@ module.exports = {
   getTaskDetail,
   getServicePackages,
   updateProject,
+  updatePackageDelivery,
   saveExperiment,
   confirmExperiment,
+  saveExperimentEvent,
   saveAttribution,
   updateAttribution,
   generateReport,
   confirmReport,
+  shareReport,
   exportJson,
   getMonitoringQueries,
   generateMonitoringQueries,

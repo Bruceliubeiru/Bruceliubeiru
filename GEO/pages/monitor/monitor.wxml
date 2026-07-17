@@ -86,8 +86,18 @@
       <view class="status-note" wx:for="{{selectedProject.commercial_readiness.missing}}" wx:key="*this" wx:for-item="item">待补齐：{{item}}</view>
     </view>
     <view wx:if="{{selectedProject.package_delivery && selectedProject.package_delivery.length}}" class="status-stack">
-      <view class="status-note" wx:for="{{selectedProject.package_delivery}}" wx:key="feature" wx:for-item="item">
-        {{item.feature}} · {{item.status}}
+      <view class="list-card mini-card" wx:for="{{selectedProject.package_delivery}}" wx:key="feature_key" wx:for-item="item">
+        <view>
+          <text class="item-title">{{item.feature}}</text>
+          <text class="item-meta">{{item.status}} · {{item.source === 'manual' ? '人工回填' : '系统推断'}}</text>
+          <text wx:if="{{item.notes}}" class="item-meta">{{item.notes}}</text>
+          <text wx:if="{{item.next_hint}}" class="item-meta">{{item.next_hint}}</text>
+        </view>
+        <view class="action-stack column">
+          <button class="pill-button" loading="{{savingSection === ('package-' + item.feature_key)}}" data-feature-key="{{item.feature_key}}" data-status="in_progress" bindtap="updatePackageDelivery">进行中</button>
+          <button class="pill-button" loading="{{savingSection === ('package-' + item.feature_key)}}" data-feature-key="{{item.feature_key}}" data-status="done" bindtap="updatePackageDelivery">完成</button>
+          <button class="pill-button" loading="{{savingSection === ('package-' + item.feature_key)}}" data-feature-key="{{item.feature_key}}" data-status="blocked" bindtap="updatePackageDelivery">阻塞</button>
+        </view>
       </view>
     </view>
   </view>
@@ -135,16 +145,32 @@
         <text class="item-meta">最近导出</text>
         <text class="item-title">{{selectedProject.reporting_summary.latest_export_format || '未导出'}}</text>
       </view>
+      <view class="info-card">
+        <text class="item-meta">已分享</text>
+        <text class="item-title">{{selectedProject.reporting_summary.shared || 0}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">最近渠道</text>
+        <text class="item-title">{{selectedProject.reporting_summary.latest_share_channel || '未分享'}}</text>
+      </view>
     </view>
+    <view class="picker-row">
+      <picker mode="selector" range="{{reportShareChannelOptions}}" data-path="forms.reportShare.share_channel" data-options="reportShareChannelOptions" bindchange="onPickerChange">
+        <view class="picker-chip">分发渠道：{{forms.reportShare.share_channel}}</view>
+      </picker>
+    </view>
+    <textarea class="tab-textarea" value="{{forms.reportShare.notes}}" placeholder="记录报告发送渠道、客户回执和后续动作" data-path="forms.reportShare.notes" bindinput="onFieldInput"></textarea>
     <view class="list-card" wx:for="{{reports}}" wx:key="report_id" wx:for-item="report">
       <view>
         <text class="item-title">{{report.period_label}}</text>
         <text class="item-meta">{{report.summary}}</text>
         <text wx:if="{{report.findings && report.findings.length}}" class="item-meta">发现：{{report.findings[0]}}</text>
+        <text wx:if="{{report.share_status}}" class="item-meta">分发：{{report.share_status}} · {{report.share_channel || '未填渠道'}}</text>
       </view>
       <view class="action-stack column">
         <button wx:if="{{report.status !== 'confirmed'}}" class="pill-button" loading="{{confirmingReportId === report.report_id}}" disabled="{{confirmingReportId}}" data-report-id="{{report.report_id}}" bindtap="confirmReport">确认</button>
         <text wx:else class="status">✓ 已确认</text>
+        <button wx:if="{{report.status === 'confirmed' && report.share_status !== 'shared'}}" class="pill-button" loading="{{savingSection === ('report-share-' + report.report_id)}}" data-report-id="{{report.report_id}}" bindtap="shareReport">标记已分发</button>
         <button class="pill-button" loading="{{reportExportingId === report.report_id}}" disabled="{{reportExportingId}}" data-report-id="{{report.report_id}}" bindtap="exportReport">导出</button>
       </view>
     </view>
@@ -176,6 +202,14 @@
       <view class="info-card">
         <text class="item-meta">下一平台</text>
         <text class="item-title">{{monitoring.connector_plan.next_platform || '已完成'}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">Fresh / Stale</text>
+        <text class="item-title">{{monitoring.connector_status.fresh || 0}} / {{monitoring.connector_status.stale || 0}}</text>
+      </view>
+      <view class="info-card">
+        <text class="item-meta">待补凭证</text>
+        <text class="item-title">{{monitoring.connector_status.missing_credentials || 0}}</text>
       </view>
     </view>
     <view wx:if="{{monitoring.connector_blueprints && monitoring.connector_blueprints.length}}" class="status-stack">
@@ -230,6 +264,7 @@
       <view>
         <text class="item-title">{{item.platform}} · {{item.provider_name}}</text>
         <text class="item-meta">{{item.connector_type}} · {{item.status}} · {{item.verification_method}}</text>
+        <text class="item-meta">新鲜度：{{item.freshness}} {{item.age_days !== null ? ('· ' + item.age_days + ' 天') : ''}}</text>
         <text wx:if="{{item.credential_env_var}}" class="item-meta">凭证：{{item.credential_env_var}} · {{item.credential_configured ? '已配置' : '待配置'}}</text>
         <text wx:if="{{item.evidence_url}}" class="item-meta">证据：{{item.evidence_url}}</text>
         <text wx:if="{{item.last_error}}" class="item-meta">错误：{{item.last_error}}</text>
@@ -416,6 +451,14 @@
         <text class="item-meta">最新来源</text>
         <text class="item-title">{{selectedProject.attribution_summary.latest_source || '暂无'}}</text>
       </view>
+      <view class="info-card" wx:if="{{selectedProject.experiment_summary}}">
+        <text class="item-meta">实验进行中</text>
+        <text class="item-title">{{selectedProject.experiment_summary.running || 0}}</text>
+      </view>
+      <view class="info-card" wx:if="{{selectedProject.experiment_summary}}">
+        <text class="item-meta">最近事件</text>
+        <text class="item-title">{{selectedProject.experiment_summary.latest_event_status || '暂无'}}</text>
+      </view>
     </view>
     <input class="tab-input" value="{{forms.experiment.name}}" placeholder="实验名称" data-path="forms.experiment.name" bindinput="onFieldInput" />
     <view class="picker-row">
@@ -431,6 +474,14 @@
     <input class="tab-input" value="{{forms.experiment.variant_b}}" placeholder="B 版本说明" data-path="forms.experiment.variant_b" bindinput="onFieldInput" />
     <textarea class="tab-textarea" value="{{forms.experiment.notes}}" placeholder="记录采样口径、上线范围、人工确认标准" data-path="forms.experiment.notes" bindinput="onFieldInput"></textarea>
     <button class="primary-button small" loading="{{savingSection === 'experiment'}}" disabled="{{savingSection === 'experiment'}}" bindtap="createExperiment">创建实验</button>
+    <view class="picker-row">
+      <picker mode="selector" range="{{experimentEventStatusOptions}}" data-path="forms.experimentEvent.status" data-options="experimentEventStatusOptions" bindchange="onPickerChange">
+        <view class="picker-chip">事件状态：{{forms.experimentEvent.status}}</view>
+      </picker>
+    </view>
+    <input class="tab-input" value="{{forms.experimentEvent.sample_size}}" placeholder="样本数（可选）" type="number" data-path="forms.experimentEvent.sample_size" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.experimentEvent.metric_value}}" placeholder="指标值（可选）" type="digit" data-path="forms.experimentEvent.metric_value" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.experimentEvent.notes}}" placeholder="记录实验观察、失败原因、恢复动作" data-path="forms.experimentEvent.notes" bindinput="onFieldInput"></textarea>
     <view class="list-card" wx:for="{{experiments}}" wx:key="experiment_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.name}}</text>
@@ -438,8 +489,15 @@
         <text class="item-meta">{{item.hypothesis}}</text>
       </view>
       <view class="action-stack">
+        <button class="pill-button" loading="{{savingSection === ('experiment-event-' + item.experiment_id)}}" data-experiment-id="{{item.experiment_id}}" data-status="running" bindtap="saveExperimentEvent">运行中</button>
+        <button class="pill-button" loading="{{savingSection === ('experiment-event-' + item.experiment_id)}}" data-experiment-id="{{item.experiment_id}}" data-status="observed" bindtap="saveExperimentEvent">记录观察</button>
         <button class="pill-button" data-experiment-id="{{item.experiment_id}}" data-winner="variant_a" bindtap="confirmExperimentResult">A 赢</button>
         <button class="pill-button" data-experiment-id="{{item.experiment_id}}" data-winner="variant_b" bindtap="confirmExperimentResult">B 赢</button>
+      </view>
+    </view>
+    <view wx:if="{{experimentEvents.length}}" class="status-stack">
+      <view class="status-note" wx:for="{{experimentEvents}}" wx:key="event_id" wx:for-item="item">
+        {{item.status}} · 样本 {{item.sample_size || '-'}} · 指标 {{item.metric_value || '-'}} · {{item.created_at}}
       </view>
     </view>
 
@@ -485,7 +543,7 @@
     </view>
     <view wx:if="{{recentPublications.length}}" class="status-stack">
       <view class="status-note" wx:for="{{recentPublications}}" wx:key="publication_id" wx:for-item="item">
-        CMS：{{item.status}} · {{item.preview.target_name || item.target_id}} · 线上 {{item.live_status || 'pending'}}
+        CMS：{{item.status}} · {{item.preview.target_name || item.target_id}} · 线上 {{item.live_status || 'pending'}} · 回滚 {{item.rollback_status || 'none'}}
       </view>
     </view>
     <view wx:if="{{recentJobs.length}}" class="status-stack">
@@ -523,6 +581,29 @@
     <view wx:if="{{recentArticleEvents.length}}" class="checklist-box top-gap">
       <text class="item-title">最近收录轨迹</text>
       <text class="item-meta multiline" wx:for="{{recentArticleEvents}}" wx:key="event_id" wx:for-item="item">{{item.index_status}} · {{item.public_url || '未填 URL'}} · {{item.notes || '无备注'}} · {{item.created_at}}</text>
+    </view>
+    <view wx:if="{{publicationEvents.length}}" class="checklist-box top-gap">
+      <text class="item-title">最近发布轨迹</text>
+      <view class="list-card mini-card" wx:for="{{publicationEvents}}" wx:key="event_id" wx:for-item="item">
+        <view>
+          <text class="item-title">{{item.status}}</text>
+          <text class="item-meta">{{item.notes || '无备注'}}</text>
+        </view>
+        <text class="status">{{item.created_at}}</text>
+      </view>
+    </view>
+    <view class="list-card" wx:for="{{publications}}" wx:key="publication_id" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.preview.target_name || item.target_id}}</text>
+        <text class="item-meta">{{item.status}} · 线上 {{item.live_status || 'pending'}} · 回滚 {{item.rollback_status || 'none'}}</text>
+        <text wx:if="{{item.response_summary}}" class="item-meta">{{item.response_summary}}</text>
+      </view>
+      <view class="action-stack column">
+        <button wx:if="{{item.status === 'failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-retry')}}" data-publication-id="{{item.publication_id}}" data-action="retry" bindtap="quickPublicationAction">重试</button>
+        <button wx:if="{{item.status === 'published' || item.status === 'verification_failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-verify')}}" data-publication-id="{{item.publication_id}}" data-action="verify" bindtap="quickPublicationAction">校验</button>
+        <button wx:if="{{item.status === 'published' || item.status === 'verification_failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-schedule_verify')}}" data-publication-id="{{item.publication_id}}" data-action="schedule_verify" bindtap="quickPublicationAction">排队校验</button>
+        <button wx:if="{{item.status === 'published' || item.status === 'verification_failed' || item.status === 'verified_live'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-rollback')}}" data-publication-id="{{item.publication_id}}" data-action="rollback" bindtap="quickPublicationAction">已回滚</button>
+      </view>
     </view>
     <view wx:if="{{articleChecklist}}" class="checklist-box">
       <text class="item-title">最近复制的收录清单</text>

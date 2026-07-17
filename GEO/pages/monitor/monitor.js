@@ -2,8 +2,10 @@ const {
   getHistory,
   generateReport,
   confirmReport: confirmReportApi,
+  shareReport,
   getTaskDetail,
   updateProject,
+  updatePackageDelivery,
   saveMonitoringConnector,
   saveMonitoringConnectorRun,
   updateMonitoringConnector,
@@ -12,6 +14,7 @@ const {
   updateGapAction,
   saveExperiment,
   confirmExperiment,
+  saveExperimentEvent,
   saveAttribution,
   updateAttribution,
   createGeoArticle,
@@ -24,7 +27,11 @@ const {
   exportReportHTML,
   exportReportJSON,
   exportReportDocx,
-  exportReportPDF
+  exportReportPDF,
+  retryPublication,
+  verifyPublication,
+  schedulePublicationVerify,
+  rollbackPublication
 } = require("../../utils/api")
 
 const connectorPlatformOptions = ["chatgpt", "perplexity", "gemini", "google_ai_overviews", "claude", "doubao", "deepseek"]
@@ -112,6 +119,12 @@ function emptyProjectForms() {
       variant_b: "",
       notes: ""
     },
+    experimentEvent: {
+      status: "running",
+      sample_size: "",
+      metric_value: "",
+      notes: ""
+    },
     attribution: {
       source_type: "ai_platform",
       source_name: "",
@@ -143,6 +156,10 @@ function emptyProjectForms() {
       public_url: "",
       use_ai: false,
       notes: ""
+    },
+    reportShare: {
+      share_channel: "wechat",
+      notes: ""
     }
   }
 }
@@ -173,6 +190,7 @@ Page({
     lastSourceParse: null,
     selectedSourceQueryLabel: "",
     experiments: [],
+    experimentEvents: [],
     attributions: [],
     reports: [],
     reportExports: [],
@@ -184,6 +202,7 @@ Page({
     gapActions: [],
     publications: [],
     recentPublications: [],
+    publicationEvents: [],
     jobs: [],
     recentJobs: [],
     articles: [],
@@ -199,11 +218,13 @@ Page({
     trustAnchorChannelOptions: ["reddit", "zhihu", "xiaohongshu", "medium", "linkedin", "github", "forum", "media"],
     trustAnchorStatusOptions: ["planned", "in_progress", "done", "rollback"],
     experimentChannelOptions: ["onsite", "cms", "media", "community", "knowledge_base"],
+    experimentEventStatusOptions: ["running", "observed", "blocked", "rollback"],
     experimentMetricOptions: ["mention_rate", "citation_rate", "lead_rate", "conversion_rate"],
     attributionSourceOptions: ["ai_platform", "organic_search", "community", "partner", "media"],
     attributionStageOptions: ["new", "qualified", "proposal", "won", "renewal"],
     attributionStatusOptions: ["pending_confirmation", "confirmed", "rejected"],
     articleStatusOptions: ["draft", "published", "indexed", "ai_cited"],
+    reportShareChannelOptions: ["wechat", "email", "feishu", "notion", "drive"],
     actionPriorityOptions: ["P0", "P1", "P2"],
     actionStatusOptions: ["accepted", "in_progress", "done", "rollback", "blocked"]
   },
@@ -247,6 +268,7 @@ Page({
       servicePackages: [],
       packageIndex: 0,
       experiments: [],
+      experimentEvents: [],
       attributions: [],
       reports: [],
       reportExports: [],
@@ -255,6 +277,7 @@ Page({
       gapActions: [],
       publications: [],
       recentPublications: [],
+      publicationEvents: [],
       jobs: [],
       recentJobs: [],
       articles: [],
@@ -302,8 +325,10 @@ Page({
       const monitoring = detail.monitoring || null
       const reportExports = detail.report_exports || []
       const publications = detail.publications || []
+      const publicationEvents = detail.publication_events || []
       const jobs = detail.jobs || []
       const articles = detail.articles || []
+      const experimentEvents = detail.experiment_events || []
       const recentArticleEvents = articles.length && articles[0].index_events
         ? articles[0].index_events.slice(0, 4)
         : []
@@ -322,6 +347,7 @@ Page({
         servicePackages,
         packageIndex,
         experiments: detail.experiments || [],
+        experimentEvents,
         attributions: detail.attributions || [],
         reports: detail.reports || [],
         reportExports,
@@ -330,6 +356,7 @@ Page({
         gapActions: detail.gap_actions || [],
         publications,
         recentPublications: publications.slice(0, 3),
+        publicationEvents,
         jobs,
         recentJobs: jobs.slice(0, 2),
         articles,
@@ -420,6 +447,26 @@ Page({
     }
   },
 
+  async updatePackageDelivery(event) {
+    const task = this.data.selectedTask
+    const featureKey = event.currentTarget.dataset.featureKey
+    const status = event.currentTarget.dataset.status
+    if (!task || !featureKey || !status) return
+    this.setData({ savingSection: `package-${featureKey}`, error: "" })
+    try {
+      await updatePackageDelivery(task.task_id, {
+        feature_key: featureKey,
+        status,
+        notes: this.data.forms.action.notes.trim()
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "套餐交付已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "更新套餐交付失败" })
+    }
+  },
+
   onReportPeriodInput(event) {
     this.setData({ reportPeriod: event.detail.value })
   },
@@ -456,6 +503,28 @@ Page({
       wx.showToast({ title: "报告已确认", icon: "success" })
     } catch (error) {
       this.setData({ confirmingReportId: "", error: error.message || "确认报告失败" })
+    }
+  },
+
+  async shareReport(event) {
+    const reportId = event.currentTarget.dataset.reportId
+    const task = this.data.selectedTask
+    const form = this.data.forms.reportShare
+    if (!reportId || !task) return
+    this.setData({ savingSection: `report-share-${reportId}`, error: "" })
+    try {
+      await shareReport(reportId, {
+        share_channel: form.share_channel,
+        notes: form.notes.trim()
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({
+        savingSection: "",
+        "forms.reportShare.notes": ""
+      })
+      wx.showToast({ title: "报告已标记分发", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "更新报告分发失败" })
     }
   },
 
@@ -874,6 +943,33 @@ Page({
     }
   },
 
+  async saveExperimentEvent(event) {
+    const task = this.data.selectedTask
+    const experimentId = event.currentTarget.dataset.experimentId
+    const status = event.currentTarget.dataset.status || this.data.forms.experimentEvent.status
+    const form = this.data.forms.experimentEvent
+    if (!task || !experimentId || !status) return
+    this.setData({ savingSection: `experiment-event-${experimentId}`, error: "" })
+    try {
+      await saveExperimentEvent(experimentId, {
+        status,
+        sample_size: form.sample_size ? Number(form.sample_size) : undefined,
+        metric_value: form.metric_value ? Number(form.metric_value) : undefined,
+        notes: form.notes.trim()
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({
+        savingSection: "",
+        "forms.experimentEvent.sample_size": "",
+        "forms.experimentEvent.metric_value": "",
+        "forms.experimentEvent.notes": ""
+      })
+      wx.showToast({ title: "实验记录已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "保存实验记录失败" })
+    }
+  },
+
   fillAttributionForm(event) {
     const attributionId = event.currentTarget.dataset.attributionId
     const item = (this.data.attributions || []).find((entry) => entry.attribution_id === attributionId)
@@ -976,6 +1072,34 @@ Page({
       wx.showToast({ title: "文章草稿已生成", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "创建文章失败" })
+    }
+  },
+
+  async quickPublicationAction(event) {
+    const task = this.data.selectedTask
+    const publicationId = event.currentTarget.dataset.publicationId
+    const action = event.currentTarget.dataset.action
+    if (!task || !publicationId || !action) return
+    this.setData({ savingSection: `publication-${publicationId}-${action}`, error: "" })
+    try {
+      if (action === "retry") {
+        await retryPublication(publicationId)
+      } else if (action === "verify") {
+        await verifyPublication({ publication_id: publicationId })
+      } else if (action === "schedule_verify") {
+        await schedulePublicationVerify({ publication_id: publicationId, max_attempts: 5 })
+      } else if (action === "rollback") {
+        await rollbackPublication({
+          publication_id: publicationId,
+          status: "rollback_completed",
+          notes: this.data.forms.article.notes.trim() || "人工确认已回滚。"
+        })
+      }
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "发布状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "更新发布状态失败" })
     }
   },
 

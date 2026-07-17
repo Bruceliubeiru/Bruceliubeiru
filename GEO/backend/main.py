@@ -251,6 +251,12 @@ class CMSPublicationVerifyScheduleRequest(CMSPublicationVerifyRequest):
     max_attempts: int = 3
 
 
+class CMSPublicationRollbackRequest(BaseModel):
+    publication_id: str
+    status: str = "rollback_completed"
+    notes: str | None = None
+
+
 class LLMGenerateRequest(BaseModel):
     provider: str = "openai"
     prompt: str
@@ -396,6 +402,13 @@ class GEOExperimentConfirmRequest(BaseModel):
     notes: str | None = None
 
 
+class GEOExperimentEventRequest(BaseModel):
+    status: str
+    notes: str | None = None
+    sample_size: int | None = None
+    metric_value: float | None = None
+
+
 class GEOAttributionRequest(BaseModel):
     task_id: str
     source_type: str
@@ -426,6 +439,12 @@ class GEOReportGenerateRequest(BaseModel):
 
 class GEOReportConfirmRequest(BaseModel):
     status: str = "confirmed"
+    notes: str | None = None
+
+
+class GEOReportShareRequest(BaseModel):
+    share_status: str = "shared"
+    share_channel: str
     notes: str | None = None
 
 
@@ -485,6 +504,12 @@ class GEOGapActionRequest(BaseModel):
     related_object_id: str | None = None
     notes: str | None = None
     evidence_url: str | None = None
+
+
+class GEOPackageDeliveryUpdateRequest(BaseModel):
+    feature_key: str
+    status: str
+    notes: str | None = None
 
 
 class GEOGapActionUpdateRequest(BaseModel):
@@ -629,6 +654,21 @@ def _init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS experiment_events (
+                event_id TEXT PRIMARY KEY,
+                experiment_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT,
+                sample_size INTEGER,
+                metric_value REAL,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS lead_attributions (
                 attribution_id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -660,7 +700,11 @@ def _init_db() -> None:
                 generated_at TEXT NOT NULL,
                 confirmed_by TEXT,
                 confirmed_at TEXT,
-                notes TEXT
+                notes TEXT,
+                share_status TEXT,
+                share_channel TEXT,
+                shared_at TEXT,
+                share_notes TEXT
             )
             """
         )
@@ -693,8 +737,24 @@ def _init_db() -> None:
                 confirmed_by TEXT,
                 confirmed_at TEXT,
                 response_summary TEXT,
+                rollback_status TEXT,
+                rollback_note TEXT,
+                rollback_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS publication_events (
+                event_id TEXT PRIMARY KEY,
+                publication_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -941,6 +1001,21 @@ def _init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS package_delivery_updates (
+                update_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                feature_key TEXT NOT NULL,
+                feature_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                notes TEXT,
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS geo_articles (
                 article_id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -1033,12 +1108,24 @@ def _init_db() -> None:
         version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(versions)").fetchall()}
         if "quality_report" not in version_columns:
             conn.execute("ALTER TABLE versions ADD COLUMN quality_report TEXT")
+        report_columns = {row["name"] for row in conn.execute("PRAGMA table_info(effect_reports)").fetchall()}
+        for column, definition in {
+            "share_status": "TEXT",
+            "share_channel": "TEXT",
+            "shared_at": "TEXT",
+            "share_notes": "TEXT",
+        }.items():
+            if column not in report_columns:
+                conn.execute(f"ALTER TABLE effect_reports ADD COLUMN {column} {definition}")
         publication_columns = {row["name"] for row in conn.execute("PRAGMA table_info(publications)").fetchall()}
         for column, definition in {
             "live_status": "TEXT",
             "live_summary": "TEXT",
             "live_confirmed_by": "TEXT",
             "live_confirmed_at": "TEXT",
+            "rollback_status": "TEXT",
+            "rollback_note": "TEXT",
+            "rollback_at": "TEXT",
         }.items():
             if column not in publication_columns:
                 conn.execute(f"ALTER TABLE publications ADD COLUMN {column} {definition}")
@@ -1641,14 +1728,32 @@ def _reporting_summary(reports: list[dict], report_exports: list[dict]) -> dict:
     latest_report = reports[0] if reports else None
     latest_export = report_exports[0] if report_exports else None
     confirmed = [item for item in reports if item.get("status") == "confirmed"]
+    shared = [item for item in reports if item.get("share_status") == "shared"]
     return {
         "count": len(reports),
         "confirmed": len(confirmed),
+        "shared": len(shared),
         "latest_period": latest_report.get("period_label") if latest_report else None,
         "latest_status": latest_report.get("status") if latest_report else None,
         "latest_export_format": latest_export.get("format") if latest_export else None,
         "latest_export_status": latest_export.get("status") if latest_export else None,
+        "latest_share_channel": latest_report.get("share_channel") if latest_report else None,
         "ready_for_share": bool(latest_report and latest_report.get("status") == "confirmed"),
+    }
+
+
+def _experiment_summary(experiments: list[dict], events: list[dict]) -> dict:
+    running = [item for item in experiments if item.get("status") == "running"]
+    blocked = [item for item in experiments if item.get("status") in {"blocked", "rollback"}]
+    observed = [item for item in events if item.get("status") == "observed"]
+    latest = events[0] if events else None
+    return {
+        "count": len(experiments),
+        "running": len(running),
+        "blocked": len(blocked),
+        "observed_events": len(observed),
+        "latest_event_status": latest.get("status") if latest else None,
+        "latest_event_at": latest.get("created_at") if latest else None,
     }
 
 
@@ -1838,6 +1943,15 @@ def _project_view(
     score = int((task.get("latest_result") or {}).get("geo_score") or 0)
     target_score = int(task.get("target_score") or 80)
     status = task.get("status") or "analyzed"
+    monitoring = _monitoring_summary(task["task_id"])
+    active_packages = _db_service_packages(status="active")
+    assigned_package = _db_get_service_package(task.get("package_id")) if task.get("package_id") else None
+    experiments = _db_experiments(task["task_id"])
+    experiment_events = _db_experiment_events(task_id=task["task_id"], limit=50)
+    attributions = _db_attributions(task["task_id"])
+    reports = _db_reports(task["task_id"])
+    report_exports = _db_report_exports(task_id=task["task_id"], limit=20)
+    gap_actions = _db_gap_actions(task["task_id"])
     action_map = {
         "analyzed": ("生成改进内容", "improve"),
         "draft_ready": ("保存待审核版本", "save_version"),
@@ -1861,6 +1975,8 @@ def _project_view(
         next_action, next_action_key = "等待定时复测执行", "wait_retest_job"
     elif latest_injection and latest_injection.get("status") == "completed" and not latest_retest:
         next_action, next_action_key = "安排发布后复测", "schedule_retest"
+    elif reports and reports[0].get("status") == "confirmed" and reports[0].get("share_status") != "shared":
+        next_action, next_action_key = "确认报告分发与客户回执", "share_report"
     effect = "尚未复测"
     if latest_retest:
         delta = int(latest_retest.get("score_delta") or 0)
@@ -1870,16 +1986,9 @@ def _project_view(
         todos = [next_action]
         if score < target_score:
             todos.append(f"将 GEO 分数从 {score} 提升到 {target_score}")
-    monitoring = _monitoring_summary(task["task_id"])
-    active_packages = _db_service_packages(status="active")
-    assigned_package = _db_get_service_package(task.get("package_id")) if task.get("package_id") else None
-    experiments = _db_experiments(task["task_id"])
-    attributions = _db_attributions(task["task_id"])
-    reports = _db_reports(task["task_id"])
-    report_exports = _db_report_exports(task_id=task["task_id"], limit=20)
-    gap_actions = _db_gap_actions(task["task_id"])
     package_delivery = _package_delivery_view(task, assigned_package, monitoring, gap_actions, experiments, attributions, reports)
     action_progress = _gap_action_progress(gap_actions)
+    experiment_summary = _experiment_summary(experiments, experiment_events)
     attribution_summary = _attribution_summary(attributions)
     reporting_summary = _reporting_summary(reports, report_exports)
     readiness_checks = [
@@ -1907,6 +2016,7 @@ def _project_view(
         ),
         "experiment_count": len(experiments),
         "active_experiment_count": len([item for item in experiments if item.get("status") in {"draft", "running"}]),
+        "experiment_summary": experiment_summary,
         "attribution_count": len(attributions),
         "confirmed_lead_count": len([item for item in attributions if item.get("status") == "confirmed"]),
         "report_count": len(reports),
@@ -2510,6 +2620,10 @@ def _package_from_row(row: sqlite3.Row) -> dict:
 def _db_get_service_package(package_id: str) -> dict | None:
     with _db() as conn:
         row = conn.execute("SELECT * FROM service_packages WHERE package_id = ?", (package_id,)).fetchone()
+    if not row:
+        _ensure_default_service_packages()
+        with _db() as conn:
+            row = conn.execute("SELECT * FROM service_packages WHERE package_id = ?", (package_id,)).fetchone()
     return _package_from_row(row) if row else None
 
 
@@ -2522,6 +2636,10 @@ def _db_service_packages(status: str | None = None) -> list[dict]:
     query += " ORDER BY updated_at DESC, name ASC"
     with _db() as conn:
         rows = conn.execute(query, params).fetchall()
+    if not rows:
+        _ensure_default_service_packages()
+        with _db() as conn:
+            rows = conn.execute(query, params).fetchall()
     return [_package_from_row(row) for row in rows]
 
 
@@ -2559,6 +2677,10 @@ def _db_save_service_package(item: dict) -> None:
 
 
 def _experiment_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _experiment_event_from_row(row: sqlite3.Row) -> dict:
     return dict(row)
 
 
@@ -2614,6 +2736,48 @@ def _db_save_experiment(item: dict) -> None:
                 "variant_a", "variant_b", "status", "winner", "notes", "created_at", "updated_at",
                 "confirmed_by", "confirmed_at",
             ]),
+        )
+
+
+def _db_experiment_events(experiment_id: str | None = None, task_id: str | None = None, limit: int = 100) -> list[dict]:
+    query = "SELECT * FROM experiment_events"
+    filters: list[str] = []
+    params: list[str | int] = []
+    if experiment_id:
+        filters.append("experiment_id = ?")
+        params.append(experiment_id)
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_experiment_event_from_row(row) for row in rows]
+
+
+def _db_save_experiment_event(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO experiment_events (
+                event_id, experiment_id, task_id, status, notes, sample_size,
+                metric_value, actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["event_id"],
+                item["experiment_id"],
+                item["task_id"],
+                item["status"],
+                item.get("notes"),
+                item.get("sample_size"),
+                item.get("metric_value"),
+                item["actor"],
+                item["created_at"],
+            ),
         )
 
 
@@ -2687,6 +2851,10 @@ def _report_from_row(row: sqlite3.Row) -> dict:
         "confirmed_by": row["confirmed_by"],
         "confirmed_at": row["confirmed_at"],
         "notes": row["notes"],
+        "share_status": row["share_status"],
+        "share_channel": row["share_channel"],
+        "shared_at": row["shared_at"],
+        "share_notes": row["share_notes"],
     }
 
 
@@ -2720,8 +2888,9 @@ def _db_save_report(item: dict) -> None:
             """
             INSERT INTO effect_reports (
                 report_id, task_id, period_label, status, summary, metrics, findings,
-                next_actions, generated_at, confirmed_by, confirmed_at, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                next_actions, generated_at, confirmed_by, confirmed_at, notes,
+                share_status, share_channel, shared_at, share_notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(report_id) DO UPDATE SET
                 period_label=excluded.period_label,
                 status=excluded.status,
@@ -2731,7 +2900,11 @@ def _db_save_report(item: dict) -> None:
                 next_actions=excluded.next_actions,
                 confirmed_by=excluded.confirmed_by,
                 confirmed_at=excluded.confirmed_at,
-                notes=excluded.notes
+                notes=excluded.notes,
+                share_status=excluded.share_status,
+                share_channel=excluded.share_channel,
+                shared_at=excluded.shared_at,
+                share_notes=excluded.share_notes
             """,
             (
                 item["report_id"],
@@ -2746,12 +2919,71 @@ def _db_save_report(item: dict) -> None:
                 item.get("confirmed_by"),
                 item.get("confirmed_at"),
                 item.get("notes"),
+                item.get("share_status"),
+                item.get("share_channel"),
+                item.get("shared_at"),
+                item.get("share_notes"),
             ),
         )
 
 
 def _report_export_from_row(row: sqlite3.Row) -> dict:
     return dict(row)
+
+
+def _package_delivery_update_from_row(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+def _feature_key(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "_", (value or "").strip().lower())
+    return normalized.strip("_")[:60] or "feature"
+
+
+def _db_package_delivery_updates(task_id: str) -> list[dict]:
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM package_delivery_updates WHERE task_id = ? ORDER BY updated_at DESC",
+            (task_id,),
+        ).fetchall()
+    return [_package_delivery_update_from_row(row) for row in rows]
+
+
+def _db_get_package_delivery_update(task_id: str, feature_key: str) -> dict | None:
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT * FROM package_delivery_updates WHERE task_id = ? AND feature_key = ?",
+            (task_id, feature_key),
+        ).fetchone()
+    return _package_delivery_update_from_row(row) if row else None
+
+
+def _db_save_package_delivery_update(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO package_delivery_updates (
+                update_id, task_id, feature_key, feature_name, status, notes, actor,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(update_id) DO UPDATE SET
+                status=excluded.status,
+                notes=excluded.notes,
+                actor=excluded.actor,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item["update_id"],
+                item["task_id"],
+                item["feature_key"],
+                item["feature_name"],
+                item["status"],
+                item.get("notes"),
+                item["actor"],
+                item["created_at"],
+                item["updated_at"],
+            ),
+        )
 
 
 def _db_report_exports(task_id: str | None = None, report_id: str | None = None, limit: int = 50) -> list[dict]:
@@ -2823,6 +3055,10 @@ def _package_delivery_view(
 ) -> list[dict]:
     if not assigned_package:
         return []
+    manual_updates = {
+        item["feature_key"]: item
+        for item in _db_package_delivery_updates(task["task_id"])
+    }
     feature_state = {
         "监测": monitoring["check_count"] > 0,
         "实验": bool(experiments),
@@ -2835,12 +3071,20 @@ def _package_delivery_view(
     active_action_titles = {item["title"] for item in gap_actions if item.get("status") != "done"}
     checklist = []
     for feature in assigned_package.get("features") or []:
+        feature_key = _feature_key(feature)
+        manual = manual_updates.get(feature_key)
         matched = next((value for key, value in feature_state.items() if key in feature or feature in key), False)
+        status = manual["status"] if manual else ("done" if matched else "pending")
         checklist.append(
             {
                 "feature": feature,
-                "status": "done" if matched else "pending",
-                "next_hint": None if matched else ("已有待办跟进" if active_action_titles else "建议创建执行动作"),
+                "feature_key": feature_key,
+                "status": status,
+                "source": "manual" if manual else "derived",
+                "notes": manual.get("notes") if manual else None,
+                "actor": manual.get("actor") if manual else None,
+                "updated_at": manual.get("updated_at") if manual else None,
+                "next_hint": None if status == "done" else ("已有待办跟进" if active_action_titles else "建议创建执行动作"),
             }
         )
     return checklist
@@ -3170,9 +3414,31 @@ def _monitoring_summary(task_id: str) -> dict:
     runs_by_connector: dict[str, list[dict]] = {}
     for item in connector_runs:
         runs_by_connector.setdefault(item["connector_id"], []).append(item)
+    fresh_connectors = 0
+    stale_connectors = 0
+    missing_credentials = 0
     for item in connectors:
         item["recent_runs"] = runs_by_connector.get(item["connector_id"], [])[:5]
         item["latest_run"] = item["recent_runs"][0] if item["recent_runs"] else None
+        freshness = "never_checked"
+        checked_at = item.get("last_checked_at") or (item["latest_run"] or {}).get("created_at")
+        if checked_at:
+            try:
+                last_checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+                age_days = max(0, (datetime.now(timezone.utc) - last_checked).days)
+                freshness = "fresh" if age_days <= 7 else "stale"
+                item["age_days"] = age_days
+            except ValueError:
+                item["age_days"] = None
+        else:
+            item["age_days"] = None
+        item["freshness"] = freshness
+        if freshness == "fresh":
+            fresh_connectors += 1
+        elif freshness == "stale":
+            stale_connectors += 1
+        if item.get("credential_env_var") and not item.get("credential_configured"):
+            missing_credentials += 1
     task = _db_get_task(task_id) or {"task_id": task_id, "target_engines": []}
     source_map = _source_map(task_id)
     trust_anchors = _db_trust_anchors(task_id)
@@ -3203,6 +3469,9 @@ def _monitoring_summary(task_id: str) -> dict:
             "failed": connector_status_counts.get("failed", 0),
             "planned": connector_status_counts.get("planned", 0),
             "auditable": len([item for item in connectors if item["connector_type"] in {"official_api", "manual_export", "manual_audit"}]),
+            "fresh": fresh_connectors,
+            "stale": stale_connectors,
+            "missing_credentials": missing_credentials,
         },
         "connector_blueprints": connector_blueprints,
         "connector_plan": {
@@ -3210,6 +3479,8 @@ def _monitoring_summary(task_id: str) -> dict:
             "connected": len([item for item in connector_blueprints if item["connected"]]),
             "missing": len([item for item in connector_blueprints if item["status"] == "missing"]),
             "next_platform": next((item["platform"] for item in connector_blueprints if item["status"] != "connected"), None),
+            "stale_platforms": [item["platform"] for item in connectors if item.get("freshness") == "stale"],
+            "action_required": len([item for item in connectors if item.get("freshness") == "stale" or (item.get("credential_env_var") and not item.get("credential_configured"))]),
         },
         "source_observations": observations,
         "competitor_gap": [
@@ -3282,6 +3553,10 @@ def _build_effect_report(task: dict, period_label: str, notes: str | None = None
         "confirmed_by": None,
         "confirmed_at": None,
         "notes": notes,
+        "share_status": "pending_share",
+        "share_channel": None,
+        "shared_at": None,
+        "share_notes": None,
     }
 
 
@@ -3400,8 +3675,9 @@ def _db_save_publication(publication: dict) -> None:
                 publication_id, task_id, version_id, target_id, status, preview,
                 quality_report, injection_id, confirmed_by, confirmed_at,
                 response_summary, live_status, live_summary, live_confirmed_by,
-                live_confirmed_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                live_confirmed_at, rollback_status, rollback_note, rollback_at,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(publication_id) DO UPDATE SET
                 status=excluded.status,
                 injection_id=excluded.injection_id,
@@ -3412,6 +3688,9 @@ def _db_save_publication(publication: dict) -> None:
                 live_summary=excluded.live_summary,
                 live_confirmed_by=excluded.live_confirmed_by,
                 live_confirmed_at=excluded.live_confirmed_at,
+                rollback_status=excluded.rollback_status,
+                rollback_note=excluded.rollback_note,
+                rollback_at=excluded.rollback_at,
                 updated_at=excluded.updated_at
             """,
             (
@@ -3422,7 +3701,12 @@ def _db_save_publication(publication: dict) -> None:
                 publication.get("response_summary"), publication.get("live_status"),
                 _json_dumps(publication.get("live_summary")) if publication.get("live_summary") is not None else None,
                 publication.get("live_confirmed_by"),
-                publication.get("live_confirmed_at"), publication["created_at"], publication["updated_at"],
+                publication.get("live_confirmed_at"),
+                publication.get("rollback_status"),
+                publication.get("rollback_note"),
+                publication.get("rollback_at"),
+                publication["created_at"],
+                publication["updated_at"],
             ),
         )
 
@@ -3445,6 +3729,8 @@ def _db_publications(task_id: str | None = None) -> list[dict]:
             "confirmed_at": row["confirmed_at"], "response_summary": row["response_summary"],
             "live_status": row["live_status"], "live_summary": _json_loads(row["live_summary"], None),
             "live_confirmed_by": row["live_confirmed_by"], "live_confirmed_at": row["live_confirmed_at"],
+            "rollback_status": row["rollback_status"], "rollback_note": row["rollback_note"],
+            "rollback_at": row["rollback_at"],
             "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
         for row in rows
@@ -3472,9 +3758,65 @@ def _db_get_publication(publication_id: str) -> dict | None:
         "live_summary": _json_loads(row["live_summary"], None),
         "live_confirmed_by": row["live_confirmed_by"],
         "live_confirmed_at": row["live_confirmed_at"],
+        "rollback_status": row["rollback_status"],
+        "rollback_note": row["rollback_note"],
+        "rollback_at": row["rollback_at"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _db_publication_events(publication_id: str | None = None, task_id: str | None = None, limit: int = 100) -> list[dict]:
+    query = "SELECT * FROM publication_events"
+    filters: list[str] = []
+    params: list[str | int] = []
+    if publication_id:
+        filters.append("publication_id = ?")
+        params.append(publication_id)
+    if task_id:
+        filters.append("task_id = ?")
+        params.append(task_id)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, min(limit, 200)))
+    with _db() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _db_save_publication_event(item: dict) -> None:
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO publication_events (
+                event_id, publication_id, task_id, status, notes, actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["event_id"],
+                item["publication_id"],
+                item["task_id"],
+                item["status"],
+                item.get("notes"),
+                item["actor"],
+                item["created_at"],
+            ),
+        )
+
+
+def _record_publication_event(publication: dict, status: str, notes: str | None = None) -> None:
+    _db_save_publication_event(
+        {
+            "event_id": f"pe_{uuid.uuid4().hex[:12]}",
+            "publication_id": publication["publication_id"],
+            "task_id": publication["task_id"],
+            "status": status,
+            "notes": notes,
+            "actor": _current_actor(),
+            "created_at": _now_iso(),
+        }
+    )
 def _run_job(job_id: str) -> dict:
     job = _db_get_job(job_id)
     if not job:
@@ -5002,7 +5344,7 @@ def geo_schedule_retest(request: GEORetestScheduleRequest, background_tasks: Bac
         "job_id": f"job_{uuid.uuid4().hex[:16]}",
         "job_type": "retest",
         "status": "queued",
-        "payload": request.dict(exclude={"run_at", "max_attempts"}),
+        "payload": request.model_dump(exclude={"run_at", "max_attempts"}),
         "result": None,
         "attempts": 0,
         "max_attempts": max_attempts,
@@ -5101,6 +5443,47 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
     )
 
 
+@app.post("/geo/projects/{task_id}/package-delivery")
+def geo_project_package_delivery_update(task_id: str, request: GEOPackageDeliveryUpdateRequest):
+    task = _db_get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    feature_key = _feature_key(request.feature_key)
+    assigned_package = _db_get_service_package(task.get("package_id")) if task.get("package_id") else None
+    if not assigned_package:
+        raise HTTPException(status_code=409, detail="Project has no assigned service package.")
+    feature_name = next(
+        (item for item in assigned_package.get("features") or [] if _feature_key(item) == feature_key),
+        None,
+    )
+    if not feature_name:
+        raise HTTPException(status_code=404, detail="Feature not found in assigned package.")
+    now = _now_iso()
+    existing = _db_get_package_delivery_update(task_id, feature_key)
+    item = {
+        "update_id": existing["update_id"] if existing else f"pkgupd_{uuid.uuid4().hex[:12]}",
+        "task_id": task_id,
+        "feature_key": feature_key,
+        "feature_name": feature_name,
+        "status": request.status.strip().lower() or "pending",
+        "notes": (request.notes or "").strip() or None,
+        "actor": _current_actor(),
+        "created_at": existing["created_at"] if existing else now,
+        "updated_at": now,
+    }
+    _db_save_package_delivery_update(item)
+    _db_add_audit(
+        _current_actor(),
+        "update_package_delivery",
+        "package_delivery",
+        item["update_id"],
+        task_id,
+        outcome=item["status"],
+        detail={"feature_key": feature_key},
+    )
+    return item
+
+
 @app.get("/geo/service-packages")
 def geo_service_packages(status: str | None = None):
     return {"items": _db_service_packages(status=status)}
@@ -5156,6 +5539,19 @@ def geo_experiment_save(request: GEOExperimentRequest):
         "confirmed_at": None,
     }
     _db_save_experiment(item)
+    _db_save_experiment_event(
+        {
+            "event_id": f"expev_{uuid.uuid4().hex[:12]}",
+            "experiment_id": item["experiment_id"],
+            "task_id": request.task_id,
+            "status": item["status"],
+            "notes": item.get("notes"),
+            "sample_size": None,
+            "metric_value": None,
+            "actor": _current_actor(),
+            "created_at": now,
+        }
+    )
     _db_add_audit(_current_actor(), "save_experiment", "experiment", item["experiment_id"], request.task_id)
     return item
 
@@ -5172,8 +5568,56 @@ def geo_experiment_confirm(experiment_id: str, request: GEOExperimentConfirmRequ
     item["confirmed_by"] = _current_actor()
     item["confirmed_at"] = _now_iso()
     _db_save_experiment(item)
+    _db_save_experiment_event(
+        {
+            "event_id": f"expev_{uuid.uuid4().hex[:12]}",
+            "experiment_id": experiment_id,
+            "task_id": item["task_id"],
+            "status": item["status"],
+            "notes": item.get("notes"),
+            "sample_size": None,
+            "metric_value": None,
+            "actor": _current_actor(),
+            "created_at": item["confirmed_at"],
+        }
+    )
     _db_add_audit(_current_actor(), "confirm_experiment", "experiment", experiment_id, item["task_id"], outcome=item["status"])
     return item
+
+
+@app.post("/geo/experiments/{experiment_id}/events")
+def geo_experiment_event_save(experiment_id: str, request: GEOExperimentEventRequest):
+    item = _db_get_experiment(experiment_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    now = _now_iso()
+    event = {
+        "event_id": f"expev_{uuid.uuid4().hex[:12]}",
+        "experiment_id": experiment_id,
+        "task_id": item["task_id"],
+        "status": request.status.strip().lower() or item["status"],
+        "notes": (request.notes or "").strip() or None,
+        "sample_size": max(0, int(request.sample_size)) if request.sample_size is not None else None,
+        "metric_value": round(float(request.metric_value), 4) if request.metric_value is not None else None,
+        "actor": _current_actor(),
+        "created_at": now,
+    }
+    _db_save_experiment_event(event)
+    item["status"] = event["status"]
+    if event["notes"]:
+        item["notes"] = event["notes"]
+    item["updated_at"] = now
+    _db_save_experiment(item)
+    _db_add_audit(
+        _current_actor(),
+        "save_experiment_event",
+        "experiment_event",
+        event["event_id"],
+        item["task_id"],
+        outcome=event["status"],
+        detail={"sample_size": event["sample_size"], "metric_value": event["metric_value"]},
+    )
+    return event
 
 
 @app.get("/geo/attributions")
@@ -5268,6 +5712,30 @@ def geo_report_confirm(report_id: str, request: GEOReportConfirmRequest):
     report["confirmed_at"] = _now_iso()
     _db_save_report(report)
     _db_add_audit(_current_actor(), "confirm_report", "report", report_id, report["task_id"], outcome=report["status"])
+    return report
+
+
+@app.post("/geo/reports/{report_id}/share")
+def geo_report_share(report_id: str, request: GEOReportShareRequest):
+    report = _db_get_report(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    if report["status"] != "confirmed":
+        raise HTTPException(status_code=409, detail="Only confirmed reports can be marked as shared.")
+    report["share_status"] = request.share_status.strip().lower() or "shared"
+    report["share_channel"] = request.share_channel.strip()
+    report["shared_at"] = _now_iso()
+    report["share_notes"] = (request.notes or "").strip() or None
+    _db_save_report(report)
+    _db_add_audit(
+        _current_actor(),
+        "share_report",
+        "report",
+        report_id,
+        report["task_id"],
+        outcome=report["share_status"],
+        detail={"channel": report["share_channel"]},
+    )
     return report
 
 
@@ -5833,10 +6301,14 @@ def cms_publication_preview(request: CMSPublishPreviewRequest):
         },
         "quality_report": quality,
         "live_status": "pending",
+        "rollback_status": None,
+        "rollback_note": None,
+        "rollback_at": None,
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
     }
     _db_save_publication(publication)
+    _record_publication_event(publication, "pending_confirmation", "发布预览已创建，等待人工确认。")
     _db_add_audit(_current_actor(), "preview_publish", "publication", publication["publication_id"], version["task_id"])
     return publication
 
@@ -5880,6 +6352,7 @@ def cms_publication_confirm(request: CMSPublishConfirmRequest):
     publication["confirmed_at"] = _now_iso()
     publication["updated_at"] = _now_iso()
     _db_save_publication(publication)
+    _record_publication_event(publication, publication["status"], publication.get("response_summary"))
     _db_add_audit(
         _current_actor(), "confirm_publish", "publication", publication["publication_id"],
         publication["task_id"], outcome=publication["status"],
@@ -5923,6 +6396,7 @@ def cms_publication_verify(request: CMSPublicationVerifyRequest):
     publication["live_confirmed_at"] = _now_iso()
     publication["updated_at"] = _now_iso()
     _db_save_publication(publication)
+    _record_publication_event(publication, live_status, request.notes or "完成线上校验。")
     _db_add_audit(
         _current_actor(),
         "verify_publish",
@@ -5958,7 +6432,7 @@ def cms_publication_verify_schedule(
         "job_id": f"job_{uuid.uuid4().hex[:16]}",
         "job_type": "publication_verify",
         "status": "queued",
-        "payload": request.dict(exclude={"run_at", "max_attempts"}),
+        "payload": request.model_dump(exclude={"run_at", "max_attempts"}),
         "result": None,
         "attempts": 0,
         "max_attempts": max_attempts,
@@ -5969,6 +6443,7 @@ def cms_publication_verify_schedule(
         "completed_at": None,
     }
     _db_save_job(job)
+    _record_publication_event(publication, "verify_scheduled", f"安排自动校验：{run_at}")
     _db_add_audit(
         _current_actor(),
         "schedule_publish_verify",
@@ -5999,7 +6474,32 @@ def cms_publication_retry(publication_id: str):
     publication["live_confirmed_at"] = None
     publication["updated_at"] = _now_iso()
     _db_save_publication(publication)
+    _record_publication_event(publication, "pending_confirmation", "失败发布已重置，等待重新确认。")
     _db_add_audit(_current_actor(), "retry_publish", "publication", publication_id, publication["task_id"])
+    return publication
+
+
+@app.post("/cms/publications/rollback")
+def cms_publication_rollback(request: CMSPublicationRollbackRequest):
+    publication = _db_get_publication(request.publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publication not found.")
+    if publication["status"] not in {"published", "verification_failed", "verified_live"}:
+        raise HTTPException(status_code=409, detail="Only published publications can be marked for rollback.")
+    publication["rollback_status"] = request.status.strip().lower() or "rollback_completed"
+    publication["rollback_note"] = (request.notes or "").strip() or "人工确认已执行回滚。"
+    publication["rollback_at"] = _now_iso()
+    publication["updated_at"] = publication["rollback_at"]
+    _db_save_publication(publication)
+    _record_publication_event(publication, publication["rollback_status"], publication["rollback_note"])
+    _db_add_audit(
+        _current_actor(),
+        "rollback_publication",
+        "publication",
+        publication["publication_id"],
+        publication["task_id"],
+        outcome=publication["rollback_status"],
+    )
     return publication
 
 
@@ -6421,6 +6921,7 @@ def geo_task_detail(task_id: str):
     task_injections = [item for item in history["injections"] if item["task_id"] == task_id]
     task_retests = history["retests"].get(task_id, [])
     task_publications = _db_publications(task_id)
+    publication_events = _db_publication_events(task_id=task_id, limit=200)
     task_feedback = [item for item in history["feedback_entries"] if item["task_id"] == task_id]
     task_jobs = [
         item
@@ -6428,6 +6929,7 @@ def geo_task_detail(task_id: str):
         if item.get("payload", {}).get("task_id") == task_id
     ]
     task_experiments = _db_experiments(task_id)
+    experiment_events = _db_experiment_events(task_id=task_id, limit=200)
     task_attributions = _db_attributions(task_id)
     task_reports = _db_reports(task_id)
     task_articles = _db_articles(task_id)
@@ -6455,10 +6957,12 @@ def geo_task_detail(task_id: str):
             task_jobs,
         ),
         "publications": task_publications,
+        "publication_events": publication_events,
         "jobs": task_jobs,
         "monitoring": _monitoring_summary(task_id),
         "service_packages": _db_service_packages(status="active"),
         "experiments": task_experiments,
+        "experiment_events": experiment_events,
         "attributions": task_attributions,
         "reports": task_reports,
         "report_exports": _db_report_exports(task_id=task_id, limit=100),

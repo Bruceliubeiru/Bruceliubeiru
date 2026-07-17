@@ -301,6 +301,69 @@
     <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'report'}}" class="surface compact-surface">
       <view class="section-head">
         <view>
+          <text class="section-eyebrow">TRUST ANCHORS</text>
+          <text class="section-title">外部信任锚点</text>
+        </view>
+        <text class="section-tag">{{monitoring && monitoring.trust_anchors ? monitoring.trust_anchors.length : 0}} 个</text>
+      </view>
+      <picker mode="selector" range="{{anchorChannelOptions}}" range-key="label" value="{{anchorChannelIndex}}" bindchange="changeAnchorChannel">
+        <view class="config-field">
+          <text class="config-label">锚点渠道</text>
+          <text class="config-value">{{anchorChannelOptions[anchorChannelIndex].label}}</text>
+        </view>
+      </picker>
+      <picker mode="selector" range="{{anchorStatusOptions}}" range-key="label" value="{{anchorStatusIndex}}" bindchange="changeAnchorStatus">
+        <view class="config-field">
+          <text class="config-label">锚点状态</text>
+          <text class="config-value">{{anchorStatusOptions[anchorStatusIndex].label}}</text>
+        </view>
+      </picker>
+      <input class="business-input" value="{{anchorTopic}}" placeholder="锚点主题，例如 官方 FAQ / 行业对比页" bindinput="onAnchorTopicInput" />
+      <input class="business-input" value="{{anchorOwner}}" placeholder="负责人（可选）" bindinput="onAnchorOwnerInput" />
+      <input class="business-input" value="{{anchorTargetUrl}}" placeholder="目标 URL（可选）" bindinput="onAnchorTargetUrlInput" />
+      <input class="business-input" value="{{anchorEvidenceUrl}}" placeholder="证据链接（可选）" bindinput="onAnchorEvidenceUrlInput" />
+      <textarea class="module-body-input" value="{{anchorGuidance}}" placeholder="执行原则" bindinput="onAnchorGuidanceInput" />
+      <view class="review-bar">
+        <button loading="{{savingTrustAnchor}}" disabled="{{savingTrustAnchor}}" bindtap="saveTrustAnchorDraft">保存信任锚点</button>
+      </view>
+      <view wx:if="{{monitoring && monitoring.trust_anchors && monitoring.trust_anchors.length}}" class="status-stack">
+        <view class="status-note" wx:for="{{monitoring.trust_anchors}}" wx:key="anchor_id" wx:for-item="item">
+          {{item.channel}} · {{item.topic}} · {{item.status}}
+          <button size="mini" data-anchor-id="{{item.anchor_id}}" data-status="published" bindtap="updateTrustAnchorStatus">标记已发布</button>
+          <button size="mini" data-anchor-id="{{item.anchor_id}}" data-status="verified" bindtap="updateTrustAnchorStatus">标记已验证</button>
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'report'}}" class="surface compact-surface">
+      <view class="section-head">
+        <view>
+          <text class="section-eyebrow">OPS ACTIONS</text>
+          <text class="section-title">执行动作</text>
+        </view>
+        <text class="section-tag">{{project && project.gap_actions ? project.gap_actions.length : 0}} 条</text>
+      </view>
+      <view class="review-bar">
+        <button loading="{{bootstrappingActions}}" disabled="{{bootstrappingActions}}" bindtap="bootstrapActions">补齐系统动作</button>
+      </view>
+      <input class="business-input" value="{{manualActionTitle}}" placeholder="手动动作标题" bindinput="onManualActionTitleInput" />
+      <textarea class="module-body-input" value="{{manualActionNotes}}" placeholder="动作说明、恢复策略、验证方式" bindinput="onManualActionNotesInput" />
+      <view class="review-bar">
+        <button loading="{{savingManualAction}}" disabled="{{savingManualAction}}" bindtap="createManualAction">创建人工动作</button>
+      </view>
+      <view wx:if="{{project && project.gap_actions && project.gap_actions.length}}" class="status-stack">
+        <view class="status-note" wx:for="{{project.gap_actions}}" wx:key="action_id" wx:for-item="item">
+          {{item.priority}} · {{item.status}} · {{item.title}}
+          <button size="mini" data-action-id="{{item.action_id}}" data-status="in_progress" bindtap="updateGapActionStatus">进行中</button>
+          <button size="mini" data-action-id="{{item.action_id}}" data-status="done" bindtap="updateGapActionStatus">完成</button>
+          <button size="mini" data-action-id="{{item.action_id}}" data-status="blocked" bindtap="updateGapActionStatus">阻塞</button>
+        </view>
+      </view>
+    </view>
+
+    <view wx:if="{{result.task_id && result.is_url_task !== false && activeStep === 'report'}}" class="surface compact-surface">
+      <view class="section-head">
+        <view>
           <text class="section-eyebrow">EXPERIMENTS</text>
           <text class="section-title">内容实验</text>
         </view>
@@ -335,6 +398,7 @@
       </view>
       <view wx:for="{{attributions}}" wx:key="attribution_id" wx:for-item="item" class="status-note">
         {{item.source_name}} · {{item.status}} · {{item.attributed_revenue || 0}}
+        <button wx:if="{{item.status !== 'confirmed'}}" size="mini" data-attribution-id="{{item.attribution_id}}" bindtap="confirmAttribution">确认线索</button>
       </view>
     </view>
 
@@ -353,6 +417,8 @@
       <view wx:for="{{reports}}" wx:key="report_id" wx:for-item="report" class="status-note">
         {{report.period_label}} · {{report.status}} · 提及率 {{report.metrics.mention_rate || 0}}%
         <button wx:if="{{report.status !== 'confirmed'}}" size="mini" data-report-id="{{report.report_id}}" bindtap="confirmLatestReport">确认</button>
+        <button size="mini" loading="{{exportingReport}}" disabled="{{exportingReport}}" data-format="md" data-report-id="{{report.report_id}}" bindtap="exportLatestReport">导出 MD</button>
+        <button size="mini" loading="{{exportingReport}}" disabled="{{exportingReport}}" data-format="json" data-report-id="{{report.report_id}}" bindtap="exportLatestReport">导出 JSON</button>
       </view>
     </view>
 
@@ -473,6 +539,20 @@
         <view wx:if="{{project}}" class="status-note">
           当前阶段：{{project.current_stage || result.status}} · 下一步：{{project.next_action}} · 负责人：{{project.owner || '待分配'}} · 目标 {{project.target_score || 80}} 分
         </view>
+        <view wx:if="{{result.task_id && result.is_url_task !== false}}" class="delivery-config">
+          <text class="delivery-title">项目与套餐</text>
+          <input class="business-input" value="{{projectOwner}}" placeholder="项目负责人" bindinput="onProjectOwnerInput" />
+          <textarea class="module-body-input" value="{{projectTodosText}}" placeholder="执行待办，每行一条" bindinput="onProjectTodosInput" />
+          <picker wx:if="{{servicePackages.length}}" mode="selector" range="{{servicePackages}}" range-key="name" value="{{servicePackageIndex}}" bindchange="changeServicePackage">
+            <view class="config-field">
+              <text class="config-label">服务套餐</text>
+              <text class="config-value">{{servicePackages[servicePackageIndex].name}} · {{servicePackages[servicePackageIndex].tier}} · ¥{{servicePackages[servicePackageIndex].price_cny}}</text>
+            </view>
+          </picker>
+          <view class="review-bar">
+            <button loading="{{savingProject}}" disabled="{{savingProject}}" bindtap="saveProjectSetup">保存项目配置</button>
+          </view>
+        </view>
         <view wx:if="{{project && project.todos && project.todos.length}}" class="issue-list">
           <view class="issue-row" wx:for="{{project.todos}}" wx:key="*this" wx:for-item="todo">
             <view class="issue-mark">•</view><text>{{todo}}</text>
@@ -499,9 +579,36 @@
         <view wx:if="{{monitoring && monitoring.connector_status}}" class="delivery-config">
           <text class="delivery-title">监测接入</text>
           <view class="status-note">接入 {{monitoring.connector_status.count}} 个 · 已连通 {{monitoring.connector_status.connected}} 个 · 失败 {{monitoring.connector_status.failed}} 个</view>
+          <picker mode="selector" range="{{monitoringPlatforms}}" range-key="label" value="{{connectorPlatformIndex}}" bindchange="changeConnectorPlatform">
+            <view class="config-field">
+              <text class="config-label">接入平台</text>
+              <text class="config-value">{{monitoringPlatforms[connectorPlatformIndex].label}}</text>
+            </view>
+          </picker>
+          <picker mode="selector" range="{{connectorTypeOptions}}" range-key="label" value="{{connectorTypeIndex}}" bindchange="changeConnectorType">
+            <view class="config-field">
+              <text class="config-label">接入方式</text>
+              <text class="config-value">{{connectorTypeOptions[connectorTypeIndex].label}}</text>
+            </view>
+          </picker>
+          <picker mode="selector" range="{{connectorStatusOptions}}" range-key="label" value="{{connectorStatusIndex}}" bindchange="changeConnectorStatus">
+            <view class="config-field">
+              <text class="config-label">接入状态</text>
+              <text class="config-value">{{connectorStatusOptions[connectorStatusIndex].label}}</text>
+            </view>
+          </picker>
+          <input class="business-input" value="{{connectorProviderName}}" placeholder="接入名称，例如 Perplexity Enterprise Export" bindinput="onConnectorProviderNameInput" />
+          <input class="business-input" value="{{connectorEvidenceUrl}}" placeholder="审计证据链接（可选）" bindinput="onConnectorEvidenceUrlInput" />
+          <textarea class="module-body-input" value="{{connectorNotes}}" placeholder="记录凭证、人工操作路径、失败原因" bindinput="onConnectorNotesInput" />
+          <view class="review-bar">
+            <button loading="{{savingConnector}}" disabled="{{savingConnector}}" bindtap="saveConnector">登记监测接入</button>
+          </view>
           <view wx:if="{{monitoring.connectors && monitoring.connectors.length}}" class="status-stack">
             <view class="status-note" wx:for="{{monitoring.connectors}}" wx:key="connector_id" wx:for-item="item">
               {{item.platform}} · {{item.provider_name}} · {{item.status}}
+              <text wx:if="{{item.latest_run}}"> · 最近执行 {{item.latest_run.status}}</text>
+              <button size="mini" data-connector-id="{{item.connector_id}}" data-status="connected" bindtap="markConnectorStatus">标记连通</button>
+              <button size="mini" data-connector-id="{{item.connector_id}}" data-status="failed" bindtap="markConnectorStatus">标记失败</button>
             </view>
           </view>
         </view>

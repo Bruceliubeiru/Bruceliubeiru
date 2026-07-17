@@ -56,6 +56,7 @@ URL analysis
 | Monitor ops workspace | Mini-program monitoring page can now bind project packages, operate auditable AI-platform connectors, bootstrap source-map actions, register experiments/attribution, generate reports, and advance article indexing with checklist recovery |
 | Parsing and recovery ops | Operators can now paste AI answers to persist mention/source observations, update trust-anchor execution, revise attribution confirmation, export effect reports for offline review, and retain connector/article execution history for failure recovery |
 | Operational history | Connector verification runs, report exports, article indexing changes, CMS publication states, and manual action edits are persisted for audit and operator handoff |
+| Mini-program delivery console | The main workbench can now edit project owners/todos, assign service packages, manage connector status, maintain trust anchors, create manual actions, confirm leads, and export effect reports without leaving the task |
 
 ## External Client Delivery Standard
 

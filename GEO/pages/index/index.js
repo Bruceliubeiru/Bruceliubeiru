@@ -15,16 +15,29 @@ const {
   retestTask,
   scheduleRetest,
   getTaskDetail,
+  getServicePackages,
+  updateProject,
   saveExperiment,
   confirmExperiment,
   saveAttribution,
+  updateAttribution,
   generateReport,
   confirmReport,
   exportJson,
   getMonitoringQueries,
   generateMonitoringQueries,
   parseMonitoringSources,
-  getMonitoringSummary
+  getMonitoringSummary,
+  saveTrustAnchor,
+  updateTrustAnchor,
+  saveMonitoringConnector,
+  updateMonitoringConnector,
+  saveMonitoringConnectorRun,
+  bootstrapGapActions,
+  saveGapAction,
+  updateGapAction,
+  exportReportMarkdown,
+  exportReportJSON
 } = require("../../utils/api")
 const { aiPlatformOptions } = require("../../utils/platforms")
 
@@ -171,6 +184,33 @@ const marketOptions = [
 ]
 
 const engineOptions = aiPlatformOptions
+
+const connectorTypeOptions = [
+  { label: "官方 API", value: "official_api" },
+  { label: "官方导出", value: "manual_export" },
+  { label: "人工审计", value: "manual_audit" }
+]
+
+const connectorStatusOptions = [
+  { label: "规划中", value: "planned" },
+  { label: "已连通", value: "connected" },
+  { label: "失败待修复", value: "failed" },
+  { label: "已暂停", value: "paused" }
+]
+
+const trustAnchorChannelOptions = [
+  { label: "官网", value: "website" },
+  { label: "行业媒体", value: "media" },
+  { label: "问答社区", value: "forum" },
+  { label: "知识库", value: "knowledge_base" }
+]
+
+const trustAnchorStatusOptions = [
+  { label: "规划中", value: "planned" },
+  { label: "已发布", value: "published" },
+  { label: "已验证", value: "verified" },
+  { label: "阻塞", value: "blocked" }
+]
 
 const resultTabs = [
   { label: "概要", value: "summary" },
@@ -581,6 +621,29 @@ Page({
     attributionRevenue: "",
     attributionEvidenceUrl: "",
     reportPeriod: "近 30 天",
+    servicePackages: [],
+    servicePackageIndex: 0,
+    projectOwner: "",
+    projectTodosText: "",
+    connectorPlatformIndex: 0,
+    connectorTypeOptions,
+    connectorTypeIndex: 0,
+    connectorStatusOptions,
+    connectorStatusIndex: 0,
+    connectorProviderName: "",
+    connectorEvidenceUrl: "",
+    connectorNotes: "",
+    anchorChannelOptions: trustAnchorChannelOptions,
+    anchorChannelIndex: 0,
+    anchorStatusOptions: trustAnchorStatusOptions,
+    anchorStatusIndex: 0,
+    anchorTopic: "",
+    anchorOwner: "",
+    anchorTargetUrl: "",
+    anchorEvidenceUrl: "",
+    anchorGuidance: "提供真实、可验证、有帮助的行业回答，不伪装用户或虚构体验。",
+    manualActionTitle: "",
+    manualActionNotes: "",
     cmsTargets: [],
     cmsTargetIndex: 0,
     publishConfirmation: "",
@@ -597,6 +660,12 @@ Page({
     savingExperiment: false,
     savingAttribution: false,
     generatingReport: false,
+    savingProject: false,
+    savingConnector: false,
+    savingTrustAnchor: false,
+    bootstrappingActions: false,
+    savingManualAction: false,
+    exportingReport: false,
     generatingQueries: false,
     parsingSources: false,
     deliveryTarget: "json_file",
@@ -661,6 +730,10 @@ Page({
         experiments: detail.experiments || [],
         attributions: detail.attributions || [],
         reports: detail.reports || [],
+        servicePackages: this.data.servicePackages,
+        servicePackageIndex: this.resolveServicePackageIndex(detail.project || null, this.data.servicePackages),
+        projectOwner: (detail.project && detail.project.owner) || "",
+        projectTodosText: ((detail.project && detail.project.todos) || []).join("\n"),
         ...publicationState,
         dimensions: buildDimensions(normalized.breakdown),
         assets: buildAssets(normalized),
@@ -671,8 +744,31 @@ Page({
         loading: false
       })
       await this.loadCmsTargets()
+      await this.loadServicePackages(detail.project || null)
     } catch (error) {
       this.setData({ loading: false, error: error.message || "恢复任务失败" })
+    }
+  },
+
+  resolveServicePackageIndex(project, servicePackages) {
+    const packageId = project && project.package_id
+    if (!packageId || !servicePackages || !servicePackages.length) {
+      return 0
+    }
+    const index = servicePackages.findIndex((item) => item.package_id === packageId)
+    return index >= 0 ? index : 0
+  },
+
+  async loadServicePackages(project = null) {
+    try {
+      const result = await getServicePackages()
+      const servicePackages = result.items || []
+      this.setData({
+        servicePackages,
+        servicePackageIndex: this.resolveServicePackageIndex(project || this.data.project, servicePackages)
+      })
+    } catch (error) {
+      this.setData({ error: error.message || "加载服务套餐失败" })
     }
   },
 
@@ -750,6 +846,78 @@ Page({
 
   changeCmsTarget(event) {
     this.setData({ cmsTargetIndex: Number(event.detail.value) })
+  },
+
+  changeServicePackage(event) {
+    this.setData({ servicePackageIndex: Number(event.detail.value) })
+  },
+
+  onProjectOwnerInput(event) {
+    this.setData({ projectOwner: event.detail.value })
+  },
+
+  onProjectTodosInput(event) {
+    this.setData({ projectTodosText: event.detail.value })
+  },
+
+  changeConnectorPlatform(event) {
+    this.setData({ connectorPlatformIndex: Number(event.detail.value) })
+  },
+
+  changeConnectorType(event) {
+    this.setData({ connectorTypeIndex: Number(event.detail.value) })
+  },
+
+  changeConnectorStatus(event) {
+    this.setData({ connectorStatusIndex: Number(event.detail.value) })
+  },
+
+  onConnectorProviderNameInput(event) {
+    this.setData({ connectorProviderName: event.detail.value })
+  },
+
+  onConnectorEvidenceUrlInput(event) {
+    this.setData({ connectorEvidenceUrl: event.detail.value })
+  },
+
+  onConnectorNotesInput(event) {
+    this.setData({ connectorNotes: event.detail.value })
+  },
+
+  changeAnchorChannel(event) {
+    this.setData({ anchorChannelIndex: Number(event.detail.value) })
+  },
+
+  changeAnchorStatus(event) {
+    this.setData({ anchorStatusIndex: Number(event.detail.value) })
+  },
+
+  onAnchorTopicInput(event) {
+    this.setData({ anchorTopic: event.detail.value })
+  },
+
+  onAnchorOwnerInput(event) {
+    this.setData({ anchorOwner: event.detail.value })
+  },
+
+  onAnchorTargetUrlInput(event) {
+    this.setData({ anchorTargetUrl: event.detail.value })
+  },
+
+  onAnchorEvidenceUrlInput(event) {
+    this.setData({ anchorEvidenceUrl: event.detail.value })
+  },
+
+  onAnchorGuidanceInput(event) {
+    this.setData({ anchorGuidance: event.detail.value })
+  },
+
+  onManualActionTitleInput(event) {
+    this.setData({ manualActionTitle: event.detail.value })
+  },
+
+  onManualActionNotesInput(event) {
+    this.setData({ manualActionNotes: event.detail.value })
   },
 
   onPublishConfirmationInput(event) {
@@ -981,6 +1149,7 @@ Page({
       })
       if (mode === "url") {
         await this.loadCmsTargets()
+        await this.loadServicePackages()
         await this.loadMonitoringQueries(true)
       }
     } catch (error) {
@@ -1027,7 +1196,19 @@ Page({
       experimentVariantB: "",
       attributionSourceName: "",
       attributionRevenue: "",
-      attributionEvidenceUrl: ""
+      attributionEvidenceUrl: "",
+      projectOwner: "",
+      projectTodosText: "",
+      connectorProviderName: "",
+      connectorEvidenceUrl: "",
+      connectorNotes: "",
+      anchorTopic: "",
+      anchorOwner: "",
+      anchorTargetUrl: "",
+      anchorEvidenceUrl: "",
+      anchorGuidance: "提供真实、可验证、有帮助的行业回答，不伪装用户或虚构体验。",
+      manualActionTitle: "",
+      manualActionNotes: ""
     })
     wx.pageScrollTo({ scrollTop: 0, duration: 250 })
   },
@@ -1175,6 +1356,43 @@ Page({
         error: error.message || "生成改进草稿失败",
         improving: false
       })
+    }
+  },
+
+  async saveProjectSetup() {
+    if (!this.data.result.task_id) {
+      return
+    }
+    if (this.data.savingProject) {
+      return
+    }
+    const selectedPackage = (this.data.servicePackages || [])[this.data.servicePackageIndex] || null
+    const todos = this.data.projectTodosText
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean)
+    this.setData({ savingProject: true, error: "" })
+    try {
+      const project = await updateProject(this.data.result.task_id, {
+        client_name: this.data.clientName.trim() || undefined,
+        brand_name: this.data.brandName.trim() || undefined,
+        business_goal: this.data.businessGoal.trim() || undefined,
+        owner: this.data.projectOwner.trim() || undefined,
+        target_engines: this.data.selectedEngines,
+        package_id: selectedPackage ? selectedPackage.package_id : undefined,
+        service_tier: selectedPackage ? selectedPackage.tier : undefined,
+        todos
+      })
+      this.setData({
+        project,
+        result: { ...this.data.result, project },
+        servicePackageIndex: this.resolveServicePackageIndex(project, this.data.servicePackages),
+        savingProject: false
+      })
+      await this.refreshMonitoringSummary()
+      wx.showToast({ title: "项目已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ savingProject: false, error: error.message || "更新项目失败" })
     }
   },
 
@@ -1467,10 +1685,181 @@ Page({
         monitoring,
         monitoringQueries: monitoring.queries || [],
         loopSteps: buildLoopSteps({ ...this.data, monitoring }),
-        monitoringQueryIndex: Math.min(this.data.monitoringQueryIndex, Math.max((monitoring.queries || []).length - 1, 0))
+        monitoringQueryIndex: Math.min(this.data.monitoringQueryIndex, Math.max((monitoring.queries || []).length - 1, 0)),
+        project: this.data.project ? {
+          ...this.data.project,
+          gap_actions: monitoring.gap_actions || this.data.project.gap_actions || []
+        } : this.data.project
       })
     } catch (error) {
       this.setData({ error: error.message || "刷新监测数据失败" })
+    }
+  },
+
+  async saveConnector() {
+    if (!this.data.result.task_id || !this.data.connectorProviderName.trim()) {
+      wx.showToast({ title: "请填写接入名称", icon: "none" })
+      return
+    }
+    if (this.data.savingConnector) {
+      return
+    }
+    const platform = this.data.monitoringPlatforms[this.data.connectorPlatformIndex]
+    const connectorType = this.data.connectorTypeOptions[this.data.connectorTypeIndex]
+    const connectorStatus = this.data.connectorStatusOptions[this.data.connectorStatusIndex]
+    this.setData({ savingConnector: true, error: "" })
+    try {
+      await saveMonitoringConnector({
+        task_id: this.data.result.task_id,
+        platform: platform.value,
+        connector_type: connectorType.value,
+        provider_name: this.data.connectorProviderName.trim(),
+        status: connectorStatus.value,
+        evidence_url: this.data.connectorEvidenceUrl.trim() || undefined,
+        verification_method: connectorType.value === "official_api" ? "official_api" : "human_recorded",
+        notes: this.data.connectorNotes.trim() || undefined
+      })
+      await this.refreshMonitoringSummary()
+      this.setData({
+        savingConnector: false,
+        connectorProviderName: "",
+        connectorEvidenceUrl: "",
+        connectorNotes: ""
+      })
+      wx.showToast({ title: "监测接入已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingConnector: false, error: error.message || "保存监测接入失败" })
+    }
+  },
+
+  async markConnectorStatus(event) {
+    const connectorId = event.currentTarget.dataset.connectorId
+    const status = event.currentTarget.dataset.status
+    if (!connectorId || !status) {
+      return
+    }
+    try {
+      await updateMonitoringConnector(connectorId, { status })
+      await saveMonitoringConnectorRun(connectorId, {
+        status,
+        notes: `Miniapp manual update: ${status}.`
+      })
+      await this.refreshMonitoringSummary()
+      wx.showToast({ title: "接入状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "更新接入状态失败" })
+    }
+  },
+
+  async saveTrustAnchorDraft() {
+    if (!this.data.result.task_id || !this.data.anchorTopic.trim()) {
+      wx.showToast({ title: "请填写锚点主题", icon: "none" })
+      return
+    }
+    if (this.data.savingTrustAnchor) {
+      return
+    }
+    const channel = this.data.anchorChannelOptions[this.data.anchorChannelIndex]
+    const status = this.data.anchorStatusOptions[this.data.anchorStatusIndex]
+    this.setData({ savingTrustAnchor: true, error: "" })
+    try {
+      await saveTrustAnchor({
+        task_id: this.data.result.task_id,
+        channel: channel.value,
+        topic: this.data.anchorTopic.trim(),
+        owner: this.data.anchorOwner.trim() || undefined,
+        target_url: this.data.anchorTargetUrl.trim() || undefined,
+        evidence_url: this.data.anchorEvidenceUrl.trim() || undefined,
+        guidance: this.data.anchorGuidance.trim() || undefined,
+        status: status.value
+      })
+      await this.refreshMonitoringSummary()
+      this.setData({
+        savingTrustAnchor: false,
+        anchorTopic: "",
+        anchorOwner: "",
+        anchorTargetUrl: "",
+        anchorEvidenceUrl: ""
+      })
+      wx.showToast({ title: "信任锚点已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingTrustAnchor: false, error: error.message || "保存信任锚点失败" })
+    }
+  },
+
+  async updateTrustAnchorStatus(event) {
+    const anchorId = event.currentTarget.dataset.anchorId
+    const status = event.currentTarget.dataset.status
+    if (!anchorId || !status) {
+      return
+    }
+    try {
+      await updateTrustAnchor(anchorId, { status })
+      await this.refreshMonitoringSummary()
+      wx.showToast({ title: "锚点状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "更新锚点状态失败" })
+    }
+  },
+
+  async bootstrapActions() {
+    if (!this.data.result.task_id || this.data.bootstrappingActions) {
+      return
+    }
+    this.setData({ bootstrappingActions: true, error: "" })
+    try {
+      await bootstrapGapActions(this.data.result.task_id)
+      await this.reloadCurrentTask()
+      this.setData({ bootstrappingActions: false })
+      wx.showToast({ title: "执行动作已补齐", icon: "success" })
+    } catch (error) {
+      this.setData({ bootstrappingActions: false, error: error.message || "补齐执行动作失败" })
+    }
+  },
+
+  async createManualAction() {
+    if (!this.data.result.task_id || !this.data.manualActionTitle.trim()) {
+      wx.showToast({ title: "请填写动作标题", icon: "none" })
+      return
+    }
+    if (this.data.savingManualAction) {
+      return
+    }
+    this.setData({ savingManualAction: true, error: "" })
+    try {
+      await saveGapAction({
+        task_id: this.data.result.task_id,
+        title: this.data.manualActionTitle.trim(),
+        action_type: "manual_followup",
+        source: "miniapp",
+        priority: "P1",
+        status: "accepted",
+        notes: this.data.manualActionNotes.trim() || undefined
+      })
+      await this.reloadCurrentTask()
+      this.setData({
+        savingManualAction: false,
+        manualActionTitle: "",
+        manualActionNotes: ""
+      })
+      wx.showToast({ title: "执行动作已创建", icon: "success" })
+    } catch (error) {
+      this.setData({ savingManualAction: false, error: error.message || "创建执行动作失败" })
+    }
+  },
+
+  async updateGapActionStatus(event) {
+    const actionId = event.currentTarget.dataset.actionId
+    const status = event.currentTarget.dataset.status
+    if (!actionId || !status) {
+      return
+    }
+    try {
+      await updateGapAction(actionId, { status })
+      await this.reloadCurrentTask()
+      wx.showToast({ title: "动作状态已更新", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "更新动作状态失败" })
     }
   },
 
@@ -1797,6 +2186,20 @@ Page({
     }
   },
 
+  async confirmAttribution(event) {
+    const attributionId = event.currentTarget.dataset.attributionId
+    if (!attributionId) {
+      return
+    }
+    try {
+      await updateAttribution(attributionId, { status: "confirmed", lead_stage: "won" })
+      await this.reloadCurrentTask()
+      wx.showToast({ title: "线索已确认", icon: "success" })
+    } catch (error) {
+      this.setData({ error: error.message || "确认线索失败" })
+    }
+  },
+
   async buildEffectReport() {
     if (!this.data.result.task_id) {
       return
@@ -1826,6 +2229,35 @@ Page({
       wx.showToast({ title: "报告已确认", icon: "success" })
     } catch (error) {
       this.setData({ error: error.message || "确认报告失败" })
+    }
+  },
+
+  async exportLatestReport(event) {
+    const format = event.currentTarget.dataset.format
+    const reportId = event.currentTarget.dataset.reportId
+    const report = (this.data.reports || []).find((item) => item.report_id === reportId) || this.data.reports[0]
+    if (!report || !format) {
+      wx.showToast({ title: "暂无可导出报告", icon: "none" })
+      return
+    }
+    if (this.data.exportingReport) {
+      return
+    }
+    const projectName = (this.data.project && this.data.project.brand_name) || this.data.brandName || this.data.result.title || "GEO Project"
+    const title = `${projectName} ${report.period_label} 效果报告`
+    const exporter = format === "md" ? exportReportMarkdown : exportReportJSON
+    this.setData({ exportingReport: true, error: "" })
+    try {
+      const exported = await exporter(projectName, title, report)
+      wx.setClipboardData({
+        data: exported.filepath || exported.filename || exported.file_path || "",
+        success() {
+          wx.showToast({ title: "报告路径已复制", icon: "success" })
+        }
+      })
+      this.setData({ exportingReport: false })
+    } catch (error) {
+      this.setData({ exportingReport: false, error: error.message || "导出报告失败" })
     }
   },
 

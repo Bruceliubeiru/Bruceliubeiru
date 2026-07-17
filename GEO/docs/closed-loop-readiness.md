@@ -58,10 +58,12 @@ URL analysis
 | Operational history | Connector verification runs, report exports, article indexing changes, CMS publication states, and manual action edits are persisted for audit and operator handoff |
 | Mini-program delivery console | The main workbench can now edit project owners/todos, assign service packages, manage connector status, maintain trust anchors, create manual actions, confirm leads, and export effect reports without leaving the task |
 | Package SLA execution | Operators can manually mark each bound package feature as in progress, done, or blocked with notes; the task detail keeps actor and timestamp for customer handoff |
+| Package SLA risk view | Package binding now persists assignment/due dates, exposes on-track/at-risk/overdue state, and shows remaining days in the mini-program and admin detail |
 | Experiment execution log | Every experiment now records runtime events such as running, observed, blocked, rollback, sample size, and metric value for later review |
 | Report distribution confirmation | Confirmed effect reports can be marked as shared to WeChat, email, Feishu, Notion, or Drive, with notes and timestamps for client follow-up |
+| Feishu delivery recovery | Reports and GEO articles can now sync to Feishu docs, persist external links/tokens, and retry failed syncs without losing local markdown drafts |
 | Publication recovery timeline | CMS publications now keep preview, publish, verify, retry, schedule, and rollback events so failures and reversions remain traceable |
-| Connector freshness summary | Monitoring connectors now expose fresh/stale state, missing credentials, and last-check age to prioritize audit-safe rechecks |
+| Connector freshness summary | Monitoring connectors now expose fresh/stale state, missing credentials, last-check age, owner, next-check timestamp, and recovery hints to prioritize audit-safe rechecks |
 
 ## External Client Delivery Standard
 
@@ -87,9 +89,9 @@ the monitoring endpoints instead of relying on unreviewable scraping.
 | P0 | Visibility confidence and sampling plan | Implemented in monitoring summary and reports through sample target, sample count, coverage, confidence level, citation rate, and competitor gap. |
 | P0 | White-hat external trust anchor | Implemented; default guidance blocks impersonation and fabricated experience. |
 | P0 | Content quality guardrail and human review | Implemented; blocks unsupported claims and invalid Schema before approval/publish. |
-| P1 | Page type template library for travel verticals | Partially implemented through page-type inference and generic content generation; next step is dedicated JR Pass, attraction ticket, local activity, destination guide, and campaign templates. |
+| P1 | Page type template library for travel verticals | Implemented for transport pass, attraction ticket, local activity, destination guide, and campaign landing templates with page-type-specific modules and FAQ. |
 | P1 | Compliant semi-automated platform collection | Connector registry is implemented for official API / export / audited manual paths; real provider credentials and calling jobs still need production secrets and per-platform adapters. |
-| P1 | Feishu task/table export | Not yet implemented; JSON export and CMS webhook exist. |
+| P1 | Feishu task/table export | Feishu document export is implemented for GEO articles and effect reports; table sync still depends on production app credentials and business schema. |
 | P1 | Action workflow with accepted/in-progress/done/rollback for individual gap actions | Implemented through persistent `page_gap_actions`, source-map bootstrapping, and mini-program execution tracking. |
 | P2 | Word report export for management | Implemented through `/reports/export/docx` and `/reports/export/pdf`; monitor ops now also records export history for offline delivery audit. |
 | P2 | Analytics/BI integration for traffic, GMV, conversion, AOV | Not yet connected; lead attribution and revenue evidence are available as manual input. |

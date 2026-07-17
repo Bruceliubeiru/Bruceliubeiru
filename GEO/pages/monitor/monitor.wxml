@@ -85,6 +85,12 @@
       <view class="status-note">商业准备度 {{selectedProject.commercial_readiness.completion_percent}}%</view>
       <view class="status-note" wx:for="{{selectedProject.commercial_readiness.missing}}" wx:key="*this" wx:for-item="item">待补齐：{{item}}</view>
     </view>
+    <view wx:if="{{selectedProject.package_sla}}" class="checklist-box top-gap">
+      <text class="item-title">套餐 SLA</text>
+      <text class="item-meta">状态：{{selectedProject.package_sla.status}} · 进度 {{selectedProject.package_sla.completion_percent}}%</text>
+      <text class="item-meta">截止：{{selectedProject.package_sla.due_at || '未设置'}} · 剩余 {{selectedProject.package_sla.days_remaining !== null ? selectedProject.package_sla.days_remaining : '-'}} 天</text>
+      <text wx:if="{{selectedProject.package_sla.overdue_days}}" class="item-meta">已逾期 {{selectedProject.package_sla.overdue_days}} 天</text>
+    </view>
     <view wx:if="{{selectedProject.package_delivery && selectedProject.package_delivery.length}}" class="status-stack">
       <view class="list-card mini-card" wx:for="{{selectedProject.package_delivery}}" wx:key="feature_key" wx:for-item="item">
         <view>
@@ -176,7 +182,7 @@
     </view>
     <view wx:if="{{recentReportExports.length}}" class="status-stack">
       <view class="status-note" wx:for="{{recentReportExports}}" wx:key="export_id" wx:for-item="item">
-        {{item.format}} · {{item.status}} · {{item.filepath || item.note || '无路径'}} · {{item.created_at}}
+        {{item.format}} · {{item.status}} · {{item.external_url || item.filepath || item.note || '无路径'}} · {{item.created_at}}
       </view>
     </view>
   </view>
@@ -218,6 +224,8 @@
           <text class="item-title">{{item.platform}} · {{item.provider_name}}</text>
           <text class="item-meta">{{item.connector_type}} · {{item.verification_method}} · {{item.status}}</text>
           <text class="item-meta">{{item.audit_requirement}}</text>
+          <text wx:if="{{item.next_check_at}}" class="item-meta">下次复核：{{item.next_check_at}}</text>
+          <text wx:if="{{item.recovery_hint}}" class="item-meta">恢复：{{item.recovery_hint}}</text>
         </view>
         <button wx:if="{{item.status !== 'connected'}}" class="pill-button" data-platform="{{item.platform}}" bindtap="useConnectorBlueprint">套用模板</button>
       </view>
@@ -242,7 +250,10 @@
     </picker>
     <input class="tab-input" value="{{forms.connector.credential_env_var}}" placeholder="凭证环境变量，例如 OPENAI_API_KEY" data-path="forms.connector.credential_env_var" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.connector.evidence_url}}" placeholder="可审计凭证或截图 URL（可选）" data-path="forms.connector.evidence_url" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.connector.owner}}" placeholder="负责人，例如 ops@example.com" data-path="forms.connector.owner" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.connector.next_check_at}}" placeholder="下次复核时间（ISO，例如 2026-07-24T09:00:00+08:00）" data-path="forms.connector.next_check_at" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.connector.last_error}}" placeholder="失败原因或恢复备注（回填时可写）" data-path="forms.connector.last_error" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.connector.recovery_hint}}" placeholder="恢复建议或人工检查路径" data-path="forms.connector.recovery_hint" bindinput="onFieldInput"></textarea>
     <textarea class="tab-textarea" value="{{forms.connector.notes}}" placeholder="记录接入限制、人工校验方法、失败恢复说明" data-path="forms.connector.notes" bindinput="onFieldInput"></textarea>
     <view class="action-stack top-gap">
       <button class="primary-button small wide-action" loading="{{savingSection === 'connector'}}" disabled="{{savingSection === 'connector'}}" bindtap="saveConnector">{{editingConnectorId ? '回填接入状态' : '保存监测接入'}}</button>
@@ -256,6 +267,7 @@
         </picker>
       </view>
       <input class="tab-input" value="{{forms.connectorRun.evidence_url}}" placeholder="本次校验的证据 URL" data-path="forms.connectorRun.evidence_url" bindinput="onFieldInput" />
+      <input class="tab-input" value="{{forms.connectorRun.next_check_at}}" placeholder="下次复核时间（ISO，可选）" data-path="forms.connectorRun.next_check_at" bindinput="onFieldInput" />
       <input class="tab-input" value="{{forms.connectorRun.last_error}}" placeholder="失败或恢复说明" data-path="forms.connectorRun.last_error" bindinput="onFieldInput" />
       <textarea class="tab-textarea" value="{{forms.connectorRun.notes}}" placeholder="记录执行步骤、人工确认人、恢复动作" data-path="forms.connectorRun.notes" bindinput="onFieldInput"></textarea>
       <button class="primary-button small" loading="{{savingSection === 'connector-run'}}" disabled="{{savingSection === 'connector-run'}}" bindtap="logConnectorRun">保存执行记录</button>
@@ -266,7 +278,10 @@
         <text class="item-meta">{{item.connector_type}} · {{item.status}} · {{item.verification_method}}</text>
         <text class="item-meta">新鲜度：{{item.freshness}} {{item.age_days !== null ? ('· ' + item.age_days + ' 天') : ''}}</text>
         <text wx:if="{{item.credential_env_var}}" class="item-meta">凭证：{{item.credential_env_var}} · {{item.credential_configured ? '已配置' : '待配置'}}</text>
+        <text wx:if="{{item.owner}}" class="item-meta">负责人：{{item.owner}}</text>
+        <text wx:if="{{item.next_check_at}}" class="item-meta">下次复核：{{item.next_check_at}} {{item.next_check_due ? '· 已到期' : ''}}</text>
         <text wx:if="{{item.evidence_url}}" class="item-meta">证据：{{item.evidence_url}}</text>
+        <text wx:if="{{item.recovery_hint}}" class="item-meta">恢复：{{item.recovery_hint}}</text>
         <text wx:if="{{item.last_error}}" class="item-meta">错误：{{item.last_error}}</text>
         <text wx:if="{{item.latest_run}}" class="item-meta">最近执行：{{item.latest_run.status}} · {{item.latest_run.created_at}}</text>
       </view>
@@ -568,10 +583,12 @@
       <view>
         <text class="item-title">{{item.title}}</text>
         <text class="item-meta">{{item.index_status}} · {{item.public_url || item.feishu_url || item.markdown_path}}</text>
+        <text class="item-meta">飞书：{{item.feishu_status || 'not_synced'}} · {{item.last_feishu_sync_at || '未同步'}}</text>
         <text wx:if="{{item.indexing_notes}}" class="item-meta">备注：{{item.indexing_notes}}</text>
         <text wx:if="{{item.error}}" class="item-meta">错误：{{item.error}}</text>
       </view>
       <view class="action-stack column">
+        <button class="pill-button" loading="{{savingSection === ('article-feishu-' + item.article_id)}}" data-article-id="{{item.article_id}}" bindtap="syncArticleFeishu">同步飞书</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="published" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已发布</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="indexed" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已收录</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="ai_cited" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">AI 已引用</button>

@@ -1096,6 +1096,89 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertEqual("observed", detail["experiment_events"][0]["status"])
         self.assertEqual(1, detail["project"]["reporting_summary"]["shared"])
 
+    def test_package_assignment_populates_sla_dates_and_status(self):
+        result = self._analyze()
+        project = main.geo_project_update(
+            result["task_id"],
+            main.GEOProjectUpdateRequest(
+                client_name="Acme",
+                brand_name="Acme AI",
+                package_id="pkg_geo_growth",
+            ),
+        )
+
+        self.assertEqual("pkg_geo_growth", project["package_id"])
+        self.assertIsNotNone(project["package_assigned_at"])
+        self.assertIsNotNone(project["package_due_at"])
+        self.assertIn(project["package_sla"]["status"], {"on_track", "at_risk", "tracking"})
+
+    def test_connector_owner_recheck_and_recovery_metadata_persist(self):
+        result = self._analyze()
+        connector = main.geo_monitor_connector_save(
+            main.GEOMonitorConnectorRequest(
+                task_id=result["task_id"],
+                platform="chatgpt",
+                connector_type="official_api",
+                provider_name="OpenAI Responses API",
+                status="planned",
+                owner="ops@example.com",
+                next_check_at="2026-07-24T09:00:00+08:00",
+                recovery_hint="补齐 OPENAI_API_KEY 后重新验证。",
+            )
+        )
+        main.geo_monitor_connector_update(
+            connector["connector_id"],
+            main.GEOMonitorConnectorStatusRequest(
+                status="failed",
+                owner="ops@example.com",
+                next_check_at="2026-07-25T09:00:00+08:00",
+                recovery_hint="记录 401 并轮换密钥。",
+            ),
+        )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertEqual("ops@example.com", detail["monitoring"]["connectors"][0]["owner"])
+        self.assertEqual("2026-07-25T09:00:00+08:00", detail["monitoring"]["connectors"][0]["next_check_at"])
+        self.assertIn("轮换密钥", detail["monitoring"]["connectors"][0]["recovery_hint"])
+
+    def test_report_feishu_export_and_article_feishu_resync_are_persisted(self):
+        result = self._analyze()
+        report = main.geo_report_generate(
+            main.GEOReportGenerateRequest(task_id=result["task_id"], period_label="近 7 天")
+        )
+        article = main.geo_article_create(
+            main.GEOArticleCreateRequest(
+                task_id=result["task_id"],
+                title="GEO Growth OS 飞书协作稿",
+                publish_to_feishu=False,
+            )
+        )
+        feishu_payload = {
+            "url": "https://feishu.cn/docx/demo",
+            "document_id": "doc_demo_123",
+        }
+        with patch("backend.main._create_feishu_doc_with_lark_cli", return_value={"ok": True, "url": feishu_payload["url"], "token": feishu_payload["document_id"], "payload": feishu_payload}):
+            export_result = asyncio.run(
+                main.export_report_feishu(
+                    "GEO Growth OS",
+                    "GEO Growth OS 近 7 天 GEO 报告",
+                    {"summary": {}, "findings": [], "recommendations": [], "metrics": {}, "task_id": result["task_id"], "report_id": report["report_id"]},
+                    task_id=result["task_id"],
+                    report_id=report["report_id"],
+                )
+            )
+            synced_article = main.geo_article_feishu_sync(
+                article["article_id"],
+                main.GEOArticleFeishuSyncRequest(),
+            )
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertTrue(export_result["ok"])
+        self.assertEqual("feishu_doc", detail["report_exports"][0]["format"])
+        self.assertEqual(feishu_payload["url"], detail["report_exports"][0]["external_url"])
+        self.assertEqual("synced", synced_article["feishu_status"])
+        self.assertEqual(feishu_payload["url"], synced_article["feishu_url"])
+
     def test_publication_events_rollback_and_connector_freshness_are_available(self):
         result, approved = self._approved_version()
         main.geo_project_update(

@@ -459,6 +459,11 @@ class GEOArticleCreateRequest(BaseModel):
     feishu_identity: str = "bot"
 
 
+class GEOArticleFeishuSyncRequest(BaseModel):
+    folder_token: str | None = None
+    feishu_identity: str = "bot"
+
+
 class GEOArticleIndexingRequest(BaseModel):
     public_url: str | None = None
     index_status: str = "published"
@@ -476,6 +481,9 @@ class GEOMonitorConnectorRequest(BaseModel):
     evidence_url: str | None = None
     verification_method: str = "human_recorded"
     notes: str | None = None
+    owner: str | None = None
+    next_check_at: str | None = None
+    recovery_hint: str | None = None
 
 
 class GEOMonitorConnectorStatusRequest(BaseModel):
@@ -484,6 +492,9 @@ class GEOMonitorConnectorStatusRequest(BaseModel):
     last_error: str | None = None
     notes: str | None = None
     verification_method: str | None = None
+    owner: str | None = None
+    next_check_at: str | None = None
+    recovery_hint: str | None = None
 
 
 class GEOMonitorConnectorRunRequest(BaseModel):
@@ -491,6 +502,7 @@ class GEOMonitorConnectorRunRequest(BaseModel):
     evidence_url: str | None = None
     notes: str | None = None
     last_error: str | None = None
+    next_check_at: str | None = None
 
 
 class GEOGapActionRequest(BaseModel):
@@ -548,6 +560,19 @@ def _json_loads(value: str | None, fallback):
         return fallback
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _iso_after_days(days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
 def _init_db() -> None:
     EXPORT_DIR.mkdir(exist_ok=True)
     with _db() as conn:
@@ -571,6 +596,8 @@ def _init_db() -> None:
                 business_goal TEXT,
                 service_tier TEXT,
                 package_id TEXT,
+                package_assigned_at TEXT,
+                package_due_at TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
@@ -940,6 +967,9 @@ def _init_db() -> None:
                 evidence_url TEXT,
                 verification_method TEXT NOT NULL,
                 notes TEXT,
+                owner TEXT,
+                next_check_at TEXT,
+                recovery_hint TEXT,
                 last_error TEXT,
                 last_checked_at TEXT,
                 created_at TEXT NOT NULL,
@@ -992,6 +1022,8 @@ def _init_db() -> None:
                 title TEXT NOT NULL,
                 format TEXT NOT NULL,
                 filepath TEXT,
+                external_url TEXT,
+                external_id TEXT,
                 status TEXT NOT NULL,
                 note TEXT,
                 actor TEXT NOT NULL,
@@ -1025,6 +1057,8 @@ def _init_db() -> None:
                 feishu_url TEXT,
                 feishu_token TEXT,
                 feishu_response TEXT,
+                feishu_status TEXT,
+                last_feishu_sync_at TEXT,
                 public_url TEXT,
                 index_status TEXT,
                 indexing_notes TEXT,
@@ -1059,6 +1093,8 @@ def _init_db() -> None:
             "indexing_plan": "TEXT",
             "indexed_at": "TEXT",
             "last_index_checked_at": "TEXT",
+            "feishu_status": "TEXT",
+            "last_feishu_sync_at": "TEXT",
         }.items():
             if column not in article_columns:
                 conn.execute(f"ALTER TABLE geo_articles ADD COLUMN {column} {definition}")
@@ -1082,9 +1118,19 @@ def _init_db() -> None:
             "business_goal": "TEXT",
             "service_tier": "TEXT",
             "package_id": "TEXT",
+            "package_assigned_at": "TEXT",
+            "package_due_at": "TEXT",
         }.items():
             if column not in task_columns:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+        connector_columns = {row["name"] for row in conn.execute("PRAGMA table_info(monitor_connectors)").fetchall()}
+        for column, definition in {
+            "owner": "TEXT",
+            "next_check_at": "TEXT",
+            "recovery_hint": "TEXT",
+        }.items():
+            if column not in connector_columns:
+                conn.execute(f"ALTER TABLE monitor_connectors ADD COLUMN {column} {definition}")
         monitor_columns = {row["name"] for row in conn.execute("PRAGMA table_info(monitor_queries)").fetchall()}
         for column, definition in {
             "query_type": "TEXT",
@@ -1117,6 +1163,13 @@ def _init_db() -> None:
         }.items():
             if column not in report_columns:
                 conn.execute(f"ALTER TABLE effect_reports ADD COLUMN {column} {definition}")
+        report_export_columns = {row["name"] for row in conn.execute("PRAGMA table_info(report_exports)").fetchall()}
+        for column, definition in {
+            "external_url": "TEXT",
+            "external_id": "TEXT",
+        }.items():
+            if column not in report_export_columns:
+                conn.execute(f"ALTER TABLE report_exports ADD COLUMN {column} {definition}")
         publication_columns = {row["name"] for row in conn.execute("PRAGMA table_info(publications)").fetchall()}
         for column, definition in {
             "live_status": "TEXT",
@@ -1140,10 +1193,9 @@ def _db_upsert_task(task: dict) -> None:
                 task_id, url, title, status, latest_result, latest_workflow,
                 latest_version_id, latest_retest, owner, target_score, todos,
                 client_name, brand_name, target_engines, business_goal, service_tier,
-                package_id,
-                created_at, updated_at
+                package_id, package_assigned_at, package_due_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 url=excluded.url,
                 title=excluded.title,
@@ -1161,6 +1213,8 @@ def _db_upsert_task(task: dict) -> None:
                 business_goal=excluded.business_goal,
                 service_tier=excluded.service_tier,
                 package_id=excluded.package_id,
+                package_assigned_at=excluded.package_assigned_at,
+                package_due_at=excluded.package_due_at,
                 updated_at=excluded.updated_at
             """,
             (
@@ -1181,6 +1235,8 @@ def _db_upsert_task(task: dict) -> None:
                 task.get("business_goal"),
                 task.get("service_tier"),
                 task.get("package_id"),
+                task.get("package_assigned_at"),
+                task.get("package_due_at"),
                 task.get("created_at") or _now_iso(),
                 task.get("updated_at") or _now_iso(),
             ),
@@ -1214,6 +1270,8 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "business_goal": row["business_goal"],
         "service_tier": row["service_tier"],
         "package_id": row["package_id"],
+        "package_assigned_at": row["package_assigned_at"],
+        "package_due_at": row["package_due_at"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1742,6 +1800,57 @@ def _reporting_summary(reports: list[dict], report_exports: list[dict]) -> dict:
     }
 
 
+def _connector_recovery_hint(connector: dict) -> str:
+    if connector.get("last_error"):
+        return f"优先处理最近失败：{connector['last_error']}"
+    if connector.get("credential_env_var") and not connector.get("credential_configured"):
+        return f"补齐环境变量 {connector['credential_env_var']} 后复核。"
+    if connector.get("status") == "failed":
+        return "检查凭证、人工审计步骤和证据链接后再重试。"
+    if connector.get("freshness") == "stale":
+        return "已超过 7 天未校验，建议重新执行采样并更新证据。"
+    return "保持固定问法、固定时间窗口，并补人工确认记录。"
+
+
+def _package_sla_view(task: dict, assigned_package: dict | None, package_delivery: list[dict]) -> dict | None:
+    if not assigned_package:
+        return None
+    assigned_at = _parse_iso_datetime(task.get("package_assigned_at"))
+    due_at = _parse_iso_datetime(task.get("package_due_at"))
+    done = len([item for item in package_delivery if item.get("status") == "done"])
+    blocked = len([item for item in package_delivery if item.get("status") == "blocked"])
+    total = len(package_delivery)
+    percent = round(done * 100 / total) if total else 0
+    now = datetime.now(timezone.utc)
+    status = "tracking"
+    days_remaining = None
+    overdue_days = 0
+    if due_at:
+        days_remaining = (due_at.date() - now.date()).days
+        if total and done >= total:
+            status = "completed"
+        elif days_remaining < 0:
+            status = "overdue"
+            overdue_days = abs(days_remaining)
+        elif days_remaining <= 3:
+            status = "at_risk"
+        else:
+            status = "on_track"
+    if blocked and status not in {"completed", "overdue"}:
+        status = "blocked"
+    return {
+        "assigned_at": assigned_at.isoformat() if assigned_at else None,
+        "due_at": due_at.isoformat() if due_at else None,
+        "days_remaining": days_remaining,
+        "overdue_days": overdue_days,
+        "status": status,
+        "completion_percent": percent,
+        "done": done,
+        "blocked": blocked,
+        "total": total,
+    }
+
+
 def _experiment_summary(experiments: list[dict], events: list[dict]) -> dict:
     running = [item for item in experiments if item.get("status") == "running"]
     blocked = [item for item in experiments if item.get("status") in {"blocked", "rollback"}]
@@ -1987,6 +2096,7 @@ def _project_view(
         if score < target_score:
             todos.append(f"将 GEO 分数从 {score} 提升到 {target_score}")
     package_delivery = _package_delivery_view(task, assigned_package, monitoring, gap_actions, experiments, attributions, reports)
+    package_sla = _package_sla_view(task, assigned_package, package_delivery)
     action_progress = _gap_action_progress(gap_actions)
     experiment_summary = _experiment_summary(experiments, experiment_events)
     attribution_summary = _attribution_summary(attributions)
@@ -2011,6 +2121,9 @@ def _project_view(
         "assigned_package": assigned_package,
         "package_id": task.get("package_id"),
         "package_name": assigned_package.get("name") if assigned_package else None,
+        "package_assigned_at": task.get("package_assigned_at"),
+        "package_due_at": task.get("package_due_at"),
+        "package_sla": package_sla,
         "recommended_package": _recommend_service_package(
             task, active_packages, monitoring, experiments, attributions, reports
         ),
@@ -2400,6 +2513,9 @@ def _monitor_connector_from_row(row: sqlite3.Row) -> dict:
         "evidence_url": row["evidence_url"],
         "verification_method": row["verification_method"],
         "notes": row["notes"],
+        "owner": row["owner"],
+        "next_check_at": row["next_check_at"],
+        "recovery_hint": row["recovery_hint"],
         "last_error": row["last_error"],
         "last_checked_at": row["last_checked_at"],
         "created_at": row["created_at"],
@@ -2437,9 +2553,9 @@ def _db_save_monitor_connector(item: dict) -> None:
             """
             INSERT INTO monitor_connectors (
                 connector_id, task_id, platform, connector_type, provider_name, status,
-                credential_env_var, evidence_url, verification_method, notes, last_error,
-                last_checked_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                credential_env_var, evidence_url, verification_method, notes, owner,
+                next_check_at, recovery_hint, last_error, last_checked_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(connector_id) DO UPDATE SET
                 platform=excluded.platform,
                 connector_type=excluded.connector_type,
@@ -2449,6 +2565,9 @@ def _db_save_monitor_connector(item: dict) -> None:
                 evidence_url=excluded.evidence_url,
                 verification_method=excluded.verification_method,
                 notes=excluded.notes,
+                owner=excluded.owner,
+                next_check_at=excluded.next_check_at,
+                recovery_hint=excluded.recovery_hint,
                 last_error=excluded.last_error,
                 last_checked_at=excluded.last_checked_at,
                 updated_at=excluded.updated_at
@@ -2464,6 +2583,9 @@ def _db_save_monitor_connector(item: dict) -> None:
                 item.get("evidence_url"),
                 item["verification_method"],
                 item.get("notes"),
+                item.get("owner"),
+                item.get("next_check_at"),
+                item.get("recovery_hint"),
                 item.get("last_error"),
                 item.get("last_checked_at"),
                 item["created_at"],
@@ -2928,7 +3050,10 @@ def _db_save_report(item: dict) -> None:
 
 
 def _report_export_from_row(row: sqlite3.Row) -> dict:
-    return dict(row)
+    return {
+        **dict(row),
+        "is_external": bool(row["external_url"]),
+    }
 
 
 def _package_delivery_update_from_row(row: sqlite3.Row) -> dict:
@@ -3011,8 +3136,8 @@ def _db_save_report_export(item: dict) -> None:
             """
             INSERT INTO report_exports (
                 export_id, report_id, task_id, project_name, title, format,
-                filepath, status, note, actor, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                filepath, external_url, external_id, status, note, actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item["export_id"],
@@ -3022,6 +3147,8 @@ def _db_save_report_export(item: dict) -> None:
                 item["title"],
                 item["format"],
                 item.get("filepath"),
+                item.get("external_url"),
+                item.get("external_id"),
                 item["status"],
                 item.get("note"),
                 item["actor"],
@@ -3159,13 +3286,15 @@ def _query_templates(brand_name: str, page_type: str, market: str, competitors: 
 def _infer_page_type_from_url(url: str | None) -> str:
     path = (urlparse(url or "").path or "").lower()
     if any(token in path for token in ["transport", "pass", "rail", "jr"]):
-        return "transport_ticket"
+        return "transport_pass"
     if any(token in path for token in ["things-to-do", "activity", "experience"]):
         return "local_activity"
     if any(token in path for token in ["ticket", "attraction"]):
         return "attraction_ticket"
     if any(token in path for token in ["guide", "travel", "itinerary"]):
         return "destination_guide"
+    if any(token in path for token in ["campaign", "promo", "sale", "deal"]):
+        return "campaign_landing"
     return "landing_page"
 
 
@@ -3423,12 +3552,12 @@ def _monitoring_summary(task_id: str) -> dict:
         freshness = "never_checked"
         checked_at = item.get("last_checked_at") or (item["latest_run"] or {}).get("created_at")
         if checked_at:
-            try:
-                last_checked = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+            last_checked = _parse_iso_datetime(checked_at)
+            if last_checked:
                 age_days = max(0, (datetime.now(timezone.utc) - last_checked).days)
                 freshness = "fresh" if age_days <= 7 else "stale"
                 item["age_days"] = age_days
-            except ValueError:
+            else:
                 item["age_days"] = None
         else:
             item["age_days"] = None
@@ -3439,6 +3568,9 @@ def _monitoring_summary(task_id: str) -> dict:
             stale_connectors += 1
         if item.get("credential_env_var") and not item.get("credential_configured"):
             missing_credentials += 1
+        item["recovery_hint"] = item.get("recovery_hint") or _connector_recovery_hint(item)
+        next_check = _parse_iso_datetime(item.get("next_check_at"))
+        item["next_check_due"] = bool(next_check and next_check <= datetime.now(timezone.utc))
     task = _db_get_task(task_id) or {"task_id": task_id, "target_engines": []}
     source_map = _source_map(task_id)
     trust_anchors = _db_trust_anchors(task_id)
@@ -3884,6 +4016,8 @@ def _article_from_row(row: sqlite3.Row) -> dict:
         "feishu_url": row["feishu_url"],
         "feishu_token": row["feishu_token"],
         "feishu_response": _json_loads(row["feishu_response"], None),
+        "feishu_status": row["feishu_status"] or ("synced" if row["feishu_url"] else "not_synced"),
+        "last_feishu_sync_at": row["last_feishu_sync_at"],
         "public_url": row["public_url"],
         "index_status": row["index_status"] or "draft",
         "indexing_notes": row["indexing_notes"],
@@ -3965,10 +4099,10 @@ def _db_save_article(item: dict) -> None:
             """
             INSERT INTO geo_articles (
                 article_id, task_id, title, status, markdown_path, feishu_url,
-                feishu_token, feishu_response, public_url, index_status,
+                feishu_token, feishu_response, feishu_status, last_feishu_sync_at, public_url, index_status,
                 indexing_notes, indexing_plan, indexed_at, last_index_checked_at,
                 error, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(article_id) DO UPDATE SET
                 title=excluded.title,
                 status=excluded.status,
@@ -3976,6 +4110,8 @@ def _db_save_article(item: dict) -> None:
                 feishu_url=excluded.feishu_url,
                 feishu_token=excluded.feishu_token,
                 feishu_response=excluded.feishu_response,
+                feishu_status=excluded.feishu_status,
+                last_feishu_sync_at=excluded.last_feishu_sync_at,
                 public_url=excluded.public_url,
                 index_status=excluded.index_status,
                 indexing_notes=excluded.indexing_notes,
@@ -3994,6 +4130,8 @@ def _db_save_article(item: dict) -> None:
                 item.get("feishu_url"),
                 item.get("feishu_token"),
                 _json_dumps(item.get("feishu_response")) if item.get("feishu_response") else None,
+                item.get("feishu_status"),
+                item.get("last_feishu_sync_at"),
                 item.get("public_url"),
                 item.get("index_status") or "draft",
                 item.get("indexing_notes"),
@@ -4289,6 +4427,130 @@ def _infer_target_users(title: str, content: str) -> list[str]:
     return users[:4] or ["users researching this page before purchase"]
 
 
+def _page_type_template(page_type: str, primary_entity: str, market: str, target_users: list[str]) -> dict:
+    normalized = (page_type or "").strip().lower()
+    mapping = {
+        "transport_pass": {
+            "search_intents": ["route_coverage", "eligibility", "price_compare", "how_to_redeem", "worth_it"],
+            "gaps": ["补充线路覆盖图、是否适合多城行程和兑换步骤。"] ,
+            "modules": [
+                {
+                    "module_type": "coverage_matrix",
+                    "title": f"{primary_entity} 覆盖范围与适用线路",
+                    "body": f"按 {market} 旅客最常走的城市对，说明 {primary_entity} 覆盖范围、适用人群和不适用场景。",
+                    "target_position": "after ai summary",
+                    "priority": "high",
+                },
+                {
+                    "module_type": "route_selector",
+                    "title": "按行程选择合适方案",
+                    "body": "用 1-3 日、跨城、亲子、首次到访等场景给出推荐路径和排除条件。",
+                    "target_position": "before product cards",
+                    "priority": "high",
+                },
+            ],
+            "faq": [
+                {
+                    "question": f"{primary_entity} 适合哪些行程？",
+                    "answer": "适合跨城移动频繁、需要提前比较覆盖范围和兑换规则的旅客；单点短途通常要先比较单次票价。",
+                    "source_type": "generated",
+                    "priority": "high",
+                }
+            ],
+            "conversion_tips": ["在首屏直接给出适合/不适合人群和兑换前检查项。"],
+        },
+        "attraction_ticket": {
+            "search_intents": ["opening_hours", "best_time", "ticket_compare", "family_fit", "refund_policy"],
+            "gaps": ["补充游玩时长、预约要求、入场限制和适合人群。"] ,
+            "modules": [
+                {
+                    "module_type": "visit_planner",
+                    "title": f"{primary_entity} 游玩决策清单",
+                    "body": "说明推荐停留时长、最佳到访时间、是否需要预约，以及家庭/情侣/首次游客的选择建议。",
+                    "target_position": "after hero",
+                    "priority": "high",
+                }
+            ],
+            "faq": [
+                {
+                    "question": f"{primary_entity} 值得提前预订吗？",
+                    "answer": "如果存在预约名额、旺季排队或家庭同行需求，应优先比较入场时间、退改条件和现场购票风险。",
+                    "source_type": "generated",
+                    "priority": "high",
+                }
+            ],
+            "conversion_tips": ["把游玩时长、最佳拍照时段和入场限制放到价格上方。"],
+        },
+        "local_activity": {
+            "search_intents": ["experience_fit", "duration", "meeting_point", "what_to_expect", "weather_risk"],
+            "gaps": ["补充集合点、天气风险、体验流程和适合人群。"] ,
+            "modules": [
+                {
+                    "module_type": "experience_flow",
+                    "title": "活动流程与出发前准备",
+                    "body": "按集合、体验、结束三个阶段解释需要携带什么、遇到天气变化怎么办，以及常见取消边界。",
+                    "target_position": "after hero",
+                    "priority": "high",
+                }
+            ],
+            "faq": [
+                {
+                    "question": "这个活动更适合哪类旅客？",
+                    "answer": f"优先服务 {', '.join(target_users[:2]) if target_users else '重视体验细节和安排确定性的旅客'}，需要提前说明体力要求、集合方式和取消条件。",
+                    "source_type": "generated",
+                    "priority": "medium",
+                }
+            ],
+            "conversion_tips": ["把集合点地图、天气说明和取消边界做成短块，方便 AI 摘要。"],
+        },
+        "destination_guide": {
+            "search_intents": ["first_time_plan", "where_to_stay", "how_many_days", "seasonality", "transport_mix"],
+            "gaps": ["补充 1 日 / 3 日路线、季节差异和交通组合建议。"] ,
+            "modules": [
+                {
+                    "module_type": "itinerary_blocks",
+                    "title": f"{market} 旅客常用行程模板",
+                    "body": "按首次到访、亲子和深度游三类场景给出行程块、交通衔接和预算边界。",
+                    "target_position": "after ai summary",
+                    "priority": "high",
+                }
+            ],
+            "faq": [
+                {
+                    "question": f"第一次去 {market} 应该怎么安排？",
+                    "answer": "先给出天数建议、核心区域分布、旺季注意事项和交通换乘逻辑，再引导到具体产品页或专题页。",
+                    "source_type": "generated",
+                    "priority": "high",
+                }
+            ],
+            "conversion_tips": ["让结论先行，并给出不同天数与预算的线路分支。"],
+        },
+        "campaign_landing": {
+            "search_intents": ["campaign_offer", "limited_time", "eligibility", "claim_steps", "comparison"],
+            "gaps": ["补充活动截止时间、适用条件、领取路径和失败恢复说明。"] ,
+            "modules": [
+                {
+                    "module_type": "campaign_rules",
+                    "title": "活动规则与领取路径",
+                    "body": "把有效期、适用条件、领取步骤、不可叠加说明和客服恢复路径放到同一块。",
+                    "target_position": "below hero",
+                    "priority": "high",
+                }
+            ],
+            "faq": [
+                {
+                    "question": "活动失败或未生效时怎么处理？",
+                    "answer": "需要提供可验证的规则、人工核验入口和恢复路径，避免只写模糊营销话术。",
+                    "source_type": "generated",
+                    "priority": "medium",
+                }
+            ],
+            "conversion_tips": ["把截止时间和适用条件与 CTA 放在同一屏。"],
+        },
+    }
+    return mapping.get(normalized, {"search_intents": [], "gaps": [], "modules": [], "faq": [], "conversion_tips": []})
+
+
 def _build_content_package(
     url: str,
     title: str,
@@ -4299,6 +4561,7 @@ def _build_content_package(
     terms = _extract_terms(title, content)
     target_users = _infer_target_users(title, content)
     primary_entity = terms["entities"][0]
+    page_type_template = _page_type_template(request.page_type, primary_entity, request.market, target_users)
     summary = (
         f"{title} is a {request.page_goal} for users evaluating {primary_entity}. "
         "The page should make the product easy for AI systems to identify, summarize, "
@@ -4314,12 +4577,15 @@ def _build_content_package(
         "language": request.language,
         "current_score": score_result.get("geo_score"),
     }
-    search_intents = ["comparison", "price", "how-to", "booking", "eligibility"]
+    search_intents = ["comparison", "price", "how-to", "booking", "eligibility"] + (page_type_template.get("search_intents") or [])
+    search_intents = list(dict.fromkeys(search_intents))
     content_gaps = score_result.get("recommendations") or [
         "Add an AI-readable summary near the top of the page.",
         "Add FAQ answers for high-intent user questions.",
         "Add comparison and proof points for purchase confidence.",
     ]
+    content_gaps.extend(page_type_template.get("gaps") or [])
+    content_gaps = list(dict.fromkeys(content_gaps))
 
     injection_modules = [
         {
@@ -4352,6 +4618,7 @@ def _build_content_package(
             "priority": "medium",
         },
     ]
+    injection_modules.extend(page_type_template.get("modules") or [])
 
     faq_items = [
         {
@@ -4373,6 +4640,7 @@ def _build_content_package(
             "priority": "medium",
         },
     ]
+    faq_items.extend(page_type_template.get("faq") or [])
 
     schema_suggestions = [
         {
@@ -4413,6 +4681,8 @@ def _build_content_package(
         "Use trust labels near product cards, such as instant confirmation, route coverage, and redemption clarity.",
         "Keep a sticky mobile CTA visible after users scroll past the first product section.",
     ]
+    conversion_tips.extend(page_type_template.get("conversion_tips") or [])
+    conversion_tips = list(dict.fromkeys(conversion_tips))
 
     return {
         "page_summary": page_summary,
@@ -5423,10 +5693,19 @@ def geo_project_update(task_id: str, request: GEOProjectUpdateRequest):
     if request.service_tier is not None:
         task["service_tier"] = request.service_tier.strip() or None
     if request.package_id is not None:
+        previous_package_id = task.get("package_id")
         package_id = request.package_id.strip() or None
         if package_id and not _db_get_service_package(package_id):
             raise HTTPException(status_code=404, detail="Service package not found.")
         task["package_id"] = package_id
+        if package_id != previous_package_id:
+            if package_id:
+                assigned_package = _db_get_service_package(package_id)
+                task["package_assigned_at"] = _now_iso()
+                task["package_due_at"] = _iso_after_days(int((assigned_package or {}).get("delivery_days") or 14))
+            else:
+                task["package_assigned_at"] = None
+                task["package_due_at"] = None
     task["updated_at"] = _now_iso()
     _db_upsert_task(task)
     if task.get("brand_name") and task.get("target_engines"):
@@ -5763,6 +6042,9 @@ def geo_monitor_connector_save(request: GEOMonitorConnectorRequest):
         "evidence_url": (request.evidence_url or "").strip() or None,
         "verification_method": request.verification_method.strip().lower() or "human_recorded",
         "notes": (request.notes or "").strip() or None,
+        "owner": (request.owner or "").strip() or None,
+        "next_check_at": (request.next_check_at or "").strip() or None,
+        "recovery_hint": (request.recovery_hint or "").strip() or None,
         "last_error": existing.get("last_error") if existing else None,
         "last_checked_at": existing.get("last_checked_at") if existing else None,
         "created_at": existing["created_at"] if existing else now,
@@ -5783,6 +6065,12 @@ def geo_monitor_connector_update(connector_id: str, request: GEOMonitorConnector
     item["last_error"] = (request.last_error or "").strip() or None
     item["notes"] = (request.notes or "").strip() or item.get("notes")
     item["verification_method"] = (request.verification_method or "").strip().lower() or item["verification_method"]
+    if request.owner is not None:
+        item["owner"] = request.owner.strip() or None
+    if request.next_check_at is not None:
+        item["next_check_at"] = request.next_check_at.strip() or None
+    if request.recovery_hint is not None:
+        item["recovery_hint"] = request.recovery_hint.strip() or None
     item["last_checked_at"] = _now_iso()
     item["updated_at"] = _now_iso()
     _db_save_monitor_connector(item)
@@ -5812,6 +6100,8 @@ def geo_monitor_connector_run_save(connector_id: str, request: GEOMonitorConnect
     item["evidence_url"] = run.get("evidence_url") or item.get("evidence_url")
     item["last_error"] = run.get("last_error")
     item["notes"] = run.get("notes") or item.get("notes")
+    if request.next_check_at is not None:
+        item["next_check_at"] = request.next_check_at.strip() or None
     item["last_checked_at"] = now
     item["updated_at"] = now
     _db_save_monitor_connector(item)
@@ -6529,6 +6819,8 @@ def geo_article_create(request: GEOArticleCreateRequest):
         "feishu_url": None,
         "feishu_token": None,
         "feishu_response": None,
+        "feishu_status": "not_synced",
+        "last_feishu_sync_at": None,
         "public_url": None,
         "index_status": "feishu_created" if request.publish_to_feishu else "draft",
         "indexing_notes": None,
@@ -6540,10 +6832,12 @@ def geo_article_create(request: GEOArticleCreateRequest):
         "updated_at": now,
     }
     if request.publish_to_feishu:
-        feishu = _create_feishu_doc_with_lark_cli(title, markdown_path, request.folder_token, request.feishu_identity)
+        feishu = _sync_markdown_to_feishu(title, markdown_path, request.folder_token, request.feishu_identity)
         article["feishu_response"] = feishu.get("payload") or {"ok": feishu.get("ok")}
-        article["feishu_url"] = feishu.get("url")
-        article["feishu_token"] = feishu.get("token")
+        article["feishu_url"] = feishu.get("external_url")
+        article["feishu_token"] = feishu.get("external_id")
+        article["last_feishu_sync_at"] = now
+        article["feishu_status"] = "synced" if feishu.get("ok") else "failed"
         if feishu.get("ok"):
             article["status"] = "feishu_created"
             article["index_status"] = "feishu_created"
@@ -6572,6 +6866,53 @@ def geo_article_create(request: GEOArticleCreateRequest):
         article_id,
         request.task_id,
         outcome=article["status"],
+        detail={"feishu_url": article.get("feishu_url"), "markdown_path": article.get("markdown_path")},
+    )
+    return article
+
+
+@app.post("/geo/articles/{article_id}/feishu-sync")
+def geo_article_feishu_sync(article_id: str, request: GEOArticleFeishuSyncRequest):
+    article = _db_get_article(article_id)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found.")
+    markdown_path = Path(article.get("markdown_path") or "")
+    result = _sync_markdown_to_feishu(article["title"], markdown_path, request.folder_token, request.feishu_identity)
+    article["feishu_response"] = result.get("payload") or {"ok": result.get("ok")}
+    article["feishu_url"] = result.get("external_url")
+    article["feishu_token"] = result.get("external_id")
+    article["last_feishu_sync_at"] = _now_iso()
+    article["feishu_status"] = "synced" if result.get("ok") else "failed"
+    if result.get("ok"):
+        article["status"] = "feishu_created"
+        article["index_status"] = "feishu_created"
+        article["error"] = None
+    else:
+        article["status"] = "feishu_failed_local_draft"
+        article["error"] = result.get("error") or "Failed to sync article to Feishu."
+    task = _db_get_task(article["task_id"])
+    article["indexing_plan"] = _article_indexing_plan(task or {}, article["title"], article.get("feishu_url"), article.get("public_url"), article.get("index_status") or "draft")
+    article["updated_at"] = _now_iso()
+    _db_save_article(article)
+    _db_save_article_index_event(
+        {
+            "event_id": f"aie_{uuid.uuid4().hex[:12]}",
+            "article_id": article["article_id"],
+            "task_id": article["task_id"],
+            "index_status": article["index_status"],
+            "public_url": article.get("public_url"),
+            "notes": "飞书同步成功。" if result.get("ok") else article.get("error"),
+            "actor": _current_actor(),
+            "created_at": article["updated_at"],
+        }
+    )
+    _db_add_audit(
+        _current_actor(),
+        "sync_article_feishu",
+        "article",
+        article_id,
+        article["task_id"],
+        outcome=article["feishu_status"],
         detail={"feishu_url": article.get("feishu_url"), "markdown_path": article.get("markdown_path")},
     )
     return article
@@ -6711,6 +7052,8 @@ def _record_report_export(
         "title": title,
         "format": format_name,
         "filepath": result.get("filepath") or result.get("filename"),
+        "external_url": result.get("external_url"),
+        "external_id": result.get("external_id"),
         "status": "success" if result.get("ok") else "failed",
         "note": result.get("note") or result.get("message") or result.get("error"),
         "actor": _current_actor(),
@@ -6725,9 +7068,27 @@ def _record_report_export(
             export["export_id"],
             task_id,
             outcome=export["status"],
-            detail={"format": format_name, "report_id": report_id, "filepath": export["filepath"]},
+            detail={
+                "format": format_name,
+                "report_id": report_id,
+                "filepath": export["filepath"],
+                "external_url": export["external_url"],
+            },
         )
     return export
+
+
+def _sync_markdown_to_feishu(title: str, markdown_path: Path, folder_token: str | None = None, identity: str = "bot") -> dict:
+    if not markdown_path.exists():
+        return {"ok": False, "error": f"Markdown file not found: {markdown_path}"}
+    synced = _create_feishu_doc_with_lark_cli(title, markdown_path, folder_token, identity)
+    return {
+        "ok": bool(synced.get("ok")),
+        "external_url": synced.get("url"),
+        "external_id": synced.get("token"),
+        "payload": synced.get("payload"),
+        "error": synced.get("error"),
+    }
 
 
 def _article_factor_rows(task: dict, result: dict, monitoring: dict) -> list[dict]:
@@ -7429,6 +7790,42 @@ async def export_report_pdf(
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"PDF export failed: {str(exc)}") from exc
+
+
+@app.post("/reports/export/feishu")
+async def export_report_feishu(
+    project_name: str,
+    title: str,
+    data: dict,
+    folder_token: str | None = None,
+    identity: str = "bot",
+    task_id: str | None = None,
+    report_id: str | None = None,
+):
+    """Export report to a Feishu document via markdown handoff."""
+    try:
+        from .report_export_service import get_report_export_service
+        service = get_report_export_service()
+        markdown_result = service.generate_markdown_report(title, data, project_name)
+        if not markdown_result.get("ok"):
+            _record_report_export("feishu_doc", markdown_result, title, project_name, task_id, report_id)
+            return markdown_result
+        markdown_path = Path(markdown_result["filepath"])
+        synced = _sync_markdown_to_feishu(title, markdown_path, folder_token, identity)
+        result = {
+            "ok": synced.get("ok", False),
+            "format": "feishu_doc",
+            "filepath": markdown_result.get("filepath"),
+            "filename": markdown_result.get("filename"),
+            "external_url": synced.get("external_url"),
+            "external_id": synced.get("external_id"),
+            "note": synced.get("error"),
+            "payload": synced.get("payload"),
+        }
+        _record_report_export("feishu_doc", result, title, project_name, task_id, report_id)
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Feishu export failed: {str(exc)}") from exc
 
 
 # Claude URL Analysis API Endpoints

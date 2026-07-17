@@ -229,6 +229,10 @@ function createGeoArticle(payload) {
   return request("/geo/articles/create", payload)
 }
 
+function syncGeoArticleFeishu(articleId, payload = {}) {
+  return request(`/geo/articles/${articleId}/feishu-sync`, payload)
+}
+
 function updateGeoArticleIndexing(articleId, payload) {
   return request(`/geo/articles/${articleId}/indexing`, payload, "PATCH")
 }
@@ -332,6 +336,18 @@ function exportReportPDF(projectName, title, data) {
   }, "POST")
 }
 
+function exportReportFeishu(projectName, title, data, folderToken = "", identity = "bot") {
+  return request("/reports/export/feishu", {
+    project_name: projectName,
+    title,
+    data,
+    folder_token: folderToken,
+    identity,
+    task_id: data.task_id,
+    report_id: data.report_id
+  }, "POST")
+}
+
 // Claude URL Analysis Functions
 function analyzeWithClaude(url, title = null, analysisType = "comprehensive", forceMode = null, clientName = null, brandName = null, businessGoal = null) {
   return request("/geo/analyze-with-claude", {
@@ -410,6 +426,7 @@ module.exports = {
   saveGapAction,
   updateGapAction,
   createGeoArticle,
+  syncGeoArticleFeishu,
   updateGeoArticleIndexing,
   getGeoArticleIndexingChecklist,
   feishuAuthCallback,
@@ -426,6 +443,7 @@ module.exports = {
   exportReportJSON,
   exportReportDocx,
   exportReportPDF,
+  exportReportFeishu,
   analyzeWithClaude,
   analyzeClaudeGapAnalysis,
   getClaudeConfig,

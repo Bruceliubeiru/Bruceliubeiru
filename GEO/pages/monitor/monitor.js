@@ -18,6 +18,7 @@ const {
   saveAttribution,
   updateAttribution,
   createGeoArticle,
+  syncGeoArticleFeishu,
   updateGeoArticleIndexing,
   getGeoArticleIndexingChecklist,
   parseMonitoringSources,
@@ -28,6 +29,7 @@ const {
   exportReportJSON,
   exportReportDocx,
   exportReportPDF,
+  exportReportFeishu,
   retryPublication,
   verifyPublication,
   schedulePublicationVerify,
@@ -40,7 +42,8 @@ const reportExportOptions = [
   { label: "HTML", key: "html", action: exportReportHTML },
   { label: "JSON", key: "json", action: exportReportJSON },
   { label: "Word(.docx)", key: "docx", action: exportReportDocx },
-  { label: "PDF", key: "pdf", action: exportReportPDF }
+  { label: "PDF", key: "pdf", action: exportReportPDF },
+  { label: "Feishu Doc", key: "feishu_doc", action: exportReportFeishu }
 ]
 
 function buildStats(history = {}) {
@@ -92,7 +95,10 @@ function emptyProjectForms() {
       evidence_url: "",
       verification_method: "human_recorded",
       notes: "",
-      last_error: ""
+      last_error: "",
+      owner: "",
+      next_check_at: "",
+      recovery_hint: ""
     },
     sourceParse: {
       query_id: "",
@@ -147,12 +153,14 @@ function emptyProjectForms() {
       status: "connected",
       notes: "",
       evidence_url: "",
-      last_error: ""
+      last_error: "",
+      next_check_at: ""
     },
     article: {
       title: "",
       publish_to_feishu: true,
       folder_token: "",
+      feishu_identity: "bot",
       public_url: "",
       use_ai: false,
       notes: ""
@@ -544,11 +552,20 @@ Page({
         if (!selected) return
         this.setData({ reportExportingId: reportId, error: "" })
         try {
-          const result = await selected.action(projectName, `${projectName} ${report.period_label} GEO 报告`, payload)
-          const message = `${selected.key}: ${result.filepath || result.filename || "已导出"}`
+          const result = selected.key === "feishu_doc"
+            ? await selected.action(
+              projectName,
+              `${projectName} ${report.period_label} GEO 报告`,
+              payload,
+              this.data.forms.article.folder_token.trim(),
+              this.data.forms.article.feishu_identity
+            )
+            : await selected.action(projectName, `${projectName} ${report.period_label} GEO 报告`, payload)
+          const target = result.external_url || result.filepath || result.filename || "已导出"
+          const message = `${selected.key}: ${target}`
           this.setData({ reportExportingId: "", lastReportExport: message })
           wx.setClipboardData({
-            data: result.filepath || result.filename || message,
+            data: target,
             success() {
               wx.showToast({ title: "导出路径已复制", icon: "success" })
             }
@@ -576,9 +593,13 @@ Page({
       "forms.connector.verification_method": item.verification_method || "human_recorded",
       "forms.connector.notes": item.notes || "",
       "forms.connector.last_error": item.last_error || "",
+      "forms.connector.owner": item.owner || "",
+      "forms.connector.next_check_at": item.next_check_at || "",
+      "forms.connector.recovery_hint": item.recovery_hint || "",
       "forms.connectorRun.status": item.status || "connected",
       "forms.connectorRun.evidence_url": item.evidence_url || "",
       "forms.connectorRun.last_error": item.last_error || "",
+      "forms.connectorRun.next_check_at": item.next_check_at || "",
       "forms.connectorRun.notes": ""
     })
   },
@@ -602,7 +623,8 @@ Page({
       "forms.connector.connector_type": item.connector_type || "manual_audit",
       "forms.connector.credential_env_var": item.credential_env_var || "",
       "forms.connector.verification_method": item.verification_method || "ops_checklist",
-      "forms.connector.notes": item.audit_requirement || ""
+      "forms.connector.notes": item.audit_requirement || "",
+      "forms.connector.recovery_hint": item.audit_requirement || ""
     })
   },
 
@@ -623,7 +645,10 @@ Page({
           evidence_url: form.evidence_url.trim(),
           last_error: form.last_error.trim(),
           notes: form.notes.trim(),
-          verification_method: form.verification_method
+          verification_method: form.verification_method,
+          owner: form.owner.trim(),
+          next_check_at: form.next_check_at.trim(),
+          recovery_hint: form.recovery_hint.trim()
         })
       } else {
         await saveMonitoringConnector({
@@ -635,7 +660,10 @@ Page({
           credential_env_var: form.credential_env_var.trim(),
           evidence_url: form.evidence_url.trim(),
           verification_method: form.verification_method,
-          notes: form.notes.trim()
+          notes: form.notes.trim(),
+          owner: form.owner.trim(),
+          next_check_at: form.next_check_at.trim(),
+          recovery_hint: form.recovery_hint.trim()
         })
       }
       this.clearConnectorDraft()
@@ -675,7 +703,8 @@ Page({
         status,
         notes: form.notes.trim(),
         evidence_url: form.evidence_url.trim(),
-        last_error: form.last_error.trim()
+        last_error: form.last_error.trim(),
+        next_check_at: form.next_check_at.trim()
       })
       const forms = this.data.forms
       forms.connectorRun = emptyProjectForms().connectorRun
@@ -1063,7 +1092,8 @@ Page({
         title: form.title.trim(),
         folder_token: form.folder_token.trim(),
         use_ai: !!form.use_ai,
-        publish_to_feishu: !!form.publish_to_feishu
+        publish_to_feishu: !!form.publish_to_feishu,
+        feishu_identity: form.feishu_identity
       })
       const forms = this.data.forms
       forms.article = emptyProjectForms().article
@@ -1121,6 +1151,25 @@ Page({
       wx.showToast({ title: "文章状态已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新文章状态失败" })
+    }
+  },
+
+  async syncArticleFeishu(event) {
+    const task = this.data.selectedTask
+    const articleId = event.currentTarget.dataset.articleId
+    const form = this.data.forms.article
+    if (!task || !articleId) return
+    this.setData({ savingSection: `article-feishu-${articleId}`, error: "" })
+    try {
+      await syncGeoArticleFeishu(articleId, {
+        folder_token: form.folder_token.trim(),
+        feishu_identity: form.feishu_identity
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "飞书同步完成", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "飞书同步失败" })
     }
   },
 

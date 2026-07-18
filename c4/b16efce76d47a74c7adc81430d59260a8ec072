@@ -1,0 +1,37 @@
+GEO/backend/main.py
+  s_696b080ac0f4fa::t_74661e3c062fb9 425,491-495,5942-5946,6073-6104
+GEO/pages/monitor/monitor.js
+  s_696b080ac0f4fa::t_1ee40ed87a93fa 1392,1399-1403,1405-1411,1416,1420-1424,1431-1458
+  s_696b080ac0f4fa::t_5e6b29cea3e89e 302
+  s_696b080ac0f4fa::t_2528f14f74fe33 700,703-706
+  s_696b080ac0f4fa::t_cd486dd6917221 551-577
+  s_696b080ac0f4fa::t_2d880a760ad3dd 1277
+  s_696b080ac0f4fa::t_d5b9b22d6e82c8 187-198,219-225
+  s_696b080ac0f4fa::t_4c305333c8bbdb 22
+  s_696b080ac0f4fa::t_253e3d116fd468 271,360
+  s_696b080ac0f4fa::t_f02ee4346427cd 879-882
+  s_696b080ac0f4fa::t_a2f955b3a18bce 417,432-444,447-449,470
+GEO/docs/closed-loop-readiness.md
+  s_696b080ac0f4fa::t_01594aec115466 68
+GEO/tests/test_geo_workflow.py
+  s_696b080ac0f4fa::t_4973b9244f1f27 959,969,1146-1149,1157-1160
+GEO/pages/monitor/monitor.wxml
+  s_696b080ac0f4fa::t_1402250c1b4e70 94-103,105,660-666,668-671,683,716,723-725
+  s_696b080ac0f4fa::t_dac261af504eb3 667
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.28-trip",
+  "base_commit_sha": "c4b16efce76d47a74c7adc81430d59260a8ec072",
+  "prompts": {},
+  "sessions": {
+    "s_696b080ac0f4fa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f742c-3c87-7e50-ab21-a4587eed19e9",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Bruceliubeiru <109455434+Bruceliubeiru@users.noreply.github.com>"
+    }
+  }
+}

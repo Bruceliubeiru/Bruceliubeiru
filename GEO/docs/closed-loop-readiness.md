@@ -54,6 +54,7 @@ URL analysis
 | Source-map action workflow | High-frequency source observations can be converted into persistent gap actions with accepted/in-progress/done/rollback states |
 | Package delivery tracking | Bound service packages expose checklist-level delivery progress, pending hints, and action completion in the mini-program and project detail |
 | Monitor ops workspace | Mini-program monitoring page can now bind project packages, operate auditable AI-platform connectors, bootstrap source-map actions, register experiments/attribution, generate reports, and advance article indexing with checklist recovery |
+| Packaging and publish console | Monitor ops now supports creating reusable service packages, registering CMS webhook targets, selecting approved versions, and triggering publish previews/confirmations without leaving the task |
 | Parsing and recovery ops | Operators can now paste AI answers to persist mention/source observations, update trust-anchor execution, revise attribution confirmation, export effect reports for offline review, and retain connector/article execution history for failure recovery |
 | Operational history | Connector verification runs, report exports, article indexing changes, CMS publication states, and manual action edits are persisted for audit and operator handoff |
 | Mini-program delivery console | The main workbench can now edit project owners/todos, assign service packages, manage connector status, maintain trust anchors, create manual actions, confirm leads, and export effect reports without leaving the task |

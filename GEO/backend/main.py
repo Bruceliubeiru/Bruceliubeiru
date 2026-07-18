@@ -7317,6 +7317,7 @@ def geo_task_detail(task_id: str):
             task_publications,
             task_jobs,
         ),
+        "cms_targets": _db_cms_targets(),
         "publications": task_publications,
         "publication_events": publication_events,
         "jobs": task_jobs,

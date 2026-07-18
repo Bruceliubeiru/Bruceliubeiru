@@ -106,6 +106,22 @@
         </view>
       </view>
     </view>
+    <view class="divider"></view>
+    <text class="section-subtitle">新增服务套餐</text>
+    <input class="tab-input" value="{{forms.servicePackage.name}}" placeholder="套餐名称，例如 GEO 多平台标准包" data-path="forms.servicePackage.name" bindinput="onFieldInput" />
+    <view class="picker-row">
+      <picker mode="selector" range="{{servicePackageTierOptions}}" data-path="forms.servicePackage.tier" data-options="servicePackageTierOptions" bindchange="onPickerChange">
+        <view class="picker-chip">层级：{{forms.servicePackage.tier}}</view>
+      </picker>
+      <picker mode="selector" range="{{servicePackageStatusOptions}}" data-path="forms.servicePackage.status" data-options="servicePackageStatusOptions" bindchange="onPickerChange">
+        <view class="picker-chip">状态：{{forms.servicePackage.status}}</view>
+      </picker>
+    </view>
+    <input class="tab-input" value="{{forms.servicePackage.price_cny}}" placeholder="价格（CNY）" type="digit" data-path="forms.servicePackage.price_cny" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.servicePackage.delivery_days}}" placeholder="交付天数" type="number" data-path="forms.servicePackage.delivery_days" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.servicePackage.platforms_text}}" placeholder="覆盖平台，一行一个，例如 ChatGPT / Perplexity / Claude" data-path="forms.servicePackage.platforms_text" bindinput="onFieldInput"></textarea>
+    <textarea class="tab-textarea" value="{{forms.servicePackage.features_text}}" placeholder="交付能力，一行一个，例如 多平台监测接入 / 内容实验 / 线索归因 / 报告导出" data-path="forms.servicePackage.features_text" bindinput="onFieldInput"></textarea>
+    <button class="primary-button small" loading="{{savingSection === 'service-package'}}" disabled="{{savingSection === 'service-package'}}" bindtap="saveServicePackageDraft">创建服务套餐</button>
   </view>
 
   <view class="surface" wx:if="{{selectedProject}}">
@@ -289,6 +305,17 @@
         <button class="pill-button" data-connector-id="{{item.connector_id}}" bindtap="fillConnectorForm">回填</button>
         <button class="pill-button" data-connector-id="{{item.connector_id}}" data-status="connected" bindtap="markConnectorStatus">连通</button>
         <button class="pill-button" data-connector-id="{{item.connector_id}}" data-status="failed" bindtap="markConnectorStatus">失败</button>
+      </view>
+    </view>
+    <view wx:if="{{recentConnectorRuns.length}}" class="checklist-box top-gap">
+      <text class="item-title">最近接入执行轨迹</text>
+      <view class="list-card mini-card" wx:for="{{recentConnectorRuns}}" wx:key="run_id" wx:for-item="item">
+        <view>
+          <text class="item-title">{{item.status}} · {{item.connector_id}}</text>
+          <text class="item-meta">{{item.notes || item.last_error || '无备注'}}</text>
+          <text wx:if="{{item.evidence_url}}" class="item-meta">{{item.evidence_url}}</text>
+        </view>
+        <text class="status">{{item.created_at}}</text>
       </view>
     </view>
   </view>
@@ -566,6 +593,46 @@
         Job：{{item.job_type}} · {{item.status}} · {{item.run_at}}
       </view>
     </view>
+    <view class="divider"></view>
+    <text class="section-subtitle">CMS 目标与发布预览</text>
+    <input class="tab-input" value="{{forms.cmsTarget.name}}" placeholder="CMS 名称，例如 WordPress Production" data-path="forms.cmsTarget.name" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.cmsTarget.webhook_url}}" placeholder="Webhook URL（需公网可访问）" data-path="forms.cmsTarget.webhook_url" bindinput="onFieldInput" />
+    <view class="picker-row">
+      <picker mode="selector" range="{{cmsEnvironmentOptions}}" data-path="forms.cmsTarget.environment" data-options="cmsEnvironmentOptions" bindchange="onPickerChange">
+        <view class="picker-chip">环境：{{forms.cmsTarget.environment}}</view>
+      </picker>
+    </view>
+    <input class="tab-input" value="{{forms.cmsTarget.auth_header}}" placeholder="认证 Header，默认 Authorization" data-path="forms.cmsTarget.auth_header" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.cmsTarget.auth_env_var}}" placeholder="认证环境变量，例如 CMS_WEBHOOK_TOKEN" data-path="forms.cmsTarget.auth_env_var" bindinput="onFieldInput" />
+    <view class="switch-row">
+      <text class="item-meta">保存后立即启用</text>
+      <switch checked="{{forms.cmsTarget.enabled}}" data-path="forms.cmsTarget.enabled" bindchange="onSwitchChange" />
+    </view>
+    <button class="primary-button small" loading="{{savingSection === 'cms-target'}}" disabled="{{savingSection === 'cms-target'}}" bindtap="saveCmsTargetDraft">保存 CMS 目标</button>
+    <view class="list-card" wx:for="{{cmsTargets}}" wx:key="target_id" wx:for-item="item">
+      <view>
+        <text class="item-title">{{item.name}}</text>
+        <text class="item-meta">{{item.environment}} · {{item.enabled ? 'enabled' : 'disabled'}}</text>
+        <text class="item-meta">{{item.webhook_url}}</text>
+        <text wx:if="{{item.auth_env_var}}" class="item-meta">凭证：{{item.auth_header}} / {{item.auth_env_var}}</text>
+      </view>
+      <view class="action-stack column">
+        <button class="pill-button" loading="{{savingSection === ('cms-target-' + item.target_id)}}" data-target-id="{{item.target_id}}" data-enabled="{{item.enabled ? 'false' : 'true'}}" bindtap="toggleCmsTarget">{{item.enabled ? '停用' : '启用'}}</button>
+      </view>
+    </view>
+    <picker wx:if="{{approvedVersions.length}}" mode="selector" range="{{approvedVersions}}" range-key="version_id" value="{{approvedVersionIndex}}" bindchange="onApprovedVersionChange">
+      <view class="picker-field compact">
+        <text class="item-meta">发布版本</text>
+        <text class="item-title">{{forms.publication.version_id || '暂无已审核通过版本'}}</text>
+      </view>
+    </picker>
+    <picker wx:if="{{cmsTargets.length}}" mode="selector" range="{{cmsTargets}}" range-key="name" value="{{cmsTargetIndex}}" bindchange="onCmsTargetChange">
+      <view class="picker-field compact">
+        <text class="item-meta">发布目标</text>
+        <text class="item-title">{{cmsTargets[cmsTargetIndex].name}} · {{cmsTargets[cmsTargetIndex].environment}}</text>
+      </view>
+    </picker>
+    <button class="primary-button small" loading="{{savingSection === 'publication-preview'}}" disabled="{{savingSection === 'publication-preview'}}" bindtap="createPublicationPreview">创建发布预览</button>
     <input class="tab-input" value="{{forms.article.title}}" placeholder="文章标题" data-path="forms.article.title" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.article.folder_token}}" placeholder="飞书文件夹 token（可选）" data-path="forms.article.folder_token" bindinput="onFieldInput" />
     <input class="tab-input" value="{{forms.article.public_url}}" placeholder="公开 URL（发布或收录时可复用）" data-path="forms.article.public_url" bindinput="onFieldInput" />
@@ -613,9 +680,11 @@
       <view>
         <text class="item-title">{{item.preview.target_name || item.target_id}}</text>
         <text class="item-meta">{{item.status}} · 线上 {{item.live_status || 'pending'}} · 回滚 {{item.rollback_status || 'none'}}</text>
+        <text wx:if="{{item.preview && item.preview.modules && item.preview.modules.length}}" class="item-meta">预览模块：{{item.preview.modules.length}} 个</text>
         <text wx:if="{{item.response_summary}}" class="item-meta">{{item.response_summary}}</text>
       </view>
       <view class="action-stack column">
+        <button wx:if="{{item.status === 'pending_confirmation'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-confirm')}}" data-publication-id="{{item.publication_id}}" bindtap="confirmPendingPublication">确认发布</button>
         <button wx:if="{{item.status === 'failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-retry')}}" data-publication-id="{{item.publication_id}}" data-action="retry" bindtap="quickPublicationAction">重试</button>
         <button wx:if="{{item.status === 'published' || item.status === 'verification_failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-verify')}}" data-publication-id="{{item.publication_id}}" data-action="verify" bindtap="quickPublicationAction">校验</button>
         <button wx:if="{{item.status === 'published' || item.status === 'verification_failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-schedule_verify')}}" data-publication-id="{{item.publication_id}}" data-action="schedule_verify" bindtap="quickPublicationAction">排队校验</button>

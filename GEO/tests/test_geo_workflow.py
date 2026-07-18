@@ -513,6 +513,17 @@ class GEOWorkflowTest(unittest.TestCase):
         self.assertFalse(disabled["enabled"])
         self.assertTrue(enabled["enabled"])
 
+    def test_task_detail_includes_cms_targets_for_publication_setup(self):
+        result = self._analyze()
+        target = main.cms_target_save(
+            main.CMSPublishTargetRequest(name="Detail CMS", webhook_url="https://cms.example.com/publish")
+        )
+
+        detail = main.geo_task_detail(result["task_id"])
+
+        self.assertTrue(detail["cms_targets"])
+        self.assertEqual(target["target_id"], detail["cms_targets"][0]["target_id"])
+
     def test_failed_cms_publication_can_return_to_confirmation(self):
         result, approved = self._approved_version()
         target = main.cms_target_save(

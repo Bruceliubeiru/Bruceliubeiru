@@ -3,7 +3,9 @@ const {
   generateReport,
   confirmReport: confirmReportApi,
   shareReport,
+  getCmsTargets,
   getTaskDetail,
+  saveServicePackage,
   updateProject,
   updatePackageDelivery,
   saveMonitoringConnector,
@@ -30,6 +32,10 @@ const {
   exportReportDocx,
   exportReportPDF,
   exportReportFeishu,
+  saveCmsTarget,
+  updateCmsTargetStatus,
+  createPublicationPreview,
+  confirmPublication,
   retryPublication,
   verifyPublication,
   schedulePublicationVerify,
@@ -68,6 +74,17 @@ function splitKeywords(value = "") {
     .filter(Boolean)
 }
 
+function splitMultilineItems(value = "") {
+  return value
+    .split(/[\n,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function approvedVersions(versions = []) {
+  return versions.filter((item) => item.status === "approved")
+}
+
 function buildReportPayload(report = {}, monitoring = {}) {
   return {
     task_id: report.task_id,
@@ -99,6 +116,23 @@ function emptyProjectForms() {
       owner: "",
       next_check_at: "",
       recovery_hint: ""
+    },
+    servicePackage: {
+      name: "",
+      tier: "growth",
+      price_cny: "",
+      delivery_days: "14",
+      platforms_text: "",
+      features_text: "",
+      status: "active"
+    },
+    cmsTarget: {
+      name: "",
+      webhook_url: "",
+      environment: "staging",
+      auth_header: "Authorization",
+      auth_env_var: "",
+      enabled: true
     },
     sourceParse: {
       query_id: "",
@@ -165,6 +199,10 @@ function emptyProjectForms() {
       use_ai: false,
       notes: ""
     },
+    publication: {
+      target_id: "",
+      version_id: ""
+    },
     reportShare: {
       share_channel: "wechat",
       notes: ""
@@ -184,12 +222,18 @@ Page({
     selectedTaskIndex: 0,
     selectedTask: null,
     selectedProject: null,
+    versions: [],
+    approvedVersions: [],
+    cmsTargets: [],
+    recentConnectorRuns: [],
     reportPeriod: "近 30 天",
     generatingReport: false,
     confirmingReportId: "",
     reportExportingId: "",
     lastReportExport: "",
     assigningPackage: false,
+    approvedVersionIndex: 0,
+    cmsTargetIndex: 0,
     editingConnectorId: "",
     editingActionId: "",
     editingTrustAnchorId: "",
@@ -234,7 +278,10 @@ Page({
     articleStatusOptions: ["draft", "published", "indexed", "ai_cited"],
     reportShareChannelOptions: ["wechat", "email", "feishu", "notion", "drive"],
     actionPriorityOptions: ["P0", "P1", "P2"],
-    actionStatusOptions: ["accepted", "in_progress", "done", "rollback", "blocked"]
+    actionStatusOptions: ["accepted", "in_progress", "done", "rollback", "blocked"],
+    servicePackageTierOptions: ["starter", "growth", "pro", "enterprise"],
+    servicePackageStatusOptions: ["active", "archived"],
+    cmsEnvironmentOptions: ["staging", "production"]
   },
 
   onShow() {
@@ -273,8 +320,14 @@ Page({
     this.setData({
       selectedProject: null,
       monitoring: null,
+      versions: [],
+      approvedVersions: [],
+      cmsTargets: [],
+      recentConnectorRuns: [],
       servicePackages: [],
       packageIndex: 0,
+      approvedVersionIndex: 0,
+      cmsTargetIndex: 0,
       experiments: [],
       experimentEvents: [],
       attributions: [],
@@ -327,10 +380,15 @@ Page({
     this.setData({ detailLoading: true, error: "" })
     try {
       const detail = await getTaskDetail(taskId)
+      const versions = detail.versions || []
+      const approved = approvedVersions(versions)
       const servicePackages = detail.service_packages || []
       const packageId = detail.project && detail.project.package_id
       const packageIndex = Math.max(servicePackages.findIndex((item) => item.package_id === packageId), 0)
+      const cmsTargets = detail.cms_targets || await getCmsTargets().then((result) => result.items || [])
+      const publicationTargetId = cmsTargets[0] && cmsTargets[0].target_id || ""
       const monitoring = detail.monitoring || null
+      const connectorRuns = monitoring && monitoring.connector_runs || []
       const reportExports = detail.report_exports || []
       const publications = detail.publications || []
       const publicationEvents = detail.publication_events || []
@@ -346,14 +404,22 @@ Page({
       forms.article.title = detail.project && detail.project.brand_name
         ? `${detail.project.brand_name} GEO 内容实验稿`
         : ""
+      forms.publication.version_id = approved[0] && approved[0].version_id || ""
+      forms.publication.target_id = publicationTargetId
       forms.sourceParse.query_id = sourceQuery ? sourceQuery.query_id : ""
       forms.sourceParse.platform = sourceQuery ? sourceQuery.engine : "perplexity"
       forms.trustAnchor.target_url = (detail.task && detail.task.url) || ""
       this.setData({
         selectedProject: detail.project || null,
         monitoring,
+        versions,
+        approvedVersions: approved,
+        cmsTargets,
+        recentConnectorRuns: connectorRuns.slice(0, 6),
         servicePackages,
         packageIndex,
+        approvedVersionIndex: 0,
+        cmsTargetIndex: 0,
         experiments: detail.experiments || [],
         experimentEvents,
         attributions: detail.attributions || [],
@@ -421,6 +487,25 @@ Page({
     this.setData({ packageIndex: Number(event.detail.value) })
   },
 
+  onApprovedVersionChange(event) {
+    const approved = this.data.approvedVersions || []
+    const approvedVersionIndex = Number(event.detail.value)
+    const selected = approved[approvedVersionIndex]
+    this.setData({
+      approvedVersionIndex,
+      "forms.publication.version_id": selected ? selected.version_id : ""
+    })
+  },
+
+  onCmsTargetChange(event) {
+    const cmsTargetIndex = Number(event.detail.value)
+    const selected = this.data.cmsTargets[cmsTargetIndex]
+    this.setData({
+      cmsTargetIndex,
+      "forms.publication.target_id": selected ? selected.target_id : ""
+    })
+  },
+
   applyRecommendedPackage() {
     const project = this.data.selectedProject
     const packages = this.data.servicePackages || []
@@ -452,6 +537,84 @@ Page({
       wx.showToast({ title: "套餐已绑定", icon: "success" })
     } catch (error) {
       this.setData({ assigningPackage: false, error: error.message || "绑定套餐失败" })
+    }
+  },
+
+  async saveServicePackageDraft() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.servicePackage
+    if (!task) return
+    if (!form.name.trim()) {
+      wx.showToast({ title: "请输入套餐名称", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: "service-package", error: "" })
+    try {
+      const created = await saveServicePackage({
+        name: form.name.trim(),
+        tier: form.tier,
+        price_cny: Number(form.price_cny || 0),
+        delivery_days: Number(form.delivery_days || 14),
+        platforms: splitMultilineItems(form.platforms_text),
+        features: splitMultilineItems(form.features_text),
+        status: form.status
+      })
+      const forms = this.data.forms
+      forms.servicePackage = emptyProjectForms().servicePackage
+      this.setData({ forms, savingSection: "" })
+      await this.loadProjectDetail(task.task_id)
+      const packageIndex = Math.max((this.data.servicePackages || []).findIndex((item) => item.package_id === created.package_id), 0)
+      this.setData({ packageIndex })
+      wx.showToast({ title: "套餐已创建", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "创建套餐失败" })
+    }
+  },
+
+  async saveCmsTargetDraft() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.cmsTarget
+    if (!task) return
+    if (!form.name.trim() || !form.webhook_url.trim()) {
+      wx.showToast({ title: "请补全 CMS 目标", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: "cms-target", error: "" })
+    try {
+      const created = await saveCmsTarget({
+        name: form.name.trim(),
+        webhook_url: form.webhook_url.trim(),
+        environment: form.environment,
+        auth_header: form.auth_header.trim() || "Authorization",
+        auth_env_var: form.auth_env_var.trim(),
+        enabled: !!form.enabled
+      })
+      const forms = this.data.forms
+      forms.cmsTarget = emptyProjectForms().cmsTarget
+      forms.publication.target_id = created.target_id
+      this.setData({ forms, savingSection: "" })
+      await this.loadProjectDetail(task.task_id)
+      const cmsTargetIndex = Math.max((this.data.cmsTargets || []).findIndex((item) => item.target_id === created.target_id), 0)
+      this.setData({ cmsTargetIndex })
+      wx.showToast({ title: "CMS 目标已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "保存 CMS 目标失败" })
+    }
+  },
+
+  async toggleCmsTarget(event) {
+    const task = this.data.selectedTask
+    const targetId = event.currentTarget.dataset.targetId
+    const enabled = event.currentTarget.dataset.enabled === "true"
+    if (!task || !targetId) return
+    this.setData({ savingSection: `cms-target-${targetId}`, error: "" })
+    try {
+      await updateCmsTargetStatus(targetId, { enabled })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: enabled ? "CMS 目标已启用" : "CMS 目标已停用", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "更新 CMS 目标失败" })
     }
   },
 
@@ -1078,6 +1241,46 @@ Page({
       wx.showToast({ title: "归因状态已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新归因失败" })
+    }
+  },
+
+  async createPublicationPreview() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.publication
+    if (!task) return
+    if (!form.version_id || !form.target_id) {
+      wx.showToast({ title: "请选择版本和 CMS 目标", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: "publication-preview", error: "" })
+    try {
+      await createPublicationPreview({
+        version_id: form.version_id,
+        target_id: form.target_id
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "发布预览已创建", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "创建发布预览失败" })
+    }
+  },
+
+  async confirmPendingPublication(event) {
+    const task = this.data.selectedTask
+    const publicationId = event.currentTarget.dataset.publicationId
+    if (!task || !publicationId) return
+    this.setData({ savingSection: `publication-${publicationId}-confirm`, error: "" })
+    try {
+      await confirmPublication({
+        publication_id: publicationId,
+        confirmation: "PUBLISH"
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "发布已确认", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "确认发布失败" })
     }
   },
 

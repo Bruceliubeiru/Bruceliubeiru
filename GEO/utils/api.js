@@ -81,6 +81,14 @@ function getCmsTargets() {
   return request("/cms/targets", {}, "GET")
 }
 
+function saveCmsTarget(payload) {
+  return request("/cms/targets", payload)
+}
+
+function updateCmsTargetStatus(targetId, payload) {
+  return request(`/cms/targets/${targetId}`, payload, "PATCH")
+}
+
 function createPublicationPreview(payload) {
   return request("/cms/publications/preview", payload)
 }
@@ -119,6 +127,10 @@ function getTaskDetail(taskId) {
 
 function getServicePackages() {
   return request("/geo/service-packages", {}, "GET")
+}
+
+function saveServicePackage(payload) {
+  return request("/geo/service-packages", payload)
 }
 
 function updateProject(taskId, payload) {
@@ -387,6 +399,8 @@ module.exports = {
   reviewVersion,
   injectVersion,
   getCmsTargets,
+  saveCmsTarget,
+  updateCmsTargetStatus,
   createPublicationPreview,
   confirmPublication,
   retryPublication,
@@ -399,6 +413,7 @@ module.exports = {
   getHistory,
   getTaskDetail,
   getServicePackages,
+  saveServicePackage,
   updateProject,
   updatePackageDelivery,
   saveExperiment,

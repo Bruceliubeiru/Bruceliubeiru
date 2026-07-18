@@ -65,6 +65,7 @@ URL analysis
 | Feishu delivery recovery | Reports and GEO articles can now sync to Feishu docs, persist external links/tokens, and retry failed syncs without losing local markdown drafts |
 | Publication recovery timeline | CMS publications now keep preview, publish, verify, retry, schedule, and rollback events so failures and reversions remain traceable |
 | Connector freshness summary | Monitoring connectors now expose fresh/stale state, missing credentials, last-check age, owner, next-check timestamp, and recovery hints to prioritize audit-safe rechecks |
+| Monitor ops handoff controls | Operators can now edit project intake fields, persist package-delivery notes, revise connector metadata, queue publication verification with custom terms, and record publication feedback directly in the mini-program |
 
 ## External Client Delivery Standard
 

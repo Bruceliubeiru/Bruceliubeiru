@@ -19,6 +19,7 @@ const {
   saveExperimentEvent,
   saveAttribution,
   updateAttribution,
+  saveFeedback,
   createGeoArticle,
   syncGeoArticleFeishu,
   updateGeoArticleIndexing,
@@ -183,6 +184,18 @@ function emptyProjectForms() {
       notes: "",
       evidence_url: ""
     },
+    project: {
+      owner: "",
+      client_name: "",
+      brand_name: "",
+      target_score: "80",
+      business_goal: "",
+      target_engines_text: "",
+      todos_text: ""
+    },
+    packageDelivery: {
+      notes: ""
+    },
     connectorRun: {
       status: "connected",
       notes: "",
@@ -202,6 +215,14 @@ function emptyProjectForms() {
     publication: {
       target_id: "",
       version_id: ""
+    },
+    publicationOps: {
+      expected_terms_text: "",
+      verify_notes: "",
+      verify_run_at: "",
+      rollback_note: "",
+      feedback_verdict: "approved",
+      feedback_notes: ""
     },
     reportShare: {
       share_channel: "wechat",
@@ -247,6 +268,7 @@ Page({
     reports: [],
     reportExports: [],
     recentReportExports: [],
+    recentFeedback: [],
     mentionChecks: [],
     servicePackages: [],
     packageIndex: 0,
@@ -277,6 +299,7 @@ Page({
     attributionStatusOptions: ["pending_confirmation", "confirmed", "rejected"],
     articleStatusOptions: ["draft", "published", "indexed", "ai_cited"],
     reportShareChannelOptions: ["wechat", "email", "feishu", "notion", "drive"],
+    publicationFeedbackVerdictOptions: ["approved", "needs_revision", "rejected"],
     actionPriorityOptions: ["P0", "P1", "P2"],
     actionStatusOptions: ["accepted", "in_progress", "done", "rollback", "blocked"],
     servicePackageTierOptions: ["starter", "growth", "pro", "enterprise"],
@@ -334,6 +357,7 @@ Page({
       reports: [],
       reportExports: [],
       recentReportExports: [],
+      recentFeedback: [],
       mentionChecks: [],
       gapActions: [],
       publications: [],
@@ -390,6 +414,7 @@ Page({
       const monitoring = detail.monitoring || null
       const connectorRuns = monitoring && monitoring.connector_runs || []
       const reportExports = detail.report_exports || []
+      const recentFeedback = (detail.feedback || []).slice(0, 6)
       const publications = detail.publications || []
       const publicationEvents = detail.publication_events || []
       const jobs = detail.jobs || []
@@ -404,8 +429,24 @@ Page({
       forms.article.title = detail.project && detail.project.brand_name
         ? `${detail.project.brand_name} GEO 内容实验稿`
         : ""
+      forms.project.owner = detail.project && detail.project.owner && detail.project.owner !== "待分配"
+        ? detail.project.owner
+        : ""
+      forms.project.client_name = detail.project && detail.project.client_name || ""
+      forms.project.brand_name = detail.project && detail.project.brand_name || ""
+      forms.project.target_score = `${detail.project && detail.project.target_score || 80}`
+      forms.project.business_goal = detail.project && detail.project.business_goal || ""
+      forms.project.target_engines_text = detail.project && detail.project.target_engines
+        ? detail.project.target_engines.join("\n")
+        : ""
+      forms.project.todos_text = detail.project && detail.project.todos
+        ? detail.project.todos.join("\n")
+        : ""
       forms.publication.version_id = approved[0] && approved[0].version_id || ""
       forms.publication.target_id = publicationTargetId
+      forms.publicationOps.expected_terms_text = approved[0] && approved[0].modules
+        ? approved[0].modules.map((item) => item.title).filter(Boolean).join("\n")
+        : ""
       forms.sourceParse.query_id = sourceQuery ? sourceQuery.query_id : ""
       forms.sourceParse.platform = sourceQuery ? sourceQuery.engine : "perplexity"
       forms.trustAnchor.target_url = (detail.task && detail.task.url) || ""
@@ -426,6 +467,7 @@ Page({
         reports: detail.reports || [],
         reportExports,
         recentReportExports: reportExports.slice(0, 4),
+        recentFeedback,
         mentionChecks: (this.data.allMentionChecks || []).filter((item) => item.task_id === taskId).slice(0, 8),
         gapActions: detail.gap_actions || [],
         publications,
@@ -504,6 +546,33 @@ Page({
       cmsTargetIndex,
       "forms.publication.target_id": selected ? selected.target_id : ""
     })
+  },
+
+  async saveProjectSetup() {
+    const task = this.data.selectedTask
+    const form = this.data.forms.project
+    if (!task) return
+    if (!form.brand_name.trim()) {
+      wx.showToast({ title: "请输入品牌名称", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: "project", error: "" })
+    try {
+      await updateProject(task.task_id, {
+        owner: form.owner.trim(),
+        client_name: form.client_name.trim(),
+        brand_name: form.brand_name.trim(),
+        target_score: Number(form.target_score || 80),
+        business_goal: form.business_goal.trim(),
+        target_engines: splitMultilineItems(form.target_engines_text),
+        todos: splitMultilineItems(form.todos_text)
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({ savingSection: "" })
+      wx.showToast({ title: "项目配置已保存", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "保存项目配置失败" })
+    }
   },
 
   applyRecommendedPackage() {
@@ -628,10 +697,13 @@ Page({
       await updatePackageDelivery(task.task_id, {
         feature_key: featureKey,
         status,
-        notes: this.data.forms.action.notes.trim()
+        notes: this.data.forms.packageDelivery.notes.trim()
       })
       await this.loadProjectDetail(task.task_id)
-      this.setData({ savingSection: "" })
+      this.setData({
+        savingSection: "",
+        "forms.packageDelivery.notes": ""
+      })
       wx.showToast({ title: "套餐交付已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新套餐交付失败" })
@@ -804,6 +876,10 @@ Page({
     try {
       if (isEditing) {
         await updateMonitoringConnector(this.data.editingConnectorId, {
+          platform: form.platform,
+          connector_type: form.connector_type,
+          provider_name: form.provider_name.trim(),
+          credential_env_var: form.credential_env_var.trim(),
           status: form.status,
           evidence_url: form.evidence_url.trim(),
           last_error: form.last_error.trim(),
@@ -1198,6 +1274,7 @@ Page({
     try {
       if (isEditing) {
         await updateAttribution(this.data.editingAttributionId, {
+          source_type: form.source_type,
           source_name: form.source_name.trim(),
           session_ref: form.session_ref.trim(),
           lead_stage: form.lead_stage,
@@ -1312,27 +1389,73 @@ Page({
     const task = this.data.selectedTask
     const publicationId = event.currentTarget.dataset.publicationId
     const action = event.currentTarget.dataset.action
+    const ops = this.data.forms.publicationOps
     if (!task || !publicationId || !action) return
     this.setData({ savingSection: `publication-${publicationId}-${action}`, error: "" })
     try {
       if (action === "retry") {
         await retryPublication(publicationId)
       } else if (action === "verify") {
-        await verifyPublication({ publication_id: publicationId })
+        await verifyPublication({
+          publication_id: publicationId,
+          expected_terms: splitMultilineItems(ops.expected_terms_text),
+          notes: ops.verify_notes.trim()
+        })
       } else if (action === "schedule_verify") {
-        await schedulePublicationVerify({ publication_id: publicationId, max_attempts: 5 })
+        await schedulePublicationVerify({
+          publication_id: publicationId,
+          expected_terms: splitMultilineItems(ops.expected_terms_text),
+          notes: ops.verify_notes.trim(),
+          run_at: ops.verify_run_at.trim() || undefined,
+          max_attempts: 5
+        })
       } else if (action === "rollback") {
         await rollbackPublication({
           publication_id: publicationId,
           status: "rollback_completed",
-          notes: this.data.forms.article.notes.trim() || "人工确认已回滚。"
+          notes: ops.rollback_note.trim() || "人工确认已回滚。"
         })
       }
       await this.loadProjectDetail(task.task_id)
-      this.setData({ savingSection: "" })
+      this.setData({
+        savingSection: "",
+        "forms.publicationOps.verify_notes": action === "verify" ? "" : ops.verify_notes,
+        "forms.publicationOps.rollback_note": action === "rollback" ? "" : ops.rollback_note
+      })
       wx.showToast({ title: "发布状态已更新", icon: "success" })
     } catch (error) {
       this.setData({ savingSection: "", error: error.message || "更新发布状态失败" })
+    }
+  },
+
+  async savePublicationFeedback(event) {
+    const task = this.data.selectedTask
+    const publicationId = event.currentTarget.dataset.publicationId
+    const publication = (this.data.publications || []).find((item) => item.publication_id === publicationId)
+    const ops = this.data.forms.publicationOps
+    if (!task || !publicationId || !publication) return
+    if (!ops.feedback_notes.trim()) {
+      wx.showToast({ title: "请输入人工反馈", icon: "none" })
+      return
+    }
+    this.setData({ savingSection: `publication-${publicationId}-feedback`, error: "" })
+    try {
+      await saveFeedback({
+        task_id: task.task_id,
+        version_id: publication.version_id,
+        publication_id: publicationId,
+        verdict: ops.feedback_verdict,
+        notes: ops.feedback_notes.trim(),
+        source: "monitor"
+      })
+      await this.loadProjectDetail(task.task_id)
+      this.setData({
+        savingSection: "",
+        "forms.publicationOps.feedback_notes": ""
+      })
+      wx.showToast({ title: "人工反馈已记录", icon: "success" })
+    } catch (error) {
+      this.setData({ savingSection: "", error: error.message || "记录人工反馈失败" })
     }
   },
 

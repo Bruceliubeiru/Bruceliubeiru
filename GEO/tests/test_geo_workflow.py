@@ -956,6 +956,7 @@ class GEOWorkflowTest(unittest.TestCase):
         updated = main.geo_attribution_update(
             attribution["attribution_id"],
             main.GEOAttributionUpdateRequest(
+                source_type="partner",
                 session_ref="crm-123",
                 lead_stage="won",
                 attributed_revenue=18888,
@@ -965,6 +966,7 @@ class GEOWorkflowTest(unittest.TestCase):
             ),
         )
 
+        self.assertEqual("partner", updated["source_type"])
         self.assertEqual("crm-123", updated["session_ref"])
         self.assertEqual("won", updated["lead_stage"])
         self.assertEqual(18888, updated["attributed_revenue"])
@@ -1141,6 +1143,10 @@ class GEOWorkflowTest(unittest.TestCase):
             connector["connector_id"],
             main.GEOMonitorConnectorStatusRequest(
                 status="failed",
+                platform="gemini",
+                connector_type="manual_export",
+                provider_name="Gemini Export",
+                credential_env_var="GEMINI_EXPORT_TOKEN",
                 owner="ops@example.com",
                 next_check_at="2026-07-25T09:00:00+08:00",
                 recovery_hint="记录 401 并轮换密钥。",
@@ -1148,6 +1154,10 @@ class GEOWorkflowTest(unittest.TestCase):
         )
         detail = main.geo_task_detail(result["task_id"])
 
+        self.assertEqual("gemini", detail["monitoring"]["connectors"][0]["platform"])
+        self.assertEqual("manual_export", detail["monitoring"]["connectors"][0]["connector_type"])
+        self.assertEqual("Gemini Export", detail["monitoring"]["connectors"][0]["provider_name"])
+        self.assertEqual("GEMINI_EXPORT_TOKEN", detail["monitoring"]["connectors"][0]["credential_env_var"])
         self.assertEqual("ops@example.com", detail["monitoring"]["connectors"][0]["owner"])
         self.assertEqual("2026-07-25T09:00:00+08:00", detail["monitoring"]["connectors"][0]["next_check_at"])
         self.assertIn("轮换密钥", detail["monitoring"]["connectors"][0]["recovery_hint"])

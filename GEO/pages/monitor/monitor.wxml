@@ -91,7 +91,18 @@
       <text class="item-meta">截止：{{selectedProject.package_sla.due_at || '未设置'}} · 剩余 {{selectedProject.package_sla.days_remaining !== null ? selectedProject.package_sla.days_remaining : '-'}} 天</text>
       <text wx:if="{{selectedProject.package_sla.overdue_days}}" class="item-meta">已逾期 {{selectedProject.package_sla.overdue_days}} 天</text>
     </view>
+    <view class="divider"></view>
+    <text class="section-subtitle">项目配置</text>
+    <input class="tab-input" value="{{forms.project.client_name}}" placeholder="客户名称" data-path="forms.project.client_name" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.project.brand_name}}" placeholder="品牌名称" data-path="forms.project.brand_name" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.project.owner}}" placeholder="项目负责人，例如 ops@company.com" data-path="forms.project.owner" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.project.target_score}}" placeholder="目标分数" type="number" data-path="forms.project.target_score" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.project.business_goal}}" placeholder="业务目标，例如 获取 AI 平台询盘" data-path="forms.project.business_goal" bindinput="onFieldInput" />
+    <textarea class="tab-textarea" value="{{forms.project.target_engines_text}}" placeholder="目标 AI 平台，一行一个，例如 chatgpt / perplexity / gemini" data-path="forms.project.target_engines_text" bindinput="onFieldInput"></textarea>
+    <textarea class="tab-textarea" value="{{forms.project.todos_text}}" placeholder="本轮待办，一行一个" data-path="forms.project.todos_text" bindinput="onFieldInput"></textarea>
+    <button class="primary-button small" loading="{{savingSection === 'project'}}" disabled="{{savingSection === 'project'}}" bindtap="saveProjectSetup">保存项目配置</button>
     <view wx:if="{{selectedProject.package_delivery && selectedProject.package_delivery.length}}" class="status-stack">
+      <textarea class="tab-textarea" value="{{forms.packageDelivery.notes}}" placeholder="套餐交付备注：记录执行说明、阻塞原因、恢复动作" data-path="forms.packageDelivery.notes" bindinput="onFieldInput"></textarea>
       <view class="list-card mini-card" wx:for="{{selectedProject.package_delivery}}" wx:key="feature_key" wx:for-item="item">
         <view>
           <text class="item-title">{{item.feature}}</text>
@@ -646,6 +657,18 @@
       <switch checked="{{forms.article.use_ai}}" data-path="forms.article.use_ai" bindchange="onSwitchChange" />
     </view>
     <button class="primary-button small" loading="{{savingSection === 'article'}}" disabled="{{savingSection === 'article'}}" bindtap="createArticleDraft">创建文章草稿</button>
+    <view class="divider"></view>
+    <text class="section-subtitle">发布校验与人工反馈</text>
+    <textarea class="tab-textarea" value="{{forms.publicationOps.expected_terms_text}}" placeholder="线上校验关键词，一行一个；默认使用审核模块标题" data-path="forms.publicationOps.expected_terms_text" bindinput="onFieldInput"></textarea>
+    <textarea class="tab-textarea" value="{{forms.publicationOps.verify_notes}}" placeholder="校验备注：记录人工抽查结论、失败原因、恢复路径" data-path="forms.publicationOps.verify_notes" bindinput="onFieldInput"></textarea>
+    <input class="tab-input" value="{{forms.publicationOps.verify_run_at}}" placeholder="排队校验时间（ISO，例如 2026-07-18T20:00:00+08:00）" data-path="forms.publicationOps.verify_run_at" bindinput="onFieldInput" />
+    <input class="tab-input" value="{{forms.publicationOps.rollback_note}}" placeholder="回滚备注" data-path="forms.publicationOps.rollback_note" bindinput="onFieldInput" />
+    <view class="picker-row">
+      <picker mode="selector" range="{{publicationFeedbackVerdictOptions}}" data-path="forms.publicationOps.feedback_verdict" data-options="publicationFeedbackVerdictOptions" bindchange="onPickerChange">
+        <view class="picker-chip">反馈结论：{{forms.publicationOps.feedback_verdict}}</view>
+      </picker>
+    </view>
+    <textarea class="tab-textarea" value="{{forms.publicationOps.feedback_notes}}" placeholder="人工反馈：记录客户确认、运营验收或需返工的问题" data-path="forms.publicationOps.feedback_notes" bindinput="onFieldInput"></textarea>
     <view class="list-card" wx:for="{{articles}}" wx:key="article_id" wx:for-item="item">
       <view>
         <text class="item-title">{{item.title}}</text>
@@ -657,6 +680,7 @@
       <view class="action-stack column">
         <button class="pill-button" loading="{{savingSection === ('article-feishu-' + item.article_id)}}" data-article-id="{{item.article_id}}" bindtap="syncArticleFeishu">同步飞书</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="published" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已发布</button>
+        <button class="pill-button" data-article-id="{{item.article_id}}" data-status="submitted" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已提交收录</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="indexed" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">已收录</button>
         <button class="pill-button" data-article-id="{{item.article_id}}" data-status="ai_cited" data-public-url="{{item.public_url || ''}}" bindtap="updateArticleStatus">AI 已引用</button>
         <button class="pill-button" loading="{{loadingChecklistFor === item.article_id}}" data-article-id="{{item.article_id}}" bindtap="copyChecklist">收录清单</button>
@@ -689,11 +713,16 @@
         <button wx:if="{{item.status === 'published' || item.status === 'verification_failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-verify')}}" data-publication-id="{{item.publication_id}}" data-action="verify" bindtap="quickPublicationAction">校验</button>
         <button wx:if="{{item.status === 'published' || item.status === 'verification_failed'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-schedule_verify')}}" data-publication-id="{{item.publication_id}}" data-action="schedule_verify" bindtap="quickPublicationAction">排队校验</button>
         <button wx:if="{{item.status === 'published' || item.status === 'verification_failed' || item.status === 'verified_live'}}" class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-rollback')}}" data-publication-id="{{item.publication_id}}" data-action="rollback" bindtap="quickPublicationAction">已回滚</button>
+        <button class="pill-button" loading="{{savingSection === ('publication-' + item.publication_id + '-feedback')}}" data-publication-id="{{item.publication_id}}" bindtap="savePublicationFeedback">记录反馈</button>
       </view>
     </view>
     <view wx:if="{{articleChecklist}}" class="checklist-box">
       <text class="item-title">最近复制的收录清单</text>
       <text class="item-meta multiline">{{articleChecklist}}</text>
+    </view>
+    <view wx:if="{{recentFeedback.length}}" class="checklist-box top-gap">
+      <text class="item-title">最近人工反馈</text>
+      <text class="item-meta multiline" wx:for="{{recentFeedback}}" wx:key="feedback_id" wx:for-item="item">{{item.verdict}} · {{item.notes}} · {{item.created_at}}</text>
     </view>
   </view>
 

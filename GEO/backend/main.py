@@ -422,6 +422,7 @@ class GEOAttributionRequest(BaseModel):
 
 
 class GEOAttributionUpdateRequest(BaseModel):
+    source_type: str | None = None
     source_name: str | None = None
     session_ref: str | None = None
     lead_stage: str | None = None
@@ -487,7 +488,11 @@ class GEOMonitorConnectorRequest(BaseModel):
 
 
 class GEOMonitorConnectorStatusRequest(BaseModel):
-    status: str
+    status: str | None = None
+    platform: str | None = None
+    connector_type: str | None = None
+    provider_name: str | None = None
+    credential_env_var: str | None = None
     evidence_url: str | None = None
     last_error: str | None = None
     notes: str | None = None
@@ -5934,6 +5939,11 @@ def geo_attribution_update(attribution_id: str, request: GEOAttributionUpdateReq
     item = _db_get_attribution(attribution_id)
     if not item:
         raise HTTPException(status_code=404, detail="Attribution not found.")
+    if request.source_type is not None:
+        source_type = request.source_type.strip()
+        if not source_type:
+            raise HTTPException(status_code=400, detail="Source type cannot be empty.")
+        item["source_type"] = source_type
     if request.source_name is not None:
         source_name = request.source_name.strip()
         if not source_name:
@@ -6060,11 +6070,38 @@ def geo_monitor_connector_update(connector_id: str, request: GEOMonitorConnector
     item = _db_get_monitor_connector(connector_id)
     if not item:
         raise HTTPException(status_code=404, detail="Monitoring connector not found.")
-    item["status"] = request.status.strip().lower() or item["status"]
-    item["evidence_url"] = (request.evidence_url or "").strip() or item.get("evidence_url")
-    item["last_error"] = (request.last_error or "").strip() or None
-    item["notes"] = (request.notes or "").strip() or item.get("notes")
-    item["verification_method"] = (request.verification_method or "").strip().lower() or item["verification_method"]
+    if request.status is not None:
+        status = request.status.strip().lower()
+        if status:
+            item["status"] = status
+    if request.platform is not None:
+        platform = request.platform.strip().lower()
+        if not platform:
+            raise HTTPException(status_code=400, detail="Platform cannot be empty.")
+        item["platform"] = platform
+    if request.connector_type is not None:
+        connector_type = request.connector_type.strip().lower()
+        if not connector_type:
+            raise HTTPException(status_code=400, detail="Connector type cannot be empty.")
+        item["connector_type"] = connector_type
+    if request.provider_name is not None:
+        provider_name = request.provider_name.strip()
+        if not provider_name:
+            raise HTTPException(status_code=400, detail="Provider name cannot be empty.")
+        item["provider_name"] = provider_name
+    if request.credential_env_var is not None:
+        item["credential_env_var"] = request.credential_env_var.strip() or None
+    if request.evidence_url is not None:
+        item["evidence_url"] = request.evidence_url.strip() or None
+    if request.last_error is not None:
+        item["last_error"] = request.last_error.strip() or None
+    if request.notes is not None:
+        item["notes"] = request.notes.strip() or None
+    if request.verification_method is not None:
+        verification_method = request.verification_method.strip().lower()
+        if not verification_method:
+            raise HTTPException(status_code=400, detail="Verification method cannot be empty.")
+        item["verification_method"] = verification_method
     if request.owner is not None:
         item["owner"] = request.owner.strip() or None
     if request.next_check_at is not None:
